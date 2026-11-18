@@ -1,4 +1,6 @@
-# F405 工训 ROBO 烧录入口
+# Final_task · F405 决赛工程
+
+决赛换物块前的源码快照保存在本地 Git 标签 `www-before-final`。在本目录使用 CLion 或下列 CMake 预设开发；当前分支为 `Final_task`，两个预设默认在本机构建。
 
 在 CLion 重新加载 CMake，按用途选择同一行的预设和下载项。
 

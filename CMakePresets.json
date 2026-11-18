@@ -21,7 +21,10 @@
         },
         {
             "name": "NormalRun",
-            "inherits": "f405"
+            "inherits": "f405",
+            "cacheVariables": {
+                "APP_AUTO_BACKUP": "OFF"
+            }
         }
     ],
     "buildPresets": [

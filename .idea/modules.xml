@@ -2,8 +2,8 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/WWW.iml" filepath="$PROJECT_DIR$/.idea/WWW.iml" />
-      <module fileurl="file://$PROJECT_DIR$/.idea/WWW2.iml" filepath="$PROJECT_DIR$/.idea/WWW2.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Final_task.iml" filepath="$PROJECT_DIR$/.idea/Final_task.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Final_task2.iml" filepath="$PROJECT_DIR$/.idea/Final_task2.iml" />
     </modules>
   </component>
 </project>
