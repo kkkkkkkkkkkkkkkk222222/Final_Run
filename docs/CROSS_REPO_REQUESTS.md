@@ -5,7 +5,7 @@
 ## 固定入口与协作方式
 
 - F405 决赛仓库为 `kkkkkkkkkkkkkkkk222222/Final_Run`，分支为 `Final_task`，预设为 `FinalRun`。[本端固定入口](https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/blob/Final_task/docs/CROSS_REPO_REQUESTS.md)
-- RDK 决赛仓库为 `danmo-teng/shijue_fangan-finals`。本轮按用户指定提交 `77f0ef1` 核对。[对端固定入口](https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CROSS_REPO_REQUESTS.md)
+- RDK 决赛仓库为 `danmo-teng/shijue_fangan-finals`。本轮核对main `f58ab07`与联调 `3829156`。[对端固定入口](https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CROSS_REPO_REQUESTS.md)
 
 涉及相关跨端接口或用户通知更新时，双方 AI 直接读取对端入口，核对源提交和请求 ID，
 在自己仓库记录当前相关要求及审核/实现回执。旧请求按 Git 历史取证，不自动恢复为当前任务。
@@ -16,30 +16,19 @@
 不得擅自新增新鲜度、反复握手、资格等待、停车/FAULT、高频巡检或无效测试。
 持久化规则见 [AGENTS.md](../AGENTS.md)，对端规则见 [CHANGE_WORKFLOW.md](https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CHANGE_WORKFLOW.md)。
 
-## FINALS-SINGLE-ITEM-20261119 两端单件规则已定向核对
+## FINALS-QUESTIONNAIRE-20261119 按问卷及补充回答修改分离规则
 
-用户确认决赛每趟只能运一件，并保留伤员优先。下位 FinalRun 通过 `APP_FINALS_SINGLE_ITEM=1` 接入数量限制，普通抓前、抓后、预备点、恢复、扫障找回、开局暂存和扫障取货均要求总数为 1、左右计数合计为 1，空侧类别与计数一致。多件混装编码及混伤员标志按多件处理，真实审核数量继续回报。多件满足原稳定条件时回报 READY=1、VALID=0，可接原分离或退出。
+用户本轮明确批准修改问卷中的不一致项，并确认：首件后纯绿/黑1～3件整批直送；暂存和扫障取货无业务数量上限；找回原货按正式规则；重复指令不计次；未归侧物体先观察，不能漏计；首件前橙黑组合复用搬堆路线，不推进首件。此前“所有入口每趟单件”的要求由本轮取代。
 
-已确认载荷复用也要求缓存总数为 1，新多件证据会撤销旧许可。决赛 GRAB 需要已有审核，CLEAR_SAFE_ZONE 使用 A=0 的视觉取货路线。旧 A>0 自动取障路线缺少物件审核，在决赛不受理。抓后弃批开爪完成后清理旧批分离计数，新目标可正常接管。[下位实现](../Main/Src/Task.c)
+**下位已实现、检查并构建；上位待接续。** FinalRun恢复上述数量资格和合法多件载荷复用，总物理分离次数固定为3，换侧/进展不重置，拒绝第四次新动作；普通上限放弃后按原张爪、退300mm、转90°、回搜索执行。同动作重复不计次，真实新批清旧次数。真实审核和原协议继续使用，单伤员、首件单绿、U=0/U=1及本地超时保留进度的语义保持。
 
-**上位联调 `3829156` 已同步，下位源码为 `4d14c19`。** 本轮使用该上位的实际构帧，经下位解析、任务执行和机构模拟，核对了以下实现。
+上位应按[完整修改建议与已确认边界](FINALS_QUESTIONNAIRE_SEPARATION_20261119.md)调整选侧排序、旧锁定侧、纯净合法侧与混装伤员的取舍、同侧混蓝一次试分、两侧混蓝放弃、O09专项规则、固定三次预算、F07搬移和U03/U04/U05处理；U06只保留现有绿蓝近侧特例。main需要同时接入联调3829156的送达确认，不能以恢复多件为由丢弃超时未确认语义。
 
-- 上位普通抓前、闭爪、运输复审、恢复和找回原货都要求单件，多件保持完整数量并进入分离或放弃。
-- 开局暂存与视觉扫障取货也采用单件条件。mode43 的多件审核接 HOLD 并沿下位原超时回找障，mode45 的多件找回接原 RELEASE_BOTH 放弃。
-- 可运输侧限制为单件，分离候选仍保留两三件组成。单伤员和伤员混装候选继续优先，已取消多件材料组的运输优先例外。
-- 首件后前三轮 360° 伤员优先搜索及快速重发进度继续生效，已确认载荷复用同步采用单件条件。
+生产Task/机构替身的数量与动作边界检查、U=0/U=1/本地超时回归和FinalRun构建均通过；未跑实车或烧录。上位代码与实际设备部署尚未完成，回传后再核对配套。下位源码见本条所在提交的Main/Src/Task.c与CMakeLists.txt。
 
-本轮抽查通过了首件普通和单伤员抓取后接导航，两普通物资的 VALID=0 与分离受理，左右保伤员普通分离完成后 mode35 接复审，以及 U=0、U=1 和本地超时的计数/撤离回报。另直接检查了开局单件判定、上位 mode43/45 非法取货出口和伤员优先搜索。模拟传感器与机构反馈用于本次联测，现场启动版本、板端身份和实物效果待核对。[决赛流程及状态](FINALS_PRIORITY_HANDOFF.md) · [上位当前源码](https://github.com/danmo-teng/shijue_fangan-finals/blob/3829156ba5bc50832ec29ee860e9b6b76a4d4c10/competition_rescue/state_machine.py)
+## FINALS-DELIVERY-CONFIRMATION-20261119 送达确认继续有效
 
-## FINALS-DELIVERY-CONFIRMATION-20261119 两种超时退出已配套
-
-下位 FinalRun 已接受 `TASK_COMPLETE U=1` 并锁存未确认退出。它和前段累计 4 秒本地超时都沿原开爪、mode16 撤离、mode17 返搜索路线执行，保留此前首件状态。U=0 仍表示视觉确认送达。同动作重发沿用原退出原因，晚到确认及改变原因的请求不能覆盖已取得的退出归属。
-
-已用上位 `codex/finals-delivery-confirmation@5c8937f` 的实际构帧联测，两种超时与确认送达的回包、计数、伤员优先阶段一致。该上位提交已包含暂停和保局停车时的完成登记。部署时配套该提交与本次 FinalRun 固件，现场实际版本和整车效果待验。首件前后、重复完成请求、晚到确认和默认预设对照已通过必要回归。[详细流程、结果与剩余待办](FINALS_PRIORITY_HANDOFF.md)
-
-## FINALS-PRIORITY-20261119 保留伤员优先并配套送达确认
-
-用户明确要求决赛沿用初赛取消优先前的伤员优先。上位搜索、区域观察、聚堆选择及分离选侧已保留该策略。FinalRun 已关闭抓后自动滤除，普通选侧分离按 U=0 接续。送达超时配套见本页回执，单件运输的下位实现和上位待办见本页顶部。[完整交接、源码依据和待办](FINALS_PRIORITY_HANDOFF.md)
+已有下位U=1和本地超时退出继续保留首件/搜索方向，不记新送达。U=0依当前动作完成确认登记，同一动作重发、晚到确认不能覆盖已锁定退出原因。上位应沿用联调3829156的完成去重和暂停/保局重发登记，再配合本轮多件规则；当前默认main仍需合入该语义。[送达确认和当前配套状态](FINALS_PRIORITY_HANDOFF.md)
 
 以下为决赛仓库建立时继承的初赛交接历史，具体提交对应其记录时点。
 

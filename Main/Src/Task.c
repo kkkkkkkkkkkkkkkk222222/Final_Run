@@ -788,21 +788,6 @@ static bool task_audit_class_is(uint8_t value, uint8_t cargo)
   return value == cargo;
 }
 
-static bool task_audit_count_allows_transport(const VisionMissionCommand *command)
-{
-  if (!APP_FINALS_SINGLE_ITEM) { return true; }
-  const uint8_t left_count = command->audit_counts & 0x03U;
-  const uint8_t right_count = (command->audit_counts >> 2) & 0x03U;
-  /* Mixed wire classes and INJURY_MIXED each describe more than one object.
-   * Keep real counts for review and separation, including invalid batches. */
-  return command->audit_total_count == 1U && left_count + right_count == 1U &&
-      ((left_count == 0U) == (command->audit_left_class == VISION_CARGO_NONE)) &&
-      ((right_count == 0U) == (command->audit_right_class == VISION_CARGO_NONE)) &&
-      command->audit_left_class < VISION_CARGO_MIXED_MATERIAL &&
-      command->audit_right_class < VISION_CARGO_MIXED_MATERIAL &&
-      (command->audit_flags & VISION_AUDIT_INJURY_MIXED) == 0U;
-}
-
 static AuditSemantic task_audit_semantic(
     const VisionMissionCommand *command)
 {
@@ -829,9 +814,8 @@ static AuditSemantic task_audit_semantic(
   const bool destination_injury =
       (command->audit_flags & VISION_AUDIT_DESTINATION_INJURY) != 0U;
 
-  if (!task_audit_count_allows_transport(command)) { return AUDIT_SEMANTIC_INVALID; }
-  /* Opening relocation keeps its existing category rules after the
-   * profile-specific transport count check. */
+  /* Opening relocation moves the real non-empty pile. Formal delivery below
+   * still requires first single green, then 1..3 materials or single injury. */
   if (initial_stash) {
     return (total > 0U) ?
         AUDIT_SEMANTIC_STASH_NONEMPTY : AUDIT_SEMANTIC_INVALID;
@@ -864,8 +848,8 @@ static AuditSemantic task_audit_semantic(
     return (destination_injury && (total == 1U)) ?
         AUDIT_SEMANTIC_INJURY_SINGLE : AUDIT_SEMANTIC_INVALID;
   }
-  /* The two mixed codes retain the real composition for ordinary profiles
-   * and for illegal-batch review in FinalRun. */
+  /* Both mixed codes retain the real green/core composition. One to three
+   * materials form a legal whole batch after the first confirmed green. */
   const bool material =
          !destination_injury &&
          ((left == VISION_CARGO_NONE) ||
@@ -969,7 +953,6 @@ static void task_clear_confirmed_load(void)
 static bool task_confirmed_load_available(void)
 {
   return confirmed_load.valid && task_status.gripper_closed &&
-      (!APP_FINALS_SINGLE_ITEM || confirmed_load.total == 1U) &&
       !(first_green_core_conflict && !first_delivery_done);
 }
 
@@ -2809,9 +2792,9 @@ static bool task_capture_has_eligible(void)
 
 static void task_begin_capture_escape(uint32_t now_ms)
 {
-  /* Once abandonment has been selected, the original threshold chooses
-   * the return-to-centre route. It does not limit separation commands. */
-  const bool final_illegal = audit_received && !audit_valid &&
+  /* FinalRun abandonment keeps the ordinary backoff + search turn even at
+   * the attempt limit. Preserve the old skipped-turn policy in other builds. */
+  const bool final_illegal = !APP_FINALS_AUDITED_FLOW && audit_received && !audit_valid &&
       separation_total_attempts >= APP_SEPARATION_MAX_ATTEMPTS;
   task_enter(TASK_APPROACH_RECOVER, now_ms);
   capture_escape_return_center = final_illegal;
@@ -3113,6 +3096,12 @@ static void task_process_pre_grab(uint32_t now_ms)
 
 static bool task_prepare_separation(int8_t keep_side, uint32_t now_ms)
 {
+  /* Count only newly accepted physical actions; replay handling precedes this
+   * entry. Progress and side changes never refill the FinalRun batch budget. */
+  if (APP_FINALS_AUDITED_FLOW && separation_total_attempts >= APP_SEPARATION_MAX_ATTEMPTS) {
+    task_status.command_reject_reason = TASK_COMMAND_REJECT_AUDIT;
+    return false;
+  }
   if (!audit_received || !audit_host_stable || audit_consistent_count < APP_AUDIT_REQUIRED_SAMPLES ||
       now_ms - audit_evidence_ms > APP_AUDIT_EVIDENCE_MAX_GAP_MS) {
     task_status.command_reject_reason = TASK_COMMAND_REJECT_AUDIT;
@@ -3624,7 +3613,7 @@ static void task_process_post_grab_audit(uint32_t now_ms)
     case POST_AUDIT_RELEASE:
       Camera_SetAngle(APP_GRAB_VIEW_ANGLE);
       if (task_open_claws(now_ms)) {
-        if (APP_FINALS_SINGLE_ITEM) {
+        if (APP_FINALS_AUDITED_FLOW) {
           task_finish_abandoned_batch();
         } else {
           task_status.gripper_closed = false;
@@ -3882,7 +3871,7 @@ static bool task_safe_sweep_command_valid(
       -(int32_t)command->target_y_mm : command->target_y_mm;
   return ((command->flags & (uint8_t)~allowed) == 0U) &&
          ((command->target_x_mm == 0) ||
-          (!APP_FINALS_SINGLE_ITEM && (command->target_x_mm >= APP_SAFE_SWEEP_MIN_FORWARD_MM) &&
+          (!APP_FINALS_AUDITED_FLOW && (command->target_x_mm >= APP_SAFE_SWEEP_MIN_FORWARD_MM) &&
            (command->target_x_mm <= APP_SAFE_SWEEP_MAX_FORWARD_MM))) &&
          (lateral_abs == ((command->target_x_mm == 0) ?
              APP_SAFE_SWEEP_PLACEMENT_MM : APP_SAFE_SWEEP_LATERAL_MM)) &&
@@ -6245,8 +6234,8 @@ static void task_latch_sweep_audit(const VisionMissionCommand *command,
   if ((command->audit_flags & VISION_AUDIT_SWEEP_PICKUP) == 0U) {
     return;
   }
-  const bool eligible = command->audit_total_count > 0U &&
-      task_audit_count_allows_transport(command);
+  /* Visual obstacle pickup is relocation, not formal delivery sorting. */
+  const bool eligible = command->audit_total_count > 0U;
   if (eligible != sweep_audit_eligible ||
       (sweep_audit_consistent_count > 0U &&
        (now_ms - sweep_audit_evidence_ms > APP_AUDIT_EVIDENCE_MAX_GAP_MS ||
@@ -7264,7 +7253,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
   } else if ((command->command == VISION_CMD_GRAB_CONFIRMED) &&
              (state >= TASK_GRAB_OBSERVE) &&
              (state <= TASK_GRAB_ROTATE) &&
-             ((!APP_FINALS_SINGLE_ITEM && !complete_flow_active) ||
+             ((!APP_FINALS_AUDITED_FLOW && !complete_flow_active) ||
               (audit_received && audit_valid &&
                (audit_consistent_count >= APP_AUDIT_REQUIRED_SAMPLES)))) {
     task_status.acknowledged_sequence = command->sequence;
@@ -8544,7 +8533,7 @@ static void task_audit_watchdog(uint32_t now_ms)
     const bool return_to_center = state == TASK_TRANSPORT_AUDIT ||
         state == TASK_SAFE_SWEEP_DONE ||
         safe_sweep_recheck_pending ||
-        separation_total_attempts >= APP_SEPARATION_MAX_ATTEMPTS;
+        (!APP_FINALS_AUDITED_FLOW && separation_total_attempts >= APP_SEPARATION_MAX_ATTEMPTS);
     task_begin_capture_escape(now_ms);
     capture_escape_return_center = return_to_center;
     audit_watch_active = false;
