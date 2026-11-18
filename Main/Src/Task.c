@@ -227,7 +227,7 @@ static bool command_accepted, command_visual_new;
 static uint32_t diag_rx_count, diag_accept_count, diag_reject_count;
 static uint8_t diag_reject_stage;
 static bool sweep_audit_ready;
-static bool sweep_audit_nonempty;
+static bool sweep_audit_eligible;
 static uint32_t audit_frame_floor;
 static bool audit_frame_floor_valid;
 static bool app_visual_valid;
@@ -788,6 +788,21 @@ static bool task_audit_class_is(uint8_t value, uint8_t cargo)
   return value == cargo;
 }
 
+static bool task_audit_count_allows_transport(const VisionMissionCommand *command)
+{
+  if (!APP_FINALS_SINGLE_ITEM) { return true; }
+  const uint8_t left_count = command->audit_counts & 0x03U;
+  const uint8_t right_count = (command->audit_counts >> 2) & 0x03U;
+  /* Mixed wire classes and INJURY_MIXED each describe more than one object.
+   * Keep real counts for review and separation, including invalid batches. */
+  return command->audit_total_count == 1U && left_count + right_count == 1U &&
+      ((left_count == 0U) == (command->audit_left_class == VISION_CARGO_NONE)) &&
+      ((right_count == 0U) == (command->audit_right_class == VISION_CARGO_NONE)) &&
+      command->audit_left_class < VISION_CARGO_MIXED_MATERIAL &&
+      command->audit_right_class < VISION_CARGO_MIXED_MATERIAL &&
+      (command->audit_flags & VISION_AUDIT_INJURY_MIXED) == 0U;
+}
+
 static AuditSemantic task_audit_semantic(
     const VisionMissionCommand *command)
 {
@@ -814,9 +829,9 @@ static AuditSemantic task_audit_semantic(
   const bool destination_injury =
       (command->audit_flags & VISION_AUDIT_DESTINATION_INJURY) != 0U;
 
-  /* The opening temporary stash only clears the centre pile. Per-side counts
-   * are saturated diagnostics and neither category nor quantity is a formal
-   * delivery interlock for this move; only a non-empty stable audit matters. */
+  if (!task_audit_count_allows_transport(command)) { return AUDIT_SEMANTIC_INVALID; }
+  /* Opening relocation keeps its existing category rules after the
+   * profile-specific transport count check. */
   if (initial_stash) {
     return (total > 0U) ?
         AUDIT_SEMANTIC_STASH_NONEMPTY : AUDIT_SEMANTIC_INVALID;
@@ -849,8 +864,8 @@ static AuditSemantic task_audit_semantic(
     return (destination_injury && (total == 1U)) ?
         AUDIT_SEMANTIC_INJURY_SINGLE : AUDIT_SEMANTIC_INVALID;
   }
-  /* After the first single GREEN, transport at most three GREEN/CORE objects.
-   * The two mixed codes retain the actual green/core composition. */
+  /* The two mixed codes retain the real composition for ordinary profiles
+   * and for illegal-batch review in FinalRun. */
   const bool material =
          !destination_injury &&
          ((left == VISION_CARGO_NONE) ||
@@ -954,6 +969,7 @@ static void task_clear_confirmed_load(void)
 static bool task_confirmed_load_available(void)
 {
   return confirmed_load.valid && task_status.gripper_closed &&
+      (!APP_FINALS_SINGLE_ITEM || confirmed_load.total == 1U) &&
       !(first_green_core_conflict && !first_delivery_done);
 }
 
@@ -3608,8 +3624,12 @@ static void task_process_post_grab_audit(uint32_t now_ms)
     case POST_AUDIT_RELEASE:
       Camera_SetAngle(APP_GRAB_VIEW_ANGLE);
       if (task_open_claws(now_ms)) {
-        task_status.gripper_closed = false;
-        task_clear_audit_result();
+        if (APP_FINALS_SINGLE_ITEM) {
+          task_finish_abandoned_batch();
+        } else {
+          task_status.gripper_closed = false;
+          task_clear_audit_result();
+        }
         task_enter(TASK_SEARCH, now_ms);
       }
       break;
@@ -3862,7 +3882,7 @@ static bool task_safe_sweep_command_valid(
       -(int32_t)command->target_y_mm : command->target_y_mm;
   return ((command->flags & (uint8_t)~allowed) == 0U) &&
          ((command->target_x_mm == 0) ||
-          ((command->target_x_mm >= APP_SAFE_SWEEP_MIN_FORWARD_MM) &&
+          (!APP_FINALS_SINGLE_ITEM && (command->target_x_mm >= APP_SAFE_SWEEP_MIN_FORWARD_MM) &&
            (command->target_x_mm <= APP_SAFE_SWEEP_MAX_FORWARD_MM))) &&
          (lateral_abs == ((command->target_x_mm == 0) ?
              APP_SAFE_SWEEP_PLACEMENT_MM : APP_SAFE_SWEEP_LATERAL_MM)) &&
@@ -6167,7 +6187,7 @@ static void task_clear_sweep_audit_evidence(void)
     accepted_context.completed = false;
   }
   sweep_audit_ready = false;
-  sweep_audit_nonempty = false;
+  sweep_audit_eligible = false;
   audit_frame_floor = accepted_context.vision_frame;
   audit_frame_floor_valid = accepted_context.visual_valid;
   sweep_audit_consistent_count = 0U;
@@ -6213,7 +6233,7 @@ static void task_latch_sweep_audit(const VisionMissionCommand *command,
             (sweep_last_evidence.audit_flags & (uint8_t)~VISION_AUDIT_STABLE)) {
       sweep_audit_host_stable = true;
       sweep_audit_ready = true;
-      sweep_audit_valid = sweep_audit_nonempty;
+      sweep_audit_valid = sweep_audit_eligible;
       task_status.audit_ready = true;
       task_status.audit_valid = sweep_audit_valid;
     }
@@ -6225,8 +6245,9 @@ static void task_latch_sweep_audit(const VisionMissionCommand *command,
   if ((command->audit_flags & VISION_AUDIT_SWEEP_PICKUP) == 0U) {
     return;
   }
-  const bool nonempty = command->audit_total_count > 0U;
-  if (nonempty != sweep_audit_nonempty ||
+  const bool eligible = command->audit_total_count > 0U &&
+      task_audit_count_allows_transport(command);
+  if (eligible != sweep_audit_eligible ||
       (sweep_audit_consistent_count > 0U &&
        (now_ms - sweep_audit_evidence_ms > APP_AUDIT_EVIDENCE_MAX_GAP_MS ||
         (sweep_audit_consistent_count < APP_AUDIT_REQUIRED_SAMPLES &&
@@ -6241,7 +6262,7 @@ static void task_latch_sweep_audit(const VisionMissionCommand *command,
     task_status.audit_total_count = 0U;
     sweep_audit_ready = false;
   }
-  sweep_audit_nonempty = nonempty;
+  sweep_audit_eligible = eligible;
   bool seen = false;
   for (uint8_t i = 0U; i < sweep_audit_consistent_count && i < APP_AUDIT_REQUIRED_SAMPLES; ++i) {
     seen = seen || (sweep_seen_ids[i] == command->audit_id);
@@ -6260,7 +6281,7 @@ static void task_latch_sweep_audit(const VisionMissionCommand *command,
   sweep_observation_gap = false;
   sweep_audit_host_stable = (command->audit_flags & VISION_AUDIT_STABLE) != 0U;
   sweep_audit_ready = sweep_audit_consistent_count >= APP_AUDIT_REQUIRED_SAMPLES && sweep_audit_host_stable;
-  sweep_audit_valid = sweep_audit_ready && nonempty;
+  sweep_audit_valid = sweep_audit_ready && eligible;
   sweep_last_evidence = *command;
   task_status.audit_ready = sweep_audit_ready;
   task_status.audit_valid = sweep_audit_valid;
@@ -7243,7 +7264,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
   } else if ((command->command == VISION_CMD_GRAB_CONFIRMED) &&
              (state >= TASK_GRAB_OBSERVE) &&
              (state <= TASK_GRAB_ROTATE) &&
-             (!complete_flow_active ||
+             ((!APP_FINALS_SINGLE_ITEM && !complete_flow_active) ||
               (audit_received && audit_valid &&
                (audit_consistent_count >= APP_AUDIT_REQUIRED_SAMPLES)))) {
     task_status.acknowledged_sequence = command->sequence;

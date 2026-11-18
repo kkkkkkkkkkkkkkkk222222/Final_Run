@@ -677,6 +677,9 @@
 #ifndef APP_FINALS_DELIVERY_CONFIRMATION
 #define APP_FINALS_DELIVERY_CONFIRMATION  0
 #endif
+#ifndef APP_FINALS_SINGLE_ITEM
+#define APP_FINALS_SINGLE_ITEM            0
+#endif
 /* Temporary lift position for filtering and orange/core separation. */
 #define APP_LIFT_FIRST_GREEN_FILTER_ANGLE 82U
 #define APP_SINGLE_CARGO_FILTER_BACK_SPEED_MM_S 250.0f

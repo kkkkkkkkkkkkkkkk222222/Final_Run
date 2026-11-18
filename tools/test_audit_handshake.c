@@ -1077,8 +1077,163 @@ static void test_finals_delivery_confirmation(void)
 }
 #endif
 
+#ifdef FINALRUN_SINGLE_ITEM_CHECK
+#if !APP_FINALS_SINGLE_ITEM
+#error "The single-item checks require APP_FINALS_SINGLE_ITEM=1"
+#endif
+static void single_item_prepare(TaskState target, bool first_done)
+{
+  wire_prepare(target, 0U);
+  first_delivery_done = first_done;
+  configured_color = VISION_COLOR_RED;
+  initial_claw_ready = recovery_reference_ready = true;
+  task_status.claw_visible = transport_audit_camera_ready = true;
+  task_clear_audit_result();
+}
+
+static VisionMissionCommand single_item_audit(uint8_t cargo, uint8_t count, uint8_t role)
+{
+  return (VisionMissionCommand){
+      .command = VISION_CMD_CARGO_AUDIT, .flags = VISION_CMD_VALID,
+      .audit_left_class = cargo, .audit_counts = count, .audit_total_count = count,
+      .audit_flags = VISION_AUDIT_STABLE | role, .audit_id = 1U, .vision_frame = 9U};
+}
+
+static void single_item_pair(VisionMissionCommand audit)
+{
+  wire_send(audit, 100U, 1U);
+  ++audit.audit_id;
+  ++audit.vision_frame;
+  wire_send(audit, 220U, 2U);
+}
+
+static void test_finals_single_item(void)
+{
+  const VisionMissionCommand grab = {
+      .command = VISION_CMD_GRAB_CONFIRMED, .flags = VISION_CMD_VALID};
+  const TaskState reviews[] = {TASK_GRAB_OBSERVE, TASK_DISPERSE_READY, TASK_POST_GRAB_AUDIT,
+      TASK_TRANSPORT_AUDIT, TASK_RECOVERY_WAIT, TASK_SAFE_SWEEP_RETRIEVE_AUDIT};
+  for (unsigned i = 0U; i < sizeof(reviews) / sizeof(reviews[0]); ++i) {
+    single_item_prepare(reviews[i], true);
+    VisionMissionCommand audit = single_item_audit(VISION_CARGO_GREEN, 2U, 0U);
+    single_item_pair(audit);
+    assert(command_accepted && audit_received && !audit_valid);
+    assert(task_status.audit_total_count == 2U && !task_confirmed_load_available());
+    wire_send_action(grab, 12U, 240U, 3U);
+    assert(!command_accepted);
+  }
+  single_item_prepare(TASK_GRAB_OBSERVE, true);
+  VisionMissionCommand mixed = single_item_audit(VISION_CARGO_MIXED_MATERIAL, 2U, 0U);
+  single_item_pair(mixed);
+  assert(audit_received && !audit_valid && task_status.audit_total_count == 2U);
+  const VisionMissionCommand separate = {.command = VISION_CMD_DISPERSE_PILE,
+      .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE | VISION_CMD_SIDE_VALID};
+  wire_send_action(separate, 12U, 240U, 3U);
+  assert(command_accepted && state == TASK_REMOTE_ACTION);
+  task_enter(TASK_POST_GRAB_AUDIT, 300U);
+  task_clear_audit_result();
+  post_grab_audit_phase = POST_AUDIT_RELEASE;
+  task_process_post_grab_audit(310U);
+  task_process_post_grab_audit(2300U);
+  assert(state == TASK_SEARCH && separation_total_attempts == 0U);
+  VisionData next_target = {.config_ready = true, .mission = {
+      .received = true, .context_valid = true, .payload_valid = true,
+      .command = VISION_CMD_APPROACH_TARGET, .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE,
+      .task_id = 8U, .action_id = 13U, .vision_frame = 11U, .sequence = 4U,
+      .generation = 4U, .tick_ms = 2320U, .target_x_mm = 320, .target_y_mm = 240}};
+  task_accept_mission(&next_target, 2320U);
+  assert(command_accepted && state == TASK_APPROACH && accepted_context.task_id == 8U);
+
+  for (uint8_t cargo = VISION_CARGO_GREEN; cargo <= VISION_CARGO_INJURED; ++cargo) {
+    single_item_prepare(TASK_POST_GRAB_AUDIT, cargo != VISION_CARGO_GREEN);
+    const uint8_t role = cargo == VISION_CARGO_INJURED ? VISION_AUDIT_DESTINATION_INJURY : 0U;
+    single_item_pair(single_item_audit(cargo, 1U, role));
+    assert(audit_valid && state == TASK_WAIT_NAVIGATION);
+    const VisionMissionCommand nav = {.command = VISION_CMD_NAVIGATE_WAYPOINT,
+        .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE | VISION_CMD_DISTANCE_VALID |
+            VISION_CMD_STAGE_ONLY, .target_x_mm = 100, .heading_cdeg = 9000U};
+    wire_send_action(nav, 12U, 240U, 3U);
+    assert(command_accepted && state == TASK_NAVIGATE);
+  }
+
+  single_item_prepare(TASK_GRAB_OBSERVE, false);
+  single_item_pair(single_item_audit(VISION_CARGO_GREEN, 2U, VISION_AUDIT_INITIAL_STASH));
+  assert(audit_received && !audit_valid && task_status.audit_total_count == 2U);
+  wire_send_action(grab, 12U, 240U, 3U);
+  assert(!command_accepted);
+  single_item_prepare(TASK_GRAB_OBSERVE, false);
+  single_item_pair(single_item_audit(VISION_CARGO_CORE, 1U, VISION_AUDIT_INITIAL_STASH));
+  assert(audit_valid);
+  wire_send_action(grab, 12U, 240U, 3U);
+  assert(command_accepted && state == TASK_CLOSE_CLAW);
+
+  single_item_prepare(TASK_TRANSPORT_AUDIT, true);
+  single_item_pair(single_item_audit(VISION_CARGO_GREEN, 1U, 0U));
+  assert(task_confirmed_load_available());
+  VisionMissionCommand changed = single_item_audit(VISION_CARGO_GREEN, 2U, 0U);
+  changed.audit_id = 3U;
+  changed.vision_frame = 11U;
+  wire_send(changed, 340U, 3U);
+  assert(!task_confirmed_load_available() && !audit_valid);
+
+  single_item_prepare(TASK_SAFE_SWEEP_AUDIT, true);
+  task_reset_sweep_audit(0U);
+  VisionMissionCommand sweep = single_item_audit(VISION_CARGO_CORE, 2U, VISION_AUDIT_SWEEP_PICKUP);
+  single_item_pair(sweep);
+  assert(sweep_audit_ready && !sweep_audit_valid && task_status.audit_total_count == 2U);
+  ++sweep.audit_id;
+  ++sweep.vision_frame;
+  wire_send(sweep, 230U, 3U); /* Repeated STABLE frame cannot grant a multi-item pickup. */
+  assert(!sweep_audit_valid);
+  wire_send_action(grab, 12U, 240U, 4U);
+  assert(!command_accepted);
+  sweep.audit_counts = sweep.audit_total_count = 1U;
+  ++sweep.audit_id;
+  ++sweep.vision_frame;
+  wire_send(sweep, 340U, 5U);
+  assert(!sweep_audit_valid);
+  ++sweep.audit_id;
+  ++sweep.vision_frame;
+  wire_send(sweep, 460U, 6U);
+  assert(sweep_audit_valid && task_status.audit_total_count == 1U);
+  wire_send_action(grab, 12U, 480U, 7U);
+  assert(command_accepted && state == TASK_SAFE_SWEEP);
+
+  single_item_prepare(TASK_SAFE_SWEEP_AUDIT, true);
+  task_reset_sweep_audit(0U);
+  single_item_pair(single_item_audit(VISION_CARGO_CORE, 1U, VISION_AUDIT_SWEEP_PICKUP));
+  assert(sweep_audit_valid);
+  changed.audit_flags = VISION_AUDIT_STABLE | VISION_AUDIT_SWEEP_PICKUP;
+  wire_send(changed, 340U, 3U);
+  assert(!sweep_audit_valid && task_status.audit_total_count == 2U);
+
+  single_item_prepare(TASK_GRAB_OBSERVE, true);
+  complete_flow_active = false;
+  wire_send_action(grab, 12U, 100U, 1U);
+  assert(!command_accepted);
+  VisionMissionCommand malformed = single_item_audit(VISION_CARGO_GREEN, 1U, VISION_AUDIT_INITIAL_STASH);
+  malformed.audit_counts = 2U;
+  assert(task_audit_semantic(&malformed) == AUDIT_SEMANTIC_INVALID);
+  confirmed_load.valid = task_status.gripper_closed = true;
+  confirmed_load.total = 2U;
+  assert(!task_confirmed_load_available());
+  VisionMissionCommand clear = {.received = true, .command = VISION_CMD_CLEAR_SAFE_ZONE,
+      .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE,
+      .target_y_mm = APP_SAFE_SWEEP_PLACEMENT_MM};
+  assert(task_safe_sweep_command_valid(&clear));
+  clear.target_x_mm = APP_SAFE_SWEEP_MIN_FORWARD_MM;
+  clear.target_y_mm = APP_SAFE_SWEEP_LATERAL_MM;
+  assert(!task_safe_sweep_command_valid(&clear));
+}
+#endif
+
 int main(void)
 {
+#ifdef FINALRUN_SINGLE_ITEM_CHECK
+  test_finals_single_item();
+  puts("FinalRun single-item ordinary/stash/sweep/recovery and retained-load checks PASS");
+  return 0;
+#endif
 #ifdef FINALRUN_DELIVERY_CHECK
   test_finals_delivery_confirmation();
   puts("FinalRun confirmed/unconfirmed/local exit ownership and retained progress PASS");
