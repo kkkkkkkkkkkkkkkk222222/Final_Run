@@ -16,9 +16,15 @@
 不得擅自新增新鲜度、反复握手、资格等待、停车/FAULT、高频巡检或无效测试。
 持久化规则见 [AGENTS.md](../AGENTS.md)，对端规则见 [CHANGE_WORKFLOW.md](https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CHANGE_WORKFLOW.md)。
 
+## FINALS-DELIVERY-CONFIRMATION-20261119 两种超时退出已配套
+
+下位 FinalRun 已接受 `TASK_COMPLETE U=1` 并锁存未确认退出。它和前段累计 4 秒本地超时都沿原开爪、mode16 撤离、mode17 返搜索路线执行，保留此前首件状态。U=0 仍表示视觉确认送达。同动作重发沿用原退出原因，晚到确认及改变原因的请求不能覆盖已取得的退出归属。
+
+已用上位 `codex/finals-delivery-confirmation@5c8937f` 的实际构帧联测，两种超时与确认送达的回包、计数、伤员优先阶段一致。该上位提交已包含暂停和保局停车时的完成登记。部署时配套该提交与本次 FinalRun 固件，现场实际版本和整车效果待验。首件前后、重复完成请求、晚到确认和默认预设对照已通过必要回归。[详细流程、结果与剩余待办](FINALS_PRIORITY_HANDOFF.md)
+
 ## FINALS-PRIORITY-20261119 保留伤员优先并配套送达确认
 
-用户明确要求决赛沿用初赛取消优先前的伤员优先。指定上位 `77f0ef1` 的搜索、区域观察、聚堆选择及分离选侧已保留该策略。下位 `fd63ab7` 的 FinalRun 已关闭抓后自动滤除；普通选侧分离按 U=0 接续。新送达接口的 U=1 和本地超时首件状态仍需下位配套，单件运输也处于两端待适配阶段。[完整交接、源码依据和待办](FINALS_PRIORITY_HANDOFF.md)
+用户明确要求决赛沿用初赛取消优先前的伤员优先。上位搜索、区域观察、聚堆选择及分离选侧已保留该策略。FinalRun 已关闭抓后自动滤除，普通选侧分离按 U=0 接续。送达超时配套见本页上方回执，单件运输处于两端待适配阶段。[完整交接、源码依据和待办](FINALS_PRIORITY_HANDOFF.md)
 
 以下为决赛仓库建立时继承的初赛交接历史，具体提交对应其记录时点。
 

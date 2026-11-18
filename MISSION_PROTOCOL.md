@@ -42,8 +42,8 @@
 11. 上位机先用CARGO_AUDIT占位请求mode48，停车闭爪、140°稳定后完成两帧及STABLE正式复审。合法且目的地不变时发送原格式的第一次`ALIGN_SAFE_ZONE`。F405按本轮红蓝方配置选定航向，红方90°、蓝方270°，使用本地单轴陀螺仪原地对正。首次进入3°，稳定期使用6°迟滞窗口，摄像头120°命令后沿用300 ms稳定时间，完成后上报`mode=11`。上位机按原流程冻结安全区框，第二次ALIGN仍带`VISUAL_CORRECTION_VALID(bit6)`，P2/P3仍可携带有符号水平像素误差。F405将该指令作为视觉确认回执，完成本次task/action并继续上报`mode=11`，物理航向保持本轮固定角度。
 12. 第二次视觉ALIGN完成后，上位机检查最终推进走廊。无障碍直接ENTER；有障碍发送`CLEAR_SAFE_ZONE=0x13`，P2/P3=0、P4/P5普通/核心`+200`或伤员`-200`、P6/P7=0。200表示向对应侧转90°后的前进距离，不是横移。mode39暂放原物资，张爪完成后倒退200 mm回S并恢复H；mode42/43视觉抓障，43的真实审核带bit6=`AUDIT_SWEEP_PICKUP`，要求两帧及STABLE受控非空。抓障后mode39逆序倒退沿采样轨迹回S，向相反侧转90°前进200 mm放障、张爪完成后倒退回S，再转180°朝向原物资。mode44找回、mode45正式全爪审核：合计前进预算200 mm不因APP/HOLD/44↔45重置，伤员保留DESTINATION_INJURY。合法后等待GRAB，mode39合爪并沿轨迹倒退回S恢复H，mode23复审→mode40→两次ALIGN→走廊检查。找回失败先张爪、倒退回S、恢复H才上报mode46，接受RETURN_CENTER进mode17再mode3；不计投送。旧固定距离兼容参数不变。
 13. `ENTER_SAFE_ZONE`必须置`DRIVE_STRAIGHT`、清除`DISTANCE_VALID`且P2～P5为0。收到视觉确认时bit6=1、清除`USE_FINAL_HEADING`且P6/P7=0。原定位降级格式为bit6=0、置`USE_FINAL_HEADING`并发送红9000/蓝27000。F405均锁定本轮红蓝方的固定航向直推，本地编码器总目标为650 mm。前400 mm使用既有接近减速，随后以330 mm/s最终补推250 mm。从ENTER统一起点累计达到650 mm，或末段有效推送时间达到1500 ms，任一满足即结束推进。PAUSE时间不计入末段计时。仅该固定距离ENTER阶段豁免地图边界恢复，沿用原急停、PAUSE及位姿有效性检查。停车、双爪全开且相机120°稳定300 ms后上报mode15。收到TASK_COMPLETE后至少完成1000 ms本地投送观察等待，再进入mode16退出。
-14. 自动地图边界恢复入口已关闭，不再因内部x/y达到边界阈值自动触发mode41；保留mode41编号、HOLD只ACK及张爪→向中心转向→驶入后SEARCH兼容处理，50/400 mm参数不改。局部行程预算、通信/视觉帧龄、ENTER接触保护仍保留。
-15. 收到`TASK_COMPLETE`后进入mode16：S1抬到开局55°并等1秒，再以400 mm/s后退0.30 m；后退完成停车，S1回85°并等1秒，再进入mode17使用RETURN H/D返中。S3保持120°；RETURN提前到达只缓存/ACK，不打断升降或重置退出行程。D=0后mode3重新搜索。
+14. ENTER 使用本地编码器累计推进 670 mm，前 400 mm 沿原接近减速，末段以 330 mm/s 补推 270 mm。达到总轮程或末段有效推送达到 1500 ms 后结束推进，PAUSE 时间按原规则扣除。停车、双爪全开及相机 120° 稳定后报告 mode15。上位视觉确认使用 TASK_COMPLETE U=0，原 1 秒观察超时使用 U=1。下位前段累计 4 秒超时由原 ENTER 动作取得退出归属。
+15. FinalRun 将 TASK_COMPLETE 的 A/B 固定为 0，U=0/1 分别锁存确认送达和未确认退出。同动作重发沿用原原因。U=1 及下位本地超时保留此前首件状态，U=0 才更新首件完成。开爪结束后进 mode16，S1 抬至 65° 并等原机构行程完成，再以 400 mm/s 后退 0.30 m，S1 回 85°并等动作完成，进入 mode17 接 RETURN。D=0 后回搜索。匹配任务、动作的 ACCEPT/DONE 和开爪回包供上位登记确认送达。
 
 上位机在收到STM32的新鲜配对退出、返中或搜索状态后进入下一轮；第一次投送完成前只选择单个绿色物资，之后仍只允许单个普通、单个核心或单个伤员，危险目标不进入正式投送。
 
@@ -137,4 +137,4 @@ A3 B3 12 10 02 80 02 00 00 00 01 09 DD FD C3
 - `YIELD_BACKOFF`只在F407已确认完成普通单侧释放且`cargo_recheck_pending=1`时接受。单侧释放与带侧DISPERSE均使用统一10°保留侧夹紧，曲线和直退由下位机执行。不带SIDE_VALID只执行20°观察并以mode35请求新审核。通用CMD12已删除；局部capture_escape仍表示必要的抓取失败退让，不是通用脱困。
 - `RELEASE_BOTH`在普通非法抓取审核中表示放弃：张爪后mode24退300 mm、转90°再SEARCH；INITIAL_STASH/藏堆及扫障原释放流程仍以mode34完成。无侧DISPERSE仍为20°观察/mode35，不能混用。
 - 对外mode映射为`3 SEARCH、15 DELIVERY_VERIFY、16 EXIT_SAFE_ZONE、17 FACE_FIELD_CENTER、18 STOPPED、20 APPROACH_TARGET、21 CAPTURE_AUDIT、22 CAPTURE_DONE、23 POST_GRAB_AUDIT、30 YIELD_DONE、31 退役保留、32/33/34 RELEASE_DONE、35 DISPERSE_DONE、36 LANE_DONE、37 DISPERSE_READY、38 CLUSTER_CAPTURE_AUDIT、39 SAFE_SWEEP、40 SAFE_SWEEP_DONE、41 BOUNDARY_RECOVER、42 SAFE_SWEEP_APPROACH、43 SAFE_SWEEP_AUDIT、44 SAFE_SWEEP_RETRIEVE、45 SAFE_SWEEP_RETRIEVE_AUDIT、46 SAFE_SWEEP_RETRIEVE_FAILED、47 CAPTURE_RETURN_WAIT、48 TRANSPORT_AUDIT、49 INJURY_BACKOFF、50 INJURY_RECLOSE、51 RECOVERY_WAIT`。
-- TASK_COMPLETE后的顺序为mode16本地后退、mode17执行RETURN H/D、D=0后mode3。普通SEARCH完成120°和90°两圈仍无目标时，同样允许上位机在mode3发送RETURN_CENTER，使空爪底盘进入mode17回中心。mode3后的1500 ms交接窗口仍会确认重复RETURN帧SEQ。 正式mode16内先S1抬55°，后退完成才放回85°，两个升降阶段各等1秒；S3保持120°。
+- FinalRun 的确认送达与未确认退出共用 mode16 本地撤离、mode17 RETURN、D=0 后 mode3 搜索。返回路线的提前请求沿原缓存交接。搜索中的空车 RETURN 及完成后的重复 RETURN 确认窗口继续使用原入口。

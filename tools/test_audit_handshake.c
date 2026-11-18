@@ -1001,8 +1001,89 @@ static void test_filter_recovery_restores_transport_lift(void)
   assert(state == TASK_NAVIGATE && Servo_GetAngle(1U) == APP_LIFT_MATERIAL_TRAVEL_ANGLE);
 }
 
+#ifdef FINALRUN_DELIVERY_CHECK
+#if !APP_FINALS_DELIVERY_CONFIRMATION
+#error "The finals delivery checks require APP_FINALS_DELIVERY_CONFIRMATION=1"
+#endif
+static void test_finals_delivery_confirmation(void)
+{
+  const VisionMissionCommand enter = {
+      .command = VISION_CMD_ENTER_SAFE_ZONE,
+      .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE |
+          VISION_CMD_DRIVE_STRAIGHT | VISION_CMD_USE_FINAL_HEADING,
+      .heading_cdeg = 9000U};
+  for (unsigned previous_first = 0U; previous_first < 2U; ++previous_first) {
+    for (unsigned reason = 0U; reason < 3U; ++reason) {
+      wire_prepare(TASK_ALIGN_SAFE_ZONE, 0U);
+      configured_color = VISION_COLOR_RED;
+      initial_claw_ready = true;
+      first_delivery_done = previous_first != 0U;
+      search_yaw_direction = -1;
+      search_direction_latched = false;
+      safe_align_done = true;
+      safe_align_visual_confirmed = false;
+      wire_send(enter, 100U, 1U);
+      assert(command_accepted && state == TASK_NAVIGATE && delivery_enter_active);
+
+      VisionMissionCommand complete = {
+          .command = VISION_CMD_TASK_COMPLETE,
+          .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE,
+          .heading_cdeg = reason == 1U ? VISION_TASK_COMPLETE_UNCONFIRMED : 0U};
+      uint32_t now = 200U;
+      if (reason == 2U) {
+        now = 100U + APP_SAFE_ENTER_FRONT_TIMEOUT_MS;
+        task_delivery_account_front_time(now);
+        task_delivery_check_front_budget(now);
+        assert(state == TASK_OPEN_FOR_RAM &&
+               delivery.finish == DELIVERY_FINISH_FRONT_TIMEOUT);
+        wire_send_action(complete, 12U, now + 1U, 2U);
+        assert(!command_accepted && accepted_context.opcode == VISION_CMD_ENTER_SAFE_ZONE);
+      } else {
+        if (reason == 1U) {
+          task_enter(TASK_RAM_VERIFY, now);
+          task_status.gripper_closed = false;
+        }
+        wire_send_action(complete, 12U, now, 2U);
+        assert(command_accepted);
+        wire_send_action(complete, 12U, now + 1U, 3U);
+        assert(command_accepted);
+        VisionMissionCommand changed_reason = complete;
+        changed_reason.heading_cdeg ^= VISION_TASK_COMPLETE_UNCONFIRMED;
+        wire_send_action(changed_reason, 12U, now + 2U, 4U);
+        assert(!command_accepted);
+        wire_send_action(changed_reason, 13U, now + 3U, 5U);
+        assert(!command_accepted && accepted_context.action_id == 12U);
+      }
+      if (state == TASK_OPEN_FOR_RAM) {
+        task_process_delivery_open(&active_mission, now + 20U);
+        assert(state == TASK_OPEN_FOR_RAM && !task_context_complete());
+        task_process_delivery_open(&active_mission, now + 2000U);
+      }
+      assert(state == TASK_EXIT_SAFE_ZONE && !task_status.gripper_closed);
+      assert(task_context_complete());
+      assert(first_delivery_done == (previous_first != 0U || reason == 0U));
+      assert(search_yaw_direction == (reason == 0U ? 1 : -1));
+      if (reason == 2U) {
+        assert(accepted_context.opcode == VISION_CMD_ENTER_SAFE_ZONE &&
+               accepted_context.action_id == 11U);
+      } else {
+        wire_send_action(complete, 12U, now + 2020U, 6U);
+        assert(command_accepted && task_context_complete());
+        assert(delivery.finish == (reason == 1U ?
+            DELIVERY_FINISH_UNCONFIRMED : DELIVERY_FINISH_COMPLETE));
+      }
+    }
+  }
+}
+#endif
+
 int main(void)
 {
+#ifdef FINALRUN_DELIVERY_CHECK
+  test_finals_delivery_confirmation();
+  puts("FinalRun confirmed/unconfirmed/local exit ownership and retained progress PASS");
+  return 0;
+#endif
   test_audited_core_closes_without_driving(true, VISION_CARGO_CORE, 1U);
   test_audited_core_closes_without_driving(false, VISION_CARGO_CORE, 1U);
   test_audited_core_closes_without_driving(false, VISION_CARGO_MIXED_MATERIAL, 2U);

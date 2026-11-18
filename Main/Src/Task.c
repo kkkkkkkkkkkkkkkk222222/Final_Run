@@ -378,7 +378,8 @@ static bool delivery_enter_active;
 typedef enum {
   DELIVERY_FINISH_NONE = 0,
   DELIVERY_FINISH_COMPLETE,
-  DELIVERY_FINISH_FRONT_TIMEOUT
+  DELIVERY_FINISH_FRONT_TIMEOUT,
+  DELIVERY_FINISH_UNCONFIRMED
 } DeliveryFinishReason;
 static struct {
   bool active;
@@ -4719,6 +4720,12 @@ static bool task_delivery_is_finishing(void)
   return delivery.active && delivery.finish != DELIVERY_FINISH_NONE;
 }
 
+static bool task_delivery_has_host_finish(void)
+{
+  return delivery.finish == DELIVERY_FINISH_COMPLETE ||
+         delivery.finish == DELIVERY_FINISH_UNCONFIRMED;
+}
+
 static void task_delivery_account_front_time(uint32_t now_ms)
 {
   if (!delivery.front_budget_active) { return; }
@@ -4760,11 +4767,13 @@ static void task_finish_delivery_exit(uint32_t now_ms)
 {
   /* Called only after the original Claw_Open reports its mechanical finish. */
   if (state != TASK_OPEN_FOR_RAM && state != TASK_RAM_VERIFY) { return; }
-  /* Legacy delivery parity applies until an explicit station direction wins. */
-  if (!search_direction_latched) {
-    search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
+  if (!APP_FINALS_DELIVERY_CONFIRMATION || delivery.finish == DELIVERY_FINISH_COMPLETE) {
+    /* Legacy parity applies until an explicit station direction wins. */
+    if (!search_direction_latched) {
+      search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
+    }
+    first_delivery_done = true;
   }
-  first_delivery_done = true;
   task_bulldozer_clear_load();
   safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
   task_enter(TASK_EXIT_SAFE_ZONE, now_ms);
@@ -4773,7 +4782,7 @@ static void task_finish_delivery_exit(uint32_t now_ms)
 static void task_process_delivery_open(const VisionMissionCommand *command,
                                        uint32_t now_ms)
 {
-  const uint8_t owner_opcode = delivery.finish == DELIVERY_FINISH_COMPLETE ?
+  const uint8_t owner_opcode = task_delivery_has_host_finish() ?
       VISION_CMD_TASK_COMPLETE : VISION_CMD_ENTER_SAFE_ZONE;
   const bool local_finish_owned = task_delivery_is_finishing() &&
       accepted_context.valid && !accepted_context.cancelled &&
@@ -4812,7 +4821,8 @@ static void task_process_delivery_verify(
     task_status.motors_active = false;
     return;
   }
-  if (command->command == VISION_CMD_TASK_COMPLETE) {
+  if (command->command == VISION_CMD_TASK_COMPLETE &&
+      (!APP_FINALS_DELIVERY_CONFIRMATION || task_delivery_has_host_finish())) {
     task_finish_delivery_exit(now_ms);
   }
 }
@@ -7481,7 +7491,9 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
     task_status.acknowledged_sequence = command->sequence;
     command_accepted = true;
     delivery.active = true;
-    delivery.finish = DELIVERY_FINISH_COMPLETE;
+    delivery.finish = APP_FINALS_DELIVERY_CONFIRMATION &&
+        command->heading_cdeg == VISION_TASK_COMPLETE_UNCONFIRMED ?
+        DELIVERY_FINISH_UNCONFIRMED : DELIVERY_FINISH_COMPLETE;
     delivery.front_budget_active = false;
     Motor_Stop();
     task_status.motors_active = false;
@@ -8059,10 +8071,15 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
     /* The original context checks above handle ordering and rollover. Only a
      * new completion of this ENTER may take ownership; late COMPLETE cannot
      * overwrite a locally latched timeout or an already accepted completion. */
+    const bool unconfirmed = APP_FINALS_DELIVERY_CONFIRMATION &&
+        incoming.heading_cdeg == VISION_TASK_COMPLETE_UNCONFIRMED;
     if (new_target || !accepted_context.valid ||
         !task_side_flag_valid(incoming.flags) ||
         incoming.flags != (VISION_CMD_VALID | (incoming.flags & VISION_CMD_RED_SIDE)) ||
-        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 || incoming.heading_cdeg != 0U ||
+        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 ||
+        (incoming.heading_cdeg != 0U && !unconfirmed) ||
+        (!new_action && APP_FINALS_DELIVERY_CONFIRMATION &&
+         unconfirmed != (delivery.finish == DELIVERY_FINISH_UNCONFIRMED)) ||
         (new_action && (accepted_context.opcode != VISION_CMD_ENTER_SAFE_ZONE ||
                         delivery.finish != DELIVERY_FINISH_NONE))) goto rejected;
   }

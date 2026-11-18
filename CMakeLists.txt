@@ -53,7 +53,8 @@ set_target_properties(${firmware_target} PROPERTIES
     OUTPUT_NAME "${F405_PROFILE}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 if(F405_PROFILE STREQUAL "FinalRun")
-    target_compile_definitions(${firmware_target} PRIVATE APP_ENABLE_POST_GRAB_FILTER=0)
+    target_compile_definitions(${firmware_target} PRIVATE
+        APP_ENABLE_POST_GRAB_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1)
     add_custom_target(FinalRun DEPENDS ${firmware_target})
 endif()
 
