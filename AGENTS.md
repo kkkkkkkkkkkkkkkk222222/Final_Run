@@ -47,8 +47,8 @@
 涉及相关跨端接口或用户通知有更新时，直接读取对端固定入口并核对源提交和请求 ID。
 只更新与当次目标相关的要求及回执，不恢复历史任务，不要求用户逐次手工转交。
 
-- 本端 https://github.com/kkkkkkkkkkkkkkkk222222/F407-Rescue-Robot/blob/main/docs/CROSS_REPO_REQUESTS.md
-- RDK https://github.com/danmo-teng/shijue_fangan/blob/codex/gamepad-teleop/docs/CROSS_REPO_REQUESTS.md
+- 本端 https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/blob/Final_task/docs/CROSS_REPO_REQUESTS.md
+- RDK https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CROSS_REPO_REQUESTS.md
 
 发布、读取或镜像要求不等于审核通过或实施授权，也不建立常驻自动修改服务。
 接收方先核对自己的代码，说明问题、最小方案、成本和两端影响，可接受、缩小、替代或拒绝。

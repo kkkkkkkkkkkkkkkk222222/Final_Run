@@ -1,11 +1,11 @@
-# 两端当前要求与回执
+# 决赛两端当前要求与回执
 
-更新日期为 2026-11-18，时区 Asia/Shanghai。
+更新日期为 2026-11-19，时区 Asia/Shanghai。
 
 ## 固定入口与协作方式
 
-- F405 仓库为 `kkkkkkkkkkkkkkkk222222/F407-Rescue-Robot`，分支为 `main`。[本端固定入口](https://github.com/kkkkkkkkkkkkkkkk222222/F407-Rescue-Robot/blob/main/docs/CROSS_REPO_REQUESTS.md)
-- RDK 仓库为 `danmo-teng/shijue_fangan`，分支为 `codex/gamepad-teleop`。[对端固定入口](https://github.com/danmo-teng/shijue_fangan/blob/codex/gamepad-teleop/docs/CROSS_REPO_REQUESTS.md)
+- F405 决赛仓库为 `kkkkkkkkkkkkkkkk222222/Final_Run`，分支为 `Final_task`，预设为 `FinalRun`。[本端固定入口](https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/blob/Final_task/docs/CROSS_REPO_REQUESTS.md)
+- RDK 决赛仓库为 `danmo-teng/shijue_fangan-finals`。本轮按用户指定提交 `77f0ef1` 核对。[对端固定入口](https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CROSS_REPO_REQUESTS.md)
 
 涉及相关跨端接口或用户通知更新时，双方 AI 直接读取对端入口，核对源提交和请求 ID，
 在自己仓库记录当前相关要求及审核/实现回执。旧请求按 Git 历史取证，不自动恢复为当前任务。
@@ -14,7 +14,13 @@
 接收方先审查自己的当前代码，向人说明问题、最小方案、成本和两端影响，可接受、缩小、替代或拒绝。
 人保留知情、拒绝和选择权。已经明确批准的范围直接推进，超范围的重要取舍先由人决定，AI 不能互相授权。
 不得擅自新增新鲜度、反复握手、资格等待、停车/FAULT、高频巡检或无效测试。
-持久化规则见 [AGENTS.md](../AGENTS.md)，对端规则见 [CHANGE_WORKFLOW.md](https://github.com/danmo-teng/shijue_fangan/blob/codex/gamepad-teleop/docs/CHANGE_WORKFLOW.md)。
+持久化规则见 [AGENTS.md](../AGENTS.md)，对端规则见 [CHANGE_WORKFLOW.md](https://github.com/danmo-teng/shijue_fangan-finals/blob/main/docs/CHANGE_WORKFLOW.md)。
+
+## FINALS-PRIORITY-20261119 保留伤员优先并配套送达确认
+
+用户明确要求决赛沿用初赛取消优先前的伤员优先。指定上位 `77f0ef1` 的搜索、区域观察、聚堆选择及分离选侧已保留该策略。下位 `fd63ab7` 的 FinalRun 已关闭抓后自动滤除；普通选侧分离按 U=0 接续。新送达接口的 U=1 和本地超时首件状态仍需下位配套，单件运输也处于两端待适配阶段。[完整交接、源码依据和待办](FINALS_PRIORITY_HANDOFF.md)
+
+以下为决赛仓库建立时继承的初赛交接历史，具体提交对应其记录时点。
 
 ## MATCH-OPENING-GRAB-ORANGE-20261118 含核心物资直接合爪，单橙运输 86°
 
