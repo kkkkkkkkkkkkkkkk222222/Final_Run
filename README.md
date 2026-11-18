@@ -1,6 +1,6 @@
 # Final_task · F405 决赛工程
 
-决赛换物块前的源码快照保存在本地 Git 标签 `www-before-final`。在本目录使用 CLion 或下列 CMake 预设开发；当前分支为 `Final_task`，两个预设默认在本机构建。
+决赛换物块前的源码快照保存在本地 Git 标签 `www-before-final`。在本目录使用 CLion 或下列 CMake 预设开发；当前分支为 `Final_task`，预设默认在本机构建。
 
 在 CLion 重新加载 CMake，按用途选择同一行的预设和下载项。
 
@@ -8,8 +8,11 @@
 | --- | --- | --- | --- | --- |
 | 运动、舵机和地图调试 | MotionDebug | DAPLink MotionDebug | `build/F405/MotionDebug/MotionDebug.elf` | mode=5，service=1 |
 | 正式比赛 | NormalRun | DAPLink NormalRun | `build/F405/NormalRun/NormalRun.elf` | mode=5，service=2 |
+| 决赛换物块 | FinalRun | DAPLink FinalRun | `build/F405/FinalRun/FinalRun.elf` | mode=5，service=2 |
 
-两者均使用 STM32F405RG、RDK UART4 921600/8N1、程序器 USART1 115200/8N1 和协议 1.3。
+决赛代码在本目录维护，也可从相邻的 `WWW` 工程选择 `FinalRun` 构建。 在 CLion 顶部选择 `FinalRun - FinalRun` 和 `DAPLink FinalRun`。命令行可在本工程执行 `cmake --preset FinalRun` 和 `cmake --build --preset FinalRun`。
+
+三个预设均使用 STM32F405RG、RDK UART4 921600/8N1、程序器 USART1 115200/8N1 和协议 1.3。
 07 每个真实编码器相邻采样区间发布一次，标称 100Hz；08 有新源时最高 100Hz。
 本轮跨端要求与交付状态见 [固定协作入口](docs/CROSS_REPO_REQUESTS.md)。
 命令行依次执行 `cmake --preset NormalRun` 和 `cmake --build --preset NormalRun`；

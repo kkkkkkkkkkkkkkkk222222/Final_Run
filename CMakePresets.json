@@ -25,6 +25,13 @@
             "cacheVariables": {
                 "APP_AUTO_BACKUP": "OFF"
             }
+        },
+        {
+            "name": "FinalRun",
+            "inherits": "f405",
+            "cacheVariables": {
+                "APP_AUTO_BACKUP": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -35,6 +42,10 @@
         {
             "name": "NormalRun",
             "configurePreset": "NormalRun"
+        },
+        {
+            "name": "FinalRun",
+            "configurePreset": "FinalRun"
         }
     ]
 }
