@@ -671,6 +671,9 @@
 #define APP_LIFT_TRAVEL_ANGLE             85U
 #define APP_LIFT_MATERIAL_TRAVEL_ANGLE    86U
 #define APP_LIFT_ORANGE_TRAVEL_ANGLE      86U
+#ifndef APP_ENABLE_POST_GRAB_FILTER
+#define APP_ENABLE_POST_GRAB_FILTER       1
+#endif
 /* Temporary lift position for filtering and orange/core separation. */
 #define APP_LIFT_FIRST_GREEN_FILTER_ANGLE 82U
 #define APP_SINGLE_CARGO_FILTER_BACK_SPEED_MM_S 250.0f

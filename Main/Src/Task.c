@@ -3679,8 +3679,8 @@ static void task_process_injury_backoff(uint32_t now_ms)
 
 static bool task_single_filter_eligible(void)
 {
-  if (!single_filter_armed || !audit_received || !audit_host_stable || !audit_valid ||
-      audit_initial_stash) { return false; }
+  if (!APP_ENABLE_POST_GRAB_FILTER || !single_filter_armed || !audit_received ||
+      !audit_host_stable || !audit_valid || audit_initial_stash) { return false; }
   if (task_status.gripper_closed &&
       audit_last_semantic == AUDIT_SEMANTIC_MATERIAL_LEGAL && first_delivery_done &&
       audit_last_total_count >= 2U && audit_last_total_count <= 3U) {
