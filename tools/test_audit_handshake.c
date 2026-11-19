@@ -1005,6 +1005,36 @@ static void test_filter_recovery_restores_transport_lift(void)
 #if !APP_FINALS_DELIVERY_CONFIRMATION
 #error "Use FinalRun delivery confirmation semantics for this check"
 #endif
+static void test_finals_relook_and_repush(void)
+{
+  wire_prepare(TASK_GRAB_OBSERVE, 0);
+  configured_color = VISION_COLOR_BLUE;
+  task_status.gripper_closed = false;
+  task_capture_budget_begin();
+  Camera_SetAngle(APP_GRAB_VIEW_ANGLE);
+  task_status.claw_visible = true;
+  const VisionMissionCommand relook = {.command = VISION_CMD_APPROACH_TARGET,
+      .flags = VISION_CMD_VALID | VISION_CMD_DISTANCE_VALID | VISION_CMD_APPROACH_RANGE,
+      .target_y_mm = 12000, .heading_cdeg = VISION_APPROACH_PRE_GRAB_RELOOK, .vision_frame = 9};
+  wire_send(relook, 100, 1);
+  assert(command_accepted && state == TASK_SEARCH && accepted_context.pickup_relook);
+  wire_send(relook, 120, 2);
+  assert(command_accepted && state == TASK_SEARCH && distance_calls == 0);
+
+  prepare();
+  audit_received = audit_host_stable = audit_valid = true;
+  audit_last_semantic = AUDIT_SEMANTIC_MATERIAL_LEGAL;
+  for (unsigned count = 1; count <= 3; ++count) {
+    audit_last_total_count = count;
+    first_delivery_done = false;
+    assert(!task_delivery_needs_material_repush());
+    first_delivery_done = true;
+    assert(task_delivery_needs_material_repush() == (count >= 2));
+  }
+  audit_initial_stash = true;
+  assert(!task_delivery_needs_material_repush());
+}
+
 static void test_finals_delivery_confirmation(void)
 {
   const VisionMissionCommand enter = {
@@ -1110,6 +1140,7 @@ static void test_repush_confirmation(bool confirm_at_exit)
 int main(void)
 {
 #ifdef FINALRUN_DELIVERY_CHECK
+  test_finals_relook_and_repush();
   test_finals_delivery_confirmation();
   test_repush_confirmation(false);
   test_repush_confirmation(true);

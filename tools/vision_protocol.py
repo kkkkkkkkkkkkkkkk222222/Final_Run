@@ -90,6 +90,7 @@ APPROACH_RANGE_REOBSERVE = 1
 APPROACH_RANGE_PRE_GRAB = 2
 APPROACH_RANGE_ZONE_VIEW = 3
 APPROACH_ORANGE_TOP_VIEW = 4
+APPROACH_PRE_GRAB_RELOOK = 5
 SEPARATION_ORANGE_CORE_82 = 8200
 RELEASE_SAME_SIDE_BLUE = 1
 MODE_APPROACH_RANGE_WAIT = 52
@@ -391,7 +392,10 @@ def mission_frame(
                 heading_cdeg != heading):
             raise ValueError("orange filter requires black side, 100mm, lift86 and the site heading mode")
     if command in (CMD_DISPERSE_PILE, CMD_RELEASE_LEFT, CMD_RELEASE_RIGHT):
-        if target_x_mm or target_y_mm or heading_cdeg not in (0, SEPARATION_ORANGE_CORE_82):
+        view_turn = (command == CMD_DISPERSE_PILE and flags in (CMD_VALID, CMD_VALID | CMD_RED_SIDE)
+                     and target_x_mm in (-10, 10) and heading_cdeg == 0)
+        if ((target_x_mm and not view_turn) or (target_y_mm and not (view_turn and target_y_mm == 1)) or
+                heading_cdeg not in (0, SEPARATION_ORANGE_CORE_82)):
             raise ValueError("invalid separation lift payload")
         if command == CMD_DISPERSE_PILE and flags & CMD_KEEP_ORANGE and not flags & CMD_SIDE_VALID:
             raise ValueError("orange separation requires an explicit retained side")
@@ -421,10 +425,12 @@ def mission_frame(
             zone_view = (target_x_mm == 0 and target_y_mm == 10500 and
                          heading_cdeg == APPROACH_RANGE_ZONE_VIEW and
                          not flags & CMD_CLUSTER_TARGET)
+            relook = (heading_cdeg == APPROACH_PRE_GRAB_RELOOK and target_x_mm == 0 and
+                      target_y_mm == 12000 and not flags & CMD_CLUSTER_TARGET)
             orange_view = (target_x_mm == 0 and target_y_mm == 10500 and
                            heading_cdeg == APPROACH_ORANGE_TOP_VIEW)
             if (not flags & CMD_DISTANCE_VALID or flags & ~permitted or
-                    not (ordinary or pre_grab or zone_view or orange_view)):
+                    not (ordinary or pre_grab or zone_view or orange_view or relook)):
                 raise ValueError("invalid calibrated approach distance/pitch")
         elif flags & CMD_DISTANCE_VALID or not 0 <= target_x_mm < IMAGE_WIDTH or not 0 <= target_y_mm < IMAGE_HEIGHT:
             raise ValueError("invalid approach pixels")

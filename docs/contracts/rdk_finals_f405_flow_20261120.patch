@@ -1,0 +1,1469 @@
+From 052f789a66b36f21b4a56df6bfa8ffefcbd49319 Mon Sep 17 00:00:00 2001
+From: WW <2945944173@qq.com>
+Date: Fri, 20 Nov 2026 05:16:00 +0800
+Subject: [PATCH] Pair finals search, re-audit, separation and return with F405
+
+---
+ competition_rescue/attack_return.py           |   2 +-
+ competition_rescue/capture_roi.py             |   2 +
+ competition_rescue/protocol.py                |  13 +-
+ competition_rescue/run_competition_rescue.py  | 192 ++++++++++++--
+ competition_rescue/safe_zone_memory.py        |   6 +-
+ competition_rescue/search_zone_view.py        |   4 +-
+ competition_rescue/state_machine.py           | 242 +++++++++++++----
+ .../tests/test_orange_top_view.py             |   4 +-
+ competition_rescue/tests/test_runner.py       |  79 +++++-
+ .../tests/test_state_machine.py               | 244 ++++++++++++++++--
+ docs/CROSS_REPO_REQUESTS.md                   |   4 +
+ docs/FINALS_PORT.md                           |   4 +-
+ 12 files changed, 698 insertions(+), 98 deletions(-)
+
+diff --git a/competition_rescue/attack_return.py b/competition_rescue/attack_return.py
+index 49c3461..189e015 100644
+--- a/competition_rescue/attack_return.py
++++ b/competition_rescue/attack_return.py
+@@ -71,7 +71,7 @@ class AttackReturnRoute:
+                 self.centre_yaw_deg = centre_heading_deg(x_m, y_m)
+             return 0, 0, round(self.centre_yaw_deg*100)%36000
+         assert self.index in {1, 2}
+-        dx = self.return_point[0]-x_m if self.index == 1 else 0.0
++        dx = self.return_point[0]-x_m
+         dy = self.return_point[1]-y_m if self.index == 2 else 0.0
+         distance = math.hypot(dx, dy)
+         self.arrival_latched |= distance <= self.tolerance_m+1e-9
+diff --git a/competition_rescue/capture_roi.py b/competition_rescue/capture_roi.py
+index 98423b3..373dc7a 100644
+--- a/competition_rescue/capture_roi.py
++++ b/competition_rescue/capture_roi.py
+@@ -24,6 +24,8 @@ GREEN_CAPTURE_OVERLAP_RATIO = .45
+ 
+ 
+ def capture_overlap_for_class(class_name: str) -> float:
++    if class_name == "danger_cyan":
++        return .40
+     return GREEN_CAPTURE_OVERLAP_RATIO if class_name == "green_supply" else .60
+ 
+ 
+diff --git a/competition_rescue/protocol.py b/competition_rescue/protocol.py
+index 1045165..8cc5c58 100755
+--- a/competition_rescue/protocol.py
++++ b/competition_rescue/protocol.py
+@@ -69,6 +69,7 @@ CMD_APPROACH_RANGE = 1 << 6
+ APPROACH_RANGE_REOBSERVE = 1
+ APPROACH_RANGE_PRE_GRAB = 2  # Paired firmware: open claw, 140deg, finite 50mm.
+ APPROACH_RANGE_ZONE_VIEW = 3
++APPROACH_PRE_GRAB_RELOOK = 5  # Empty open claw: resume local search at 120 degrees.
+ APPROACH_ORANGE_TOP_VIEW = 4  # Stop alignment, camera120->105, resume alignment; no travel.
+ RELEASE_SAME_SIDE_BLUE = 1  # RELEASE_BOTH aux: original300mm escape +90deg, then SEARCH.
+ CMD_STAGE_ONLY = 1 << 6
+@@ -156,6 +157,8 @@ def mission_frame(
+         raise ValueError("invalid task completion payload")
+     if command in {CMD_ORANGE_CORE_FILTER, CMD_ORANGE_GATE_FILTER}:
+         raise ValueError("lift filter commands are disabled in finals")
++    if command == 0x19:
++        raise ValueError("retired pickup command")
+     if command == CMD_CORRIDOR_NUDGE:
+         required = CMD_VALID | CMD_SIDE_VALID
+         if (flags & required != required or flags & ~(required | CMD_RED_SIDE | CMD_TARGET_RIGHT) or
+@@ -239,8 +242,10 @@ def mission_frame(
+         zone_view = (aux_cdeg == APPROACH_RANGE_ZONE_VIEW and arg_a == 0 and arg_b == 10500
+                      and not flags & CMD_CLUSTER_TARGET)
+         orange_view = aux_cdeg == APPROACH_ORANGE_TOP_VIEW and arg_a == 0 and arg_b == 10500
++        relook = (aux_cdeg == APPROACH_PRE_GRAB_RELOOK and arg_a == 0 and arg_b == 12000 and
++                  not flags & CMD_CLUSTER_TARGET)
+         if (flags & ~allowed or flags & (CMD_VALID | CMD_DISTANCE_VALID) != (CMD_VALID | CMD_DISTANCE_VALID) or
+-                not (ordinary or pre_grab or zone_view or orange_view)):
++                not (ordinary or pre_grab or zone_view or orange_view or relook)):
+             raise ValueError("invalid fixed-pitch approach range request")
+     if flags & CMD_STAGE_ONLY and command not in {
+         CMD_APPROACH_TARGET,
+@@ -271,8 +276,10 @@ def mission_frame(
+     if command == CMD_RELEASE_BOTH and flags & CMD_KEEP_ORANGE:
+         raise ValueError("release both has no retained orange side")
+     if command in {CMD_DISPERSE_PILE, CMD_RELEASE_LEFT, CMD_RELEASE_RIGHT}:
+-        if arg_a != 0 or arg_b != 0 or aux_cdeg != 0:
+-            raise ValueError("finals separation uses a zero motion and lift payload")
++        view_turn = (command == CMD_DISPERSE_PILE and flags in {CMD_VALID, CMD_VALID | CMD_RED_SIDE}
++                     and arg_a in {-10, 10} and aux_cdeg == 0)
++        if (arg_a != 0 and not view_turn) or (arg_b != 0 and not (view_turn and arg_b == 1)) or aux_cdeg != 0:
++            raise ValueError("invalid finals separation payload")
+     if command == CMD_RELEASE_BOTH and aux_cdeg == SEPARATION_ORANGE_CORE_82:
+         raise ValueError("release both has no retained orange side")
+     if command == CMD_RELEASE_BOTH and aux_cdeg == RELEASE_SAME_SIDE_BLUE:
+diff --git a/competition_rescue/run_competition_rescue.py b/competition_rescue/run_competition_rescue.py
+index 2310788..5a0a308 100755
+--- a/competition_rescue/run_competition_rescue.py
++++ b/competition_rescue/run_competition_rescue.py
+@@ -11,7 +11,7 @@ from round_resume import match_progress, restore_progress, resume_config_frame
+ 
+ import argparse
+ from collections import Counter
+-from dataclasses import asdict, replace
++from dataclasses import asdict, dataclass, replace
+ import json
+ import hashlib
+ import queue
+@@ -33,7 +33,7 @@ import cv2
+ import numpy as np
+ 
+ from vision_replay import VisionReplay
+-from search_zone_view import clipped
++from search_zone_view import clipped, clearly_outside
+ from safe_zone_memory import SafeZoneCargoMemory
+ from sweep_boundaries import runtime_boundaries, corridor_polygon
+ from async_diagnostics import AsyncDiagnosticWriter
+@@ -92,6 +92,7 @@ from capture_grip_bands import GripBands, CLASSES as GRIP_CLASSES  # noqa: E402
+ from capture_roi import (  # noqa: E402
+     bbox_capture_roi_overlap_ratio,
+     CaptureRois,
++    CLAW_SPLIT_X,
+     bbox_in_capture_roi,
+     capture_side_for_bbox,
+     capture_overlap_for_class,
+@@ -113,6 +114,8 @@ from state_machine import (  # noqa: E402
+     StmSnapshot,
+     TrackedCargo,
+     VisionSnapshot,
++    STM_MODE_POST_GRAB_AUDIT,
++    STM_MODE_SAFE_SWEEP_DONE,
+     STM_MODE_TRANSPORT_AUDIT,
+     STM_MODE_RECOVERY_WAIT,
+     STM_MODE_NAVIGATE,
+@@ -505,8 +508,34 @@ def audit_from_cargo(
+         any(item.class_name == "injured_orange" for item in right) and
+         any(item.class_name in {"green_supply", "core_black"} for item in right)
+     )
++    blue_pair_geometry = None
++    outer_blue_target = midline_target = None
++    if (len(visible) == 2 and has_danger and not unassigned and not remembered_items and
++            len(all_names) == 2 and all_names <= {"danger_cyan", "green_supply", "core_black", "injured_orange"}):
++        wanted, blue = visible
++        if wanted.class_name == "danger_cyan":
++            wanted, blue = blue, wanted
++        wx, _, ww, _ = wanted.bbox
++        bx, _, bw, _ = blue.bbox
++        if wanted.class_name in MATERIAL_CLASSES:
++            wc, bc = wanted.center_px[0], blue.center_px[0]
++            if ((blue in left and wanted in left and bc < wc <= CLAW_SPLIT_X) or
++                    (blue in right and wanted in right and CLAW_SPLIT_X <= wc < bc)):
++                outer_blue_target = wanted.class_name
++            if ((blue in left and wanted in right and bc < CLAW_SPLIT_X < wc) or
++                    (wanted in left and blue in right and wc < CLAW_SPLIT_X < bc)):
++                midline_target = wanted.class_name
++        if ((wx >= CLAW_SPLIT_X and bx + bw <= CLAW_SPLIT_X and wanted in right and blue in left) or
++                (wx + ww <= CLAW_SPLIT_X and bx >= CLAW_SPLIT_X and wanted in left and blue in right)):
++            blue_pair_geometry = "separated"
++        elif wanted.center_px[0] != blue.center_px[0]:
++            gap_x = (wanted.center_px[0] + blue.center_px[0]) / 2
++            if gap_x != CLAW_SPLIT_X:
++                blue_pair_geometry = "left" if gap_x < CLAW_SPLIT_X else "right"
+     isolated_track_ids = isolated_track_ids or set()
+     return CargoAudit(
++        blue_pair_geometry=blue_pair_geometry, outer_blue_target=outer_blue_target, midline_target=midline_target,
++        visible_green_in_claw=any(item.visible and item.class_name == "green_supply" for item in items),
+         class_counts=tuple(sorted(Counter(item.class_name for item in visible).items())),
+         left_class_counts=tuple(sorted(Counter(item.class_name for item in left).items())),
+         right_class_counts=tuple(sorted(Counter(item.class_name for item in right).items())),
+@@ -907,27 +936,29 @@ def capture_image_quality(image, pixel_format: str, rois: CaptureRois,
+ 
+ 
+ class HeldCargoEvidence:
+-    """Positive 140-degree load evidence, scoped to physical claw holding.
++    """Retain incompatible classes across missed frames within one stationary claw review."""
+ 
+-    This is not a detector track or a fresh observation. It only prevents an
+-    already seen casualty/material mixture becoming legal on missed frames.
+-    Opening, releasing or separating the load clears the evidence.
+-    """
+-
+-    HOLD_MODES = frozenset({10, 11, 22, 23, 40, 48, 51})
++    REVIEW_MODES = frozenset({STM_MODE_POST_GRAB_AUDIT, STM_MODE_SAFE_SWEEP_DONE,
++                              STM_MODE_TRANSPORT_AUDIT, STM_MODE_RECOVERY_WAIT})
+ 
+     def __init__(self):
+         self.items: dict[str, tuple[TrackedCargo, int]] = {}
++        self.review = None
+         self.view_140_confirmed = False
+ 
+     def clear(self):
+         self.items.clear()
++        self.review = None
+         self.view_140_confirmed = False
+ 
+     def observe(self, cargo, stm, rois, frame_sequence, image_quality_reason, partial_orange_ids=()):
+-        if not stm.gripper_closed or stm.mode not in self.HOLD_MODES:
++        if not stm.gripper_closed or stm.mode not in self.REVIEW_MODES:
+             self.clear()
+             return
++        review = (stm.task_id, stm.mode)
++        if review != self.review:
++            self.clear()
++            self.review = review
+         if stm.camera_pitch_cdeg != 14000:
+             self.view_140_confirmed = False
+             return
+@@ -965,6 +996,86 @@ class HeldCargoEvidence:
+                      for name, (item, frame) in self.items.items() if name not in classes)
+ 
+ 
++@dataclass
++class GreenAlongsideOrange:
++    start_xy: tuple[float, float]
++    relative_center: tuple[int, int]
++    moved_with_load: bool = False
++
++
++class SingleOrangeCompanions:
++    """Follow visible pairs en route; only a live gate frame can supply cargo."""
++    MIN_TRAVEL_M = 0.20
++    MAX_RELATIVE_SHIFT_PX = 20
++
++    def __init__(self):
++        self.clear()
++
++    def clear(self):
++        self.task_id = None
++        self.orange_id = None
++        self.greens: dict[int, GreenAlongsideOrange] = {}
++
++    def gate_greens(self, cargo, mission, stm, pose, polygon, image_ok):
++        en_route = (stm.mode == STM_MODE_NAVIGATE and stm.accepted_command == CMD_NAVIGATE_WAYPOINT and
++                    mission.state == CompetitionState.NAVIGATE)
++        at_gate = stm.mode == STM_MODE_TRANSPORT_AUDIT and mission.state in (
++            CompetitionState.NAVIGATE, CompetitionState.TRANSPORT_AUDIT)
++        if (not (en_route or at_gate) or not stm.gripper_closed or stm.camera_pitch_cdeg != 14000 or
++                mission.carried_manifest != ("injured_orange",) or mission.carried_total_count != 1):
++            if self.task_id is not None:
++                self.clear()
++            return ()
++        if stm.task_id != self.task_id:
++            self.clear()
++            self.task_id = stm.task_id
++        if self.orange_id is None and en_route:
++            audit = mission.confirmed_load_audit
++            if audit is not None and audit.total_count == 1:
++                if audit.left_class == "injured_orange":
++                    self.orange_id = audit.left_stable_track_id
++                elif audit.right_class == "injured_orange":
++                    self.orange_id = audit.right_stable_track_id
++        if self.orange_id is None:
++            return ()
++
++        orange = next((t for t in cargo if t.track_id == self.orange_id and
++                       t.class_name == "injured_orange"), None)
++        current = {}
++        confirmed = []
++        if orange is not None:
++            ox, oy = orange.center_px
++            for green in cargo:
++                if green.class_name != "green_supply":
++                    continue
++                pair = self.greens.get(green.track_id)
++                if not (image_ok and orange.visible and green.visible):
++                    # A tracker can survive a missed detection. Keep only an already
++                    # proven association, and never use it as a current detection.
++                    if pair and pair.moved_with_load:
++                        current[green.track_id] = pair
++                    continue
++                if (bbox_overlap_ratio(green.bbox, orange.bbox) <= 0 or
++                        bbox_capture_roi_overlap_ratio(green.bbox, polygon) <= 0):
++                    continue
++                gx, gy = green.center_px
++                offset = (gx - ox, gy - oy)
++                if pair and math.dist(offset, pair.relative_center) > self.MAX_RELATIVE_SHIFT_PX:
++                    pair = None
++                if en_route and pose is not None and pose.valid and stm.motors_active:
++                    xy = (pose.x_m, pose.y_m)
++                    if pair is None:
++                        pair = GreenAlongsideOrange(xy, offset)
++                    elif math.dist(xy, pair.start_xy) >= self.MIN_TRAVEL_M:
++                        pair.moved_with_load = True
++                if pair is not None:
++                    current[green.track_id] = pair
++                    if at_gate and pair.moved_with_load:
++                        confirmed.append(green)
++        self.greens = current
++        return confirmed
++
++
+ def partial_orange_mixed_evidence(cargo, capture, polygon):
+     """Contact evidence for closed-claw separation, never single-injury permission."""
+     materials = [item for item in capture if item.class_name in MATERIAL_CLASSES]
+@@ -1030,6 +1141,8 @@ def make_vision_snapshot(
+     grip_bands: GripBands | None = None,
+     safe_zone_memory: SafeZoneCargoMemory | None = None,
+     black_delivery: SingleBlackDelivery | None = None,
++    orange_companions: SingleOrangeCompanions | None = None,
++    pose: PoseSnapshot | None = None,
+ ) -> VisionSnapshot:
+     # A cached rectangle from another camera angle cannot prove membership
+     # in the current view. Retain the existing per-class area requirement.
+@@ -1043,14 +1156,24 @@ def make_vision_snapshot(
+     for item in own_zone_cargo:
+         covers = [(name, box) for name, box in zone_boxes
+                   if bbox_inside_safe_zone(item.bbox, box, item.class_name)]
+-        if covers and not item.inside_safe_zone:
+-            item = replace(item, inside_safe_zone=True)
++        if covers:
++            item = replace(item, inside_safe_zone=True, safe_zone_name=covers[0] if len(covers) == 1 else None)
++        elif item.inside_safe_zone:
++            item = replace(item, safe_zone_name="safe_" + mission.settings.side)
+         if len(covers) == 1 and clipped(covers[0][1]):
+             clipped_candidates.append((item.track_id, covers[0][0]))
+         cargo_items.append(item)
+     cargo = tuple(cargo_items)
+     if safe_zone_memory is not None:
+-        cargo = safe_zone_memory.apply(cargo, stm.camera_pitch_cdeg)
++        reviewed_id = None
++        view = mission.zone_observation
++        if (view is not None and view.completed_frame is not None and stm.camera_pitch_cdeg == 10500 and
++                frame_sequence > view.completed_frame and observed_s is not None and observed_s > view.completed_s):
++            if any(item.visible and item.track_id == view.target.track_id and
++                   item.class_name == view.target.class_name and clearly_outside(item, zone_boxes, view.zone)
++                   for item in cargo):
++                reviewed_id = view.target.track_id
++        cargo = safe_zone_memory.apply(cargo, stm.camera_pitch_cdeg, reviewed_outside_id=reviewed_id)
+     rois = capture_rois or load_capture_rois(
+         VISION_ROOT / "config/capture_roi.json"
+     )
+@@ -1118,6 +1241,20 @@ def make_vision_snapshot(
+             for decision in roi_decisions:
+                 if decision['track_id']==item.track_id:
+                     decision.update(included=True,reason='partial_orange_mixed_separation_only',transport_eligible=False)
++    if orange_companions is not None:
++        companions = orange_companions.gate_greens(cargo, mission, stm, pose, rois.overall, not image_quality_reason)
++        if (capture_observation_valid and companions and any(t.track_id == orange_companions.orange_id
++                and t.class_name == "injured_orange" for t in capture_items)):
++            for green in companions:
++                if green.track_id in capture_side_by_track:
++                    continue  # The normal ROI already counted this live box.
++                capture_items.append(green)
++                side = capture_side_for_bbox(green.bbox, rois, overall_included=True)
++                capture_side_by_track[green.track_id] = side or ("left" if green.center_px[0] <= CLAW_SPLIT_X else "right")
++                for decision in roi_decisions:
++                    if decision["track_id"] == green.track_id:
++                        decision.update(included=True, reason="green_moved_with_confirmed_orange",
++                                        transport_eligible=False, orange_track_id=orange_companions.orange_id)
+     capture = tuple(capture_items)
+     remembered_capture = ()
+     if held_cargo_evidence is not None:
+@@ -1400,6 +1537,8 @@ def make_vision_snapshot(
+         observed_monotonic_s=time.monotonic() if observed_s is None else observed_s,
+         cargo=cargo,
+         capture_cargo=capture,
++        orange_companion_needs_gate_review=(orange_companions is not None and
++            any(pair.moved_with_load for pair in orange_companions.greens.values())),
+         zone_boxes=zone_boxes, clipped_zone_candidates=tuple(clipped_candidates),
+         safe_bbox=safe_bbox,
+         danger_ahead=danger,
+@@ -2095,7 +2234,7 @@ class CompetitionPlanner:
+             if command.audit_vision_frame is not None:
+                 frame = command.audit_vision_frame
+             self.protocol_vision_frame = frame & 0xFFFFFFFF
+-        elif command.opcode == CMD_DISPERSE_PILE and command.flags & CMD_DISPERSE_NEAR_KEEP:
++        elif command.opcode == CMD_DISPERSE_PILE and (command.flags & CMD_DISPERSE_NEAR_KEEP or command.arg_b == 1):
+             self.protocol_vision_frame = command.source_vision_frame or 0
+         owner = self.protocol_accepted if overlay else None
+         context = command_context_frame(
+@@ -2105,12 +2244,14 @@ class CompetitionPlanner:
+             self.protocol_vision_frame if (command.opcode in {
+                 CMD_APPROACH_TARGET, CMD_CARGO_AUDIT, CMD_ALIGN_SAFE_ZONE,
+             } or (command.opcode == CMD_DISPERSE_PILE and
+-                  command.flags & CMD_DISPERSE_NEAR_KEEP)) else 0,
++                  (command.flags & CMD_DISPERSE_NEAR_KEEP or command.arg_b == 1))) else 0,
+         )
+         packet = context + command.to_frame(self.sequence)
+         if trace_exit:
+             publish_start_ns = time.monotonic_ns()
+         write_command_frame(self.command_path, packet)
++        if command.opcode == CMD_APPROACH_TARGET and command.flags & CMD_APPROACH_RANGE and command.arg_a > 0:
++            self.mission.pickup_distance_published = True
+         if trace_exit:
+             published_ns = time.monotonic_ns()
+             try:
+@@ -2202,6 +2343,9 @@ class CompetitionPlanner:
+         if self.mission._original_recovery_lost(stm):
+             return True
+         state = self.mission.state
++        if (state == CompetitionState.INVALID_RELEASE and self.mission.invalid_release_context == "safe_zone_target"
++                and stm.mode in {24, 3}):
++            return False  # The release state itself consumes its matching DONE, not a generic recovery.
+         if stm.mode in {24, 3} and self.mission.committed_audit_handoff_mode is not None:
+             return True
+         if stm.mode == 41:
+@@ -2646,6 +2790,10 @@ class CompetitionPlanner:
+             return handoff
+         # Recovery is an observation from the MCU, not an ACK of the last
+         # requested action. Handle it before context_pending/camera pause.
++        if (self.mission.state == CompetitionState.INVALID_RELEASE and self.mission.invalid_release_context == "safe_zone_target"
++                and stm.mode in {24, 3} and not paused and not stm.fault):
++            matches = (stm.context_valid and stm.task_id == self.protocol_task and stm.action_id == self.protocol_action)
++            return self.mission.step(vision, pose, replace(stm, context_matches=matches), now)
+         if self._is_recovery_observation(stm):
+             self._adopt_recovery_context()
+             result = self.mission.step(vision, pose, replace(stm, context_matches=True), now)
+@@ -2741,6 +2889,15 @@ class CompetitionPlanner:
+             # forever after the actual image has recovered. Higher-view
+             # reacquisition belongs to that same dynamic visual action.
+             return self.mission.step(vision, pose, replace(stm, context_matches=matches), now)
++        if (self.mission.state == CompetitionState.SEARCH and stm.mode == STM_MODE_SEARCH and
++                stm.fresh and stm.context_valid and stm.action_status & 1 and not stm.gripper_closed and
++                not matches and self.protocol_last_output is not None and
++                (self.protocol_last_output.command is None or
++                 self.protocol_last_output.command.opcode in {CMD_HOLD, CMD_PAUSE})):
++            # Both ends are searching with no pending mechanical request. Follow the actual owner
++            # so an old HOLD cannot bypass target selection and station-angle accounting forever.
++            self._adopt_recovery_context()
++            return self.mission.step(vision, pose, replace(stm, context_matches=True), now)
+         if (self.protocol_last_output is not None and stm.fresh and
+                 not matches and stm.mode != 41 and not stm.fault):
+             pending = self.protocol_last_output.command
+@@ -3756,6 +3913,7 @@ def main() -> int:
+     recent_carried_track_ids: tuple[int, ...] = ()
+     recent_carried_pitch_cdeg = 0
+     held_cargo_evidence = HeldCargoEvidence()
++    orange_companions = SingleOrangeCompanions()
+     safe_zone_memory = SafeZoneCargoMemory()
+     black_delivery = SingleBlackDelivery()
+     competition_started = False
+@@ -3846,6 +4004,7 @@ def main() -> int:
+         recent_carried_track_ids = ()
+         recent_carried_pitch_cdeg = 0
+         held_cargo_evidence.clear()
++        orange_companions.clear()
+         safe_zone_memory.clear()
+         black_delivery.owner = None
+         startup_details.update(side=side,start_zone=start_zone,opening_strategy=opening_strategy,
+@@ -4145,7 +4304,8 @@ def main() -> int:
+                     grip_bands=grip_bands,
+                     recent_carried_track_ids=recent_carried_track_ids,
+                     recent_carried_pitch_cdeg=recent_carried_pitch_cdeg,
+-                    held_cargo_evidence=held_cargo_evidence,
++                    held_cargo_evidence=held_cargo_evidence, orange_companions=orange_companions,
++                    pose=planner.snapshot()[1] if mission.carried_manifest == ("injured_orange",) else None,
+                     safe_zone_memory=safe_zone_memory, black_delivery=black_delivery,
+                 )
+                 if latest_vision.carried_reference_track_ids:
+diff --git a/competition_rescue/safe_zone_memory.py b/competition_rescue/safe_zone_memory.py
+index 3aae258..a0d157f 100644
+--- a/competition_rescue/safe_zone_memory.py
++++ b/competition_rescue/safe_zone_memory.py
+@@ -24,7 +24,7 @@ class SafeZoneCargoMemory:
+                 math.hypot(nx + nw / 2 - x - w / 2,
+                            ny + nh / 2 - y - h / 2) <= max(w, h, nw, nh))
+ 
+-    def apply(self, cargo, pitch):
++    def apply(self, cargo, pitch, *, reviewed_outside_id=None):
+         if pitch != self.pitch:
+             self.clear()
+             self.pitch = pitch
+@@ -34,9 +34,9 @@ class SafeZoneCargoMemory:
+             held_missing_track = (old is not None and not item.visible and
+                                   old.class_name == item.class_name and
+                                   old.hits == item.hits and old.bbox == item.bbox)
+-            if (not item.inside_safe_zone and old is not None and old.inside_safe_zone and
++            if (item.track_id != reviewed_outside_id and not item.inside_safe_zone and old is not None and old.inside_safe_zone and
+                     (held_missing_track or (item.visible and self.continuous(old, item)))):
+-                item = replace(item, inside_safe_zone=True)
++                item = replace(item, inside_safe_zone=True, safe_zone_name=old.safe_zone_name)
+             result.append(item)
+         # Keep the tracker's existing missed-frame continuity, but removal of
+         # the track breaks the chain. No permanent ID blacklist or old rectangle.
+diff --git a/competition_rescue/search_zone_view.py b/competition_rescue/search_zone_view.py
+index a4fa2d8..d2412ad 100644
+--- a/competition_rescue/search_zone_view.py
++++ b/competition_rescue/search_zone_view.py
+@@ -8,7 +8,7 @@ if TYPE_CHECKING:
+ 
+ @dataclass
+ class ZoneObservation:
+-    zone: str
++    zone: str | None
+     target: 'TrackedCargo'
+     pixel_frame: int
+     request: 'CommandRequest | None' = None
+@@ -16,6 +16,8 @@ class ZoneObservation:
+     completed_s: float = 0.
+     realign: 'CommandRequest | None' = None
+     leaving: bool = False
++    start_pitch: int = 12000
++    cluster_alignment: bool = False
+ 
+ 
+ def clipped(box):
+diff --git a/competition_rescue/state_machine.py b/competition_rescue/state_machine.py
+index 37884d5..3207e6d 100755
+--- a/competition_rescue/state_machine.py
++++ b/competition_rescue/state_machine.py
+@@ -29,7 +29,7 @@ from protocol import (
+     CMD_APPROACH_TARGET,
+     CMD_APPROACH_RANGE,
+     APPROACH_RANGE_REOBSERVE,
+-    APPROACH_RANGE_PRE_GRAB,
++    APPROACH_RANGE_PRE_GRAB, APPROACH_PRE_GRAB_RELOOK,
+     APPROACH_RANGE_ZONE_VIEW,
+     APPROACH_ORANGE_TOP_VIEW,
+     CMD_CARGO_AUDIT,
+@@ -252,6 +252,7 @@ class TrackedCargo:
+     misses: int = 0
+     visible: bool = True
+     inside_safe_zone: bool = False
++    safe_zone_name: str | None = None
+ 
+     @property
+     def center_px(self) -> tuple[int, int]:
+@@ -304,6 +305,10 @@ class CargoAudit:
+     near_claw_green_id: int | None = None
+     near_claw_frame: int = 0
+     first_green_core_conflict: bool = False
++    outer_blue_target: str | None = None
++    midline_target: str | None = None
++    blue_pair_geometry: str | None = None
++    visible_green_in_claw: bool = False
+ 
+     @property
+     def side_composition(self) -> tuple:
+@@ -397,6 +402,7 @@ class VisionSnapshot:
+     delivery_target_outside_track_ids: tuple[int, ...] = ()
+     safe_zone_filter_blocked: bool = False
+     carried_incompatible_cargo: tuple[TrackedCargo, ...] = ()
++    orange_companion_needs_gate_review: bool = False
+     low_conf_green_seen: bool = False
+     safe_corridor_polygon: tuple[tuple[int, int], ...] = ()
+     safe_corridor_obstacle_class: str | None = None
+@@ -852,7 +858,7 @@ class CompetitionMission:
+         self.return_station_scan = False
+         self.return_search_mode_seen = False
+         self.return_arrival_latched = False
+-        self.return_after_delivery = False
++        self.return_search_station: int | None = None
+         self.stash_zero_initial_ack: int | None = None
+         self.stash_handoff_initial_ack: int | None = None
+         self.cargo_recheck_pending = False
+@@ -1021,6 +1027,7 @@ class CompetitionMission:
+         self.range_frame_floor = 0
+         self.range_pitch_cdeg = 0
+         self.range_epoch = 0
++        self.pickup_distance_published = False
+         self.orange_top_view_command = None
+         self.orange_top_view_frame_floor = None
+         self.zone_unresolved = {}
+@@ -1032,6 +1039,8 @@ class CompetitionMission:
+         self.nudge_forward_position = False
+         self.corridor_nudge_command: CommandRequest | None = None
+         self.corridor_nudge_attempted = False
++        self.blue_pair_turns = 0
++        self.blue_pair_live_target = None
+ 
+         self.delivery_window: deque[bool] = deque(maxlen=settings.delivery_window_frames)
+         self.delivery_window_started_s: float | None = None
+@@ -1485,6 +1494,7 @@ class CompetitionMission:
+             self.last_selected_track_ids = (candidate.track_id,)
+ 
+     def _select_batch(self, batch: CargoBatch) -> None:
++        self.pickup_distance_published = False
+         self.nudge_forward_position = False
+         self._clear_orange_top_view()
+         self.transport_separation_active = False
+@@ -1502,6 +1512,8 @@ class CompetitionMission:
+         self.transport_audit_handoff_active = False
+         if self.disperse_attempts == 0 and not self.recovery_task_locked:
+             self.task_generation += 1
++            self.blue_pair_turns = 0
++            self.blue_pair_live_target = None
+             self.corridor_nudge_attempted = False
+             self.corridor_nudge_command = None
+             self.delivery_counted_for_batch = False
+@@ -1776,6 +1788,10 @@ class CompetitionMission:
+         # local class_counts/green counts that the MCU never receives.
+         signature = ("INVALID", (payload or self._audit_payload(audit)).semantic_signature)
+         # A confirmed invalid grab can drive one claw or a lateral move.
++        if (audit.blue_pair_geometry and
++                self.state in {CompetitionState.CAPTURE_AUDIT, CompetitionState.AUDIT_CONFIRM} and
++                not self.post_grab_audit_active and not self.safe_sweep_reaudit_active):
++            signature += (("blue_pair_geometry", audit.blue_pair_geometry, audit.outer_blue_target, audit.midline_target),)
+         if self.post_grab_audit_active and audit.total_count > 1:
+             signature += (audit.side_composition,)
+         return signature + (("near_keep", audit.near_keep_side),) if audit.near_keep_side is not None else signature
+@@ -2026,8 +2042,9 @@ class CompetitionMission:
+         if view.request is None:
+             target = next((i for i in vision.cargo if i.visible and i.track_id == view.target.track_id
+                            and i.class_name == view.target.class_name), None)
+-            if (target is None or stm.gripper_closed or stm.camera_pitch_cdeg != 12000 or
+-                    vision.range_pitch_cdeg != 12000):
++            if (target is None or stm.gripper_closed or view.start_pitch not in (10500, 12000) or
++                    stm.camera_pitch_cdeg != view.start_pitch or
++                    vision.range_pitch_cdeg != view.start_pitch):
+                 view.leaving = True
+                 return output(self._hold(), "zone_view_alignment_lost")
+             view.target = target
+@@ -2039,7 +2056,10 @@ class CompetitionMission:
+             else:
+                 view.pixel_frame = vision.frame_sequence
+                 self._mark_target_seen(target, now)
+-                return output(self._approach_command(target), "zone_view_align")
++                pixel = self._approach_command(target)
++                if view.cluster_alignment:
++                    pixel = replace(pixel, flags=pixel.flags | CMD_CLUSTER_TARGET)
++                return output(pixel, "zone_view_align")
+             return output(view.request, "zone_view_lift")
+         if view.completed_frame is None:
+             if (paired and stm.mode == STM_MODE_APPROACH_RANGE_WAIT and
+@@ -2055,6 +2075,8 @@ class CompetitionMission:
+                        and i.bbox[0] < x+w and i.bbox[0]+i.bbox[2] > x]
+             if (len(matches) == 1 and matches[0].track_id == view.target.track_id and
+                     clearly_outside(matches[0], vision.zone_boxes, view.zone)):
++                self.selected_batch = replace(self.selected_batch, track_ids=(matches[0].track_id,),
++                    classes=(matches[0].class_name,), destination="injury" if matches[0].class_name == "injured_orange" else "material")
+                 self._mark_target_seen(matches[0], now)
+                 view.realign = self._approach_command(matches[0])
+                 self._reset_delivery_evidence()
+@@ -2628,6 +2650,11 @@ class CompetitionMission:
+ 
+     def _observe_confirmed_load(self, vision: VisionSnapshot, stm: StmSnapshot) -> bool:
+         """Revoke reuse on real change, never manufacture a current-frame count."""
++        if (vision.orange_companion_needs_gate_review and self.carried_manifest == ("injured_orange",) and
++                self.state == CompetitionState.NAVIGATE):
++            # Take the normal staging-point review, including after an obstacle-pickup recovery.
++            self.recovered_injury_audit_reuse = False
++            self.transport_load_reuse_active = False
+         prior = self.confirmed_load_audit
+         if prior is None:
+             return False
+@@ -2720,18 +2747,36 @@ class CompetitionMission:
+             return None
+         ids = {self.locked_target_track_id, self.cluster_target_track_id}
+         ids.update(self.selected_batch.track_ids)
+-        if not any(item.visible and item.inside_safe_zone and item.track_id in ids
+-                   for item in vision.cargo):
++        target = next((item for item in vision.cargo if item.visible and item.inside_safe_zone
++                       and item.track_id in ids), None)
++        if target is None:
+             return None
+-        # A distant target can first be covered by a zone during pixel alignment.
+-        # No finite approach has been requested, so use the stationary loss exit.
+         if (self.state in {CompetitionState.APPROACH, CompetitionState.CLUSTER_APPROACH} and
+-                stm.mode == STM_MODE_APPROACH_TARGET and stm.camera_pitch_cdeg in {10500, 12000} and
+-                self.range_command is None):
+-            self._begin_search_recovery(vision, now)
+-            return replace(self._search_recovery_output(vision, stm, now),
+-                           event="safe_zone_target_reselect", reason="safe_zone_target_reselect",
+-                           message="对准时目标被安全区覆盖，原地结束对准并重新搜索")
++                not self.pickup_distance_published and
++                stm.mode in {STM_MODE_SEARCH, STM_MODE_APPROACH_TARGET, STM_MODE_APPROACH_RANGE_WAIT}):
++            # SEARCH may still describe the previous action immediately after publishing a lock.
++            # Continue pixel alignment on the current task; never send a release for this race.
++            cluster = self.state == CompetitionState.CLUSTER_APPROACH
++            anchor = self.cluster_target_track_id if cluster else self.locked_target_track_id
++            if anchor is not None:
++                target = next((i for i in vision.cargo if i.visible and i.inside_safe_zone and i.track_id == anchor), None)
++                if target is None:
++                    return None
++            zone = target.safe_zone_name or dict(vision.clipped_zone_candidates).get(target.track_id)
++            self._clear_range_approach()
++            self.zone_observation = ZoneObservation(zone, target, vision.frame_sequence,
++                start_pitch=stm.camera_pitch_cdeg, cluster_alignment=cluster)
++            self._set_state(CompetitionState.SEARCH_ZONE_VIEW, now)
++            self._mark_target_seen(target, now)
++            pixel = self._approach_command(target)
++            if cluster:
++                pixel = replace(pixel, flags=pixel.flags | CMD_CLUSTER_TARGET)
++            return CompetitionOutput(self.state, pixel, "远目标被安全区盖住，原地对准并抬头复审",
++                                     self.selected_batch, event="locked_zone_view", reason="zone_view_align")
++        if (self.state in {CompetitionState.APPROACH, CompetitionState.CLUSTER_APPROACH} and
++                not self.pickup_distance_published and stm.mode not in {STM_MODE_APPROACH_RANGE_MOVE,
++                STM_MODE_CAPTURE_AUDIT, STM_MODE_CLUSTER_CAPTURE_AUDIT, STM_MODE_CLUSTER_READY}):
++            return None  # An unrelated or recovery mode is not permission to execute a claw escape.
+         # Must precede finite-range resend and the ordinary missing-target grace.
+         self._clear_range_approach()
+         result = self._start_capture_abandon(CargoAudit(), stm, now)
+@@ -3187,7 +3232,7 @@ class CompetitionMission:
+             self.audit_hits = continued_hits
+             self.audit_last_frame_sequence = continued_frame_sequence
+             return self._audit_output(vision, stm, now)
+-        if (self._separation_limit_reached() and
++        if (self._separation_limit_reached(self.pending_audit) and
+                 not self._orange_separation_rechecked_empty() and
+                 not self.pending_audit_valid and stm.fresh and
+                 stm.context_valid and stm.context_matches and
+@@ -3486,6 +3531,10 @@ class CompetitionMission:
+             release_side = self.pending_audit_release_side
+             final_release = self.pending_audit_final
+             release_context = self.pending_audit_release_context
++            if (not valid and self._reviewing_blue_pair_turn() and abs(self.blue_pair_turns) == 2 and
++                    not self._blue_pair_separated(audit) and not self._first_green_still_visible(audit)):
++                self._clear_pending_audit()
++                return self._start_capture_abandon(audit, stm, now)
+             if valid and self.safe_sweep_reaudit_active:
+                 self.committed_audit_handoff_mode = stm.mode
+             else:
+@@ -3999,6 +4048,21 @@ class CompetitionMission:
+         return category in MATERIAL_CLASSES | {"mixed_material"}
+ 
+     def _preferred_keep_side(self, audit: CargoAudit) -> str | None:
++        if (audit.danger_present and self.selected_batch and not self.selected_batch.initial_stash and
++                audit.left_count + audit.right_count == audit.total_count):
++            eligible = MATERIAL_CLASSES | {"injured_orange"} if self.first_common_delivered else {"green_supply"}
++            left = dict(audit.left_class_counts)
++            right = dict(audit.right_class_counts)
++            if left or right:
++                left_blue, right_blue = left.get("danger_cyan", 0), right.get("danger_cyan", 0)
++                left_useful = sum(left.get(name, 0) for name in eligible)
++                right_useful = sum(right.get(name, 0) for name in eligible)
++                if left_blue and not right_blue and right_useful:
++                    return "right"
++                if right_blue and not left_blue and left_useful:
++                    return "left"
++                if left_blue and right_blue and left_useful != right_useful:
++                    return "left" if left_useful > right_useful else "right"
+         legal = self._post_first_preferred_keep_side(audit)
+         if legal is not None:
+             return legal
+@@ -4109,16 +4173,53 @@ class CompetitionMission:
+                 return True
+         return False
+ 
++    def _reviewing_blue_pair_turn(self) -> bool:
++        return bool(self.blue_pair_turns) and self.cargo_recheck_pending and self.disperse_context == "blue_pair_view"
++
++    def _midline_between_pair(self, audit: CargoAudit, direction: int) -> bool:
++        return (self.blue_pair_live_target is not None and audit.midline_target == self.blue_pair_live_target and
++                (audit.right_class if direction > 0 else audit.left_class) == audit.midline_target)
++
++    def _blue_pair_separated(self, audit: CargoAudit) -> bool:
++        return (audit.blue_pair_geometry == "separated" or
++                (self._reviewing_blue_pair_turn() and self._midline_between_pair(audit, self.blue_pair_turns)))
++
+     def _start_danger_release(
+         self,
+         audit: CargoAudit,
+         stm: StmSnapshot,
+         now: float,
+     ) -> CompetitionOutput:
+-        if self._same_side_blue_mixture(audit) and self._separation_limit_reached():
++        classes = dict(audit.class_counts)
++        if (self.selected_batch and (self.first_common_delivered or "green_supply" in classes) and
++                classes != {"core_black": 1, "danger_cyan": 1} and
++                not self.selected_batch.initial_stash and not stm.gripper_closed and
++                stm.mode in {STM_MODE_CAPTURE_AUDIT, STM_MODE_CLUSTER_READY} and
++                not self.safe_sweep_reaudit_active and not self._separation_limit_reached(audit)):
++            blue = audit.blue_pair_geometry
++            reviewing = self._reviewing_blue_pair_turn()
++            if (not self._blue_pair_separated(audit) and blue in {"left", "right"} and
++                    (reviewing or min(audit.left_count, audit.right_count) == 0)):
++                angle = 10 if blue == "left" else -10
++                if self.blue_pair_turns in (0, angle // 10):
++                    if not reviewing:
++                        self.blue_pair_live_target = audit.outer_blue_target
++                    self._set_state(CompetitionState.DISPERSE, now)
++                    self._arm_disperse(stm, None)
++                    self.disperse_context = "blue_pair_view"
++                    self.disperse_command = replace(self.disperse_command, arg_a=angle)
++                    return CompetitionOutput(self.state, self.disperse_command,
++                        f"蓝和目标未分清，朝两块之间转10°复看（第{abs(self.blue_pair_turns) + 1}次，最多10°）",
++                        self.selected_batch, audit, event="blue_pair_view_turn", motion_expected=True,
++                        tx_policy="disperse_command", expected_stm_modes=(STM_MODE_DISPERSE_DONE,))
++                if not self._first_green_still_visible(audit):
++                    return self._start_capture_abandon(audit, stm, now)
++            if reviewing and not self._blue_pair_separated(audit) and not self._first_green_still_visible(audit):
++                return self._start_capture_abandon(audit, stm, now)
++        if self._same_side_blue_mixture(audit) and self._separation_limit_reached(audit):
+             return self._start_capture_abandon(audit, stm, now, limit_reached=True)
+         keep = self._preferred_keep_side(audit)
+-        if keep is not None and stm.mode != STM_MODE_RECOVERY_WAIT and not self._separation_limit_reached():
++        if keep is not None and stm.mode != STM_MODE_RECOVERY_WAIT and not self._separation_limit_reached(audit):
+             self.cluster_keep_side = keep
+             self.post_grab_audit_active = False
+             self.post_grab_camera_ready = None
+@@ -4291,6 +4392,19 @@ class CompetitionMission:
+         target = self._target_for_batch(vision)
+         region = (dict(vision.pre_grab_regions).get(target.track_id)
+                   if target is not None and target.visible else None)
++        if (target is None and vision.capture_observation_valid and audit is not None and
++                audit.total_count == 0 and stm.camera_pitch_cdeg == 14000 and stm.claw_visible and
++                vision.frame_sequence > 0 and not self.disperse_attempts and not self.selected_batch.initial_stash):
++            wanted = MATERIAL_CLASSES | {"injured_orange"} if self.first_common_delivered else {"green_supply"}
++            if any(t.class_name in wanted for t in self._visible_cargo(vision)):
++                self.range_epoch += 1
++                self.pre_grab_completed_frame = None
++                self.pre_grab_command = CommandRequest(CMD_APPROACH_TARGET,
++                    self._side_flags() | CMD_DISTANCE_VALID | CMD_APPROACH_RANGE, 0, 12000,
++                    APPROACH_PRE_GRAB_RELOOK, source_vision_frame=vision.frame_sequence)
++                self._set_state(CompetitionState.PRE_GRAB_ADVANCE, now)
++                return CompetitionOutput(self.state, self.pre_grab_command, "原目标未认回，空爪抬到120°就地重选",
++                    self.selected_batch, event="pre_grab_relook_start", reason="pre_grab_relook")
+         if target is not None and target.class_name not in configured:
+             return None
+         if (stm.camera_pitch_cdeg != 14000 or not stm.claw_visible or
+@@ -4319,6 +4433,15 @@ class CompetitionMission:
+     def _pre_grab_advance_output(
+         self, vision: VisionSnapshot, stm: StmSnapshot, now: float,
+     ) -> CompetitionOutput:
++        if (self.pre_grab_command is not None and self.pre_grab_command.aux == APPROACH_PRE_GRAB_RELOOK and
++                stm.mode not in {STM_MODE_APPROACH_RECOVER, STM_MODE_CAPTURE_RETURN_WAIT}):
++            if (stm.mode == STM_MODE_SEARCH and stm.context_matches and
++                    stm.accepted_command == CMD_APPROACH_TARGET and stm.action_status & 1 and
++                    stm.camera_pitch_cdeg == 12000):
++                self.pre_grab_command = None
++                return self._audit_reacquire_output(vision, stm, now)
++            return CompetitionOutput(self.state, self.pre_grab_command, "抬头后按搜索规则重新选目标",
++                self.selected_batch, reason="pre_grab_relook")
+         if stm.mode in {STM_MODE_APPROACH_RECOVER, STM_MODE_CAPTURE_RETURN_WAIT, STM_MODE_SEARCH}:
+             self.pre_grab_command = None
+             self.pre_grab_completed_frame = None
+@@ -4362,6 +4485,9 @@ class CompetitionMission:
+         waiting = self._audit_observation_wait(vision, stm, now)
+         if waiting is not None:
+             return waiting
++        if (self._reviewing_blue_pair_turn() and self.audit_recheck_started_s is not None and
++                vision.observed_monotonic_s is not None and vision.observed_monotonic_s < self.audit_recheck_started_s):
++            return self._audit_placeholder("audit_recheck_wait_frame")
+         if (self.audit_recheck_frame_floor is not None and
+                 vision.frame_sequence <= self.audit_recheck_frame_floor):
+             return self._audit_placeholder("audit_recheck_wait_frame")
+@@ -5627,12 +5753,12 @@ class CompetitionMission:
+             return None
+         repushed = stm.mode == STM_MODE_REPUSH_EXIT
+         basis = "delivery_repush_finished" if repushed else "delivery_push_timeout"
+-        message = "三件材料已放下并完成重推流程，按原流程退出" if repushed else "下位已结束超时推送并放下，沿原退出流程返回搜索点"
++        message = "多件材料已放下并完成重推流程，按原流程退出" if repushed else "下位已结束超时推送并放下，沿原退出流程返回搜索点"
+         self._finish_delivery(stm, now, basis=basis, message=message, event="")
+         if not repushed:
+             self.delivery_timeout_reason = basis
+         self._clear_selected_batch()
+-        self._begin_return(stm, now, after_delivery=True)
++        self._begin_return(stm, now, station=self.delivery_search_point_number)
+         return replace(self._return_center_output(pose, now, message), event=basis+"_exit", reason=basis)
+ 
+     def _delivery_timeout_output(
+@@ -6113,7 +6239,7 @@ class CompetitionMission:
+                                                             self.search_scan_direction)
+             payload = (1, route.scan_direction, payload[2])
+         segment_done = complete and stm.mode == STM_MODE_REMOTE_ACTION and (
+-            route.finite_back or route.turning or payload[0] == 0)
++            route.index == 1 or route.finite_back or route.turning or payload[0] == 0)
+         if segment_done:
+             if route.finite_back:
+                 if not pose.valid:
+@@ -6150,13 +6276,13 @@ class CompetitionMission:
+                 tx_policy="pause",
+                 reason="return_pose_stale",
+             )
+-        target_x, target_y = (pose.x_m, pose.y_m) if self.return_after_delivery else (0.0, 0.0)
++        target_x, target_y = (pose.x_m, pose.y_m) if self.return_search_station is not None else (0.0, 0.0)
+         if self.obstacle_route is not None and self.obstacle_route.recover_after_delivery:
+             target_x, target_y = self.obstacle_route.return_point
+-        # Delivery RETURN D=0 only finishes the local exit. After matching
+-        # SEARCH, the one-leg transfer targets the saved station directly.
++        # D=0 lets the MCU finish its stash backoff or local delivery exit.
++        # The subsequent station move starts at the actual post-retreat pose.
+         tolerance = (
+-            self.settings.post_delivery_return_tolerance_m if self.return_after_delivery
++            self.settings.post_delivery_return_tolerance_m if self.return_search_station is not None
+             else self.settings.return_zero_tolerance_m
+         )
+         dx, dy = target_x - pose.x_m, target_y - pose.y_m
+@@ -6182,10 +6308,10 @@ class CompetitionMission:
+         )
+ 
+     def _begin_return(
+-        self, stm: StmSnapshot, now: float, *, after_delivery: bool = False,
++        self, stm: StmSnapshot, now: float, *, station: int | None = None,
+     ) -> None:
+         self.return_arrival_latched = False
+-        self.return_after_delivery = after_delivery
++        self.return_search_station = station
+         self.return_initial_ack = (
+             stm.acknowledged_sequence if stm.fresh else None
+         )
+@@ -6675,7 +6801,13 @@ class CompetitionMission:
+                 self.separation_progress_attempt = self.disperse_attempts
+         self.separation_reviewed_attempt = self.disperse_attempts
+ 
+-    def _separation_limit_reached(self) -> bool:
++    def _first_green_still_visible(self, audit: CargoAudit | None) -> bool:
++        return (audit is not None and audit.visible_green_in_claw and not self.first_common_delivered and
++                self.selected_batch is not None and not self.selected_batch.initial_stash)
++
++    def _separation_limit_reached(self, audit: CargoAudit | None = None) -> bool:
++        if self._first_green_still_visible(audit):
++            return self.disperse_attempts >= 5
+         # Keep the old two-failure policy, but successful reduction earns another
+         # attempt. Total accepted actions remain visible in the existing log.
+         return (self.separation_reviewed_attempt - self.separation_progress_attempt >=
+@@ -6716,7 +6848,7 @@ class CompetitionMission:
+         self, audit: CargoAudit, stm: StmSnapshot, now: float, *, danger_separation: bool = False
+     ) -> CompetitionOutput:
+         self._review_separation_result(audit)
+-        if self._separation_limit_reached():
++        if self._separation_limit_reached(audit):
+             return self._start_capture_abandon(audit, stm, now, limit_reached=True)
+         if audit.danger_present and not danger_separation:
+             return self._start_danger_release(audit, stm, now)
+@@ -6780,6 +6912,17 @@ class CompetitionMission:
+             self.disperse_initial_ack,
+             self.disperse_command_accepted,
+         )
++        if (self.disperse_context == "blue_pair_view" and self.disperse_command.arg_b == 0 and
++                stm.mode == STM_MODE_REMOTE_ACTION and stm.context_valid and stm.context_matches and
++                stm.accepted_command == CMD_DISPERSE_PILE and stm.action_status & 1 and
++                stm.camera_pitch_cdeg == 14000 and stm.claw_visible and vision.capture_observation_valid and
++                vision.frame_sequence > 0 and vision.capture_audit is not None and
++                self._midline_between_pair(vision.capture_audit, self.disperse_command.arg_a)):
++            # Latch the brake on this action, even if a later picture loses a box.
++            self.disperse_command = replace(self.disperse_command, arg_b=1, source_vision_frame=vision.frame_sequence)
++            return CompetitionOutput(self.state, self.disperse_command, "中线已在两块之间，请求停车复审",
++                self.selected_batch, vision.capture_audit, event="blue_pair_midline_stop",
++                tx_policy="disperse_command", expected_stm_modes=(STM_MODE_DISPERSE_DONE,))
+         if self.disperse_command_accepted and self.disperse_context == "selective":
+             self._count_separation_acceptance(
+                 "right" if self.disperse_command.flags & CMD_TARGET_RIGHT else "left"
+@@ -6846,11 +6989,13 @@ class CompetitionMission:
+             stm.claw_visible and
+             stm.camera_pitch_cdeg == 14000 and
+             self.disperse_command_accepted and
+-            (not self._first_green_core_conflict_active() or
++            ((self.disperse_context != "blue_pair_view" and not self._first_green_core_conflict_active()) or
+              (stm.context_valid and stm.context_matches and
+               stm.accepted_command == CMD_DISPERSE_PILE and bool(stm.action_status & 2)))
+         ):
+-            if self.disperse_context == "observe":
++            if self.disperse_context == "blue_pair_view":
++                self.blue_pair_turns += self.disperse_command.arg_a // 10
++            elif self.disperse_context == "observe":
+                 self.disperse_observe_attempts += 1
+             elif self.disperse_context == "selective":
+                 # A real completed separation changes the held batch. A view
+@@ -6863,7 +7008,7 @@ class CompetitionMission:
+                 recheck_pending=True,
+                 recheck_context=(
+                     "disperse_observe"
+-                    if self.disperse_context == "observe" else
++                    if self.disperse_context in {"observe", "blue_pair_view"} else
+                     "disperse_selective"
+                 ),
+             )
+@@ -7077,7 +7222,7 @@ class CompetitionMission:
+                     reason="transport_audit_valid", tx_policy="normal_command",
+                     expected_stm_modes=(STM_MODE_ALIGN_SAFE_ZONE,),
+                 )
+-            if self._separation_limit_reached():
++            if self._separation_limit_reached(audit):
+                 return self._start_capture_abandon(audit, stm, now, limit_reached=True)
+             if audit.danger_present:
+                 return self._start_danger_release(audit, stm, now)
+@@ -7708,6 +7853,14 @@ class CompetitionMission:
+                 reason="stm_status_stale_pause",
+                 expected_stm_modes=self.expected_stm_modes(),
+             )
++        if (self.state == CompetitionState.INVALID_RELEASE and self.invalid_release_context == "safe_zone_target"
++                and stm.mode in {STM_MODE_APPROACH_RECOVER, STM_MODE_SEARCH}):
++            accepted = (stm.context_valid and stm.context_matches and
++                        stm.accepted_command == CMD_RELEASE_BOTH and bool(stm.action_status & 1))
++            if accepted and stm.mode == STM_MODE_SEARCH and stm.action_status & 2:
++                return self._audit_reacquire_output(vision, stm, now)
++            return CompetitionOutput(self.state, self._hold() if accepted else self._invalid_release_command(),
++                "等待本次弃批动作实际结束", self.selected_batch, reason="zone_release_wait_done")
+         if self._original_recovery_lost(stm):
+             return self._abandon_original_recovery(vision, pose, stm, now)
+         if self._first_green_reaudit_needed(stm):
+@@ -8502,8 +8655,8 @@ class CompetitionMission:
+                     self._set_state(CompetitionState.INITIAL_ATTACK_RETURN, now)
+                     return replace(self._attack_return_output(vision, pose, stm, now),
+                                    event="attack_return_start")
+-                self._begin_return(stm, now)
+-                return self._return_center_output(pose, now, "临时物资已放下，返回中心寻找首件绿色")
++                self._begin_return(stm, now, station=1)
++                return self._return_center_output(pose, now, "防守首放完成，沿原朝向后退35厘米后直返①")
+             return CompetitionOutput(
+                 self.state,
+                 initial_release_command,
+@@ -8537,7 +8690,7 @@ class CompetitionMission:
+             if (stm.context_valid and stm.context_matches and stm.accepted_command == CMD_ENTER_SAFE_ZONE and
+                     stm.mode in {STM_MODE_REPUSH_OPENED, STM_MODE_REPUSH_RETREAT, STM_MODE_REPUSH_FORWARD}):
+                 reason, message = {
+-                    STM_MODE_REPUSH_OPENED: ("delivery_repush_lift", "三件已放下，抬大舵机"),
++                    STM_MODE_REPUSH_OPENED: ("delivery_repush_lift", "材料已放下，抬大舵机"),
+                     STM_MODE_REPUSH_RETREAT: ("delivery_repush_retreat", "退100毫米后降至86°"),
+                     STM_MODE_REPUSH_FORWARD: ("delivery_repush_forward", "保持张爪，前推150毫米"),
+                 }[stm.mode]
+@@ -8608,7 +8761,7 @@ class CompetitionMission:
+                 return local_exit
+             if self._observe_delivery_completion(stm):
+                 self._clear_selected_batch()
+-                self._begin_return(stm, now, after_delivery=True)
++                self._begin_return(stm, now, station=self.delivery_search_point_number)
+                 return self._return_center_output(
+                     pose,
+                     now,
+@@ -8618,7 +8771,7 @@ class CompetitionMission:
+                 stm, STM_MODE_SEARCH, self.task_complete_initial_ack
+             ):
+                 self._clear_selected_batch()
+-                self._begin_return(stm, now, after_delivery=True)
++                self._begin_return(stm, now, station=self.delivery_search_point_number)
+                 return self._return_center_output(pose, now, "投送后接回记住的搜索点")
+             if self.delivery_completion_basis == "delivery_visual_early":
+                 return CompetitionOutput(self.state, self._task_complete_command(),
+@@ -8642,18 +8795,17 @@ class CompetitionMission:
+                         replace(stm, context_matches=False), now)
+                 # The matching RETURN completes the local mechanical exit;
+                 # its D=0 skips the old own-side waypoint entirely.
+-                if self.return_after_delivery:
++                if self.return_search_station is not None:
+                     if not pose.valid:
+-                        return self._return_center_output(pose, now, "投送退出完成，等待位置直返搜索点")
++                        return self._return_center_output(pose, now, "脱离完成，等待位置直返搜索点")
+                     return self._begin_search_transfer(vision, pose, stm, now,
+-                        target_point=self.delivery_search_point_number)
++                        target_point=self.return_search_station)
+                 return self._complete_return_search(vision, now,
+-                    f"回到{'己方' if self.return_after_delivery else '中心'}搜索区，"
+-                    f"等待相机120°和新视觉帧；已完成{self.delivery_count}件",
+-                    new_visit=self.return_after_delivery)
++                    f"回到中心搜索区，等待相机120°和新视觉帧；已完成{self.delivery_count}件",
++                    new_visit=False)
+             return self._return_center_output(
+                 pose, now,
+-                "完成投送退出，接直线返搜索点" if self.return_after_delivery else "持续返回中心",
++                "完成脱离后直返搜索点" if self.return_search_station is not None else "持续返回中心",
+             )
+ 
+         return CompetitionOutput(
+diff --git a/competition_rescue/tests/test_orange_top_view.py b/competition_rescue/tests/test_orange_top_view.py
+index 608a9dc..9bd5030 100644
+--- a/competition_rescue/tests/test_orange_top_view.py
++++ b/competition_rescue/tests/test_orange_top_view.py
+@@ -109,7 +109,9 @@ def test_changed_id_inside_zone_is_not_approached():
+     item = replace(v.cargo[0],track_id=500,bbox=(970,200,100,100),inside_safe_zone=True)
+     view = replace(v,frame_sequence=11,range_pitch_cdeg=10500,cargo=(item,))
+     assert m._orange_top_view_output(view,done,1.2) is None
+-    assert m._safe_zone_target_exit(view,done,1.2).event == "safe_zone_target_cancel"
++    review = m._safe_zone_target_exit(view,done,1.2)
++    assert review.event == "locked_zone_view" and m.state == CompetitionState.SEARCH_ZONE_VIEW
++    assert review.command.opcode == CMD_APPROACH_TARGET and not review.command.flags & CMD_APPROACH_RANGE
+ 
+ 
+ def test_protocol_no_translation_and_aux3_noncluster_only():
+diff --git a/competition_rescue/tests/test_runner.py b/competition_rescue/tests/test_runner.py
+index 318cb10..e94f9b4 100644
+--- a/competition_rescue/tests/test_runner.py
++++ b/competition_rescue/tests/test_runner.py
+@@ -2607,13 +2607,17 @@ def test_held_mixture_survives_detector_gap_and_clears_on_physical_separation():
+     observe((orange, green), 3083, mode=10, flags=2)
+     m.state = CompetitionState.TRANSPORT_AUDIT
+     observe((orange,), 3119, flags=2)
++    at_gate = observe((orange,), 3120)
++    assert at_gate.capture_audit.total_count == 1
++    assert not any("remembered_source_frame" in d for d in at_gate.roi_decisions)
++    observe((orange, green), 3122)  # Both are actually visible at this gate review.
+     for frame in (3123, 3126):
+         actual = observe((orange,), frame)
+         assert actual.capture_audit.total_count == 2 and actual.capture_audit.injury_mixed
+         assert not m._audit_valid(actual.capture_audit)
+         assert actual.capture_cargo == (orange,)  # Not a fabricated detector box.
+         remembered = [d for d in actual.roi_decisions if "remembered_source_frame" in d]
+-        assert remembered[0]["remembered_source_frame"] == 3083
++        assert remembered[0]["remembered_source_frame"] == 3122
+     assert observe((), 3127).capture_audit.total_count == 0
+     observe((orange,), 3128, mode=25, flags=2)  # Actual separation clears old load evidence.
+     clean = observe((orange,), 3130)
+@@ -4187,3 +4191,76 @@ def test_repush_wheel_policy_restores_on_reverse_and_relatches_at_contact():
+         policy.update(out,replace(st,mode=mode),7,12,depth_m=depth)
+         assert policy.suppressed == disabled
+     policy.close()
++
++
++def test_old_search_receipt_cannot_finish_release_or_block_station_transfer(tmp_path):
++    from dataclasses import replace
++    from protocol import CMD_APPROACH_TARGET, CMD_RELEASE_BOTH, CMD_HOLD
++    from state_machine import CommandRequest, CompetitionOutput
++    m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False))
++    m.first_common_delivered = m.initial_stash_done = True
++    planner = CompetitionPlanner(m,tmp_path/'pose',tmp_path/'stm',tmp_path/'cmd',tmp_path/'diag',
++                                 JsonlLog(tmp_path/'events'),50)
++    p = PoseSnapshot(True,-.4,0.,22.,0)
++    v = VisionSnapshot(frame_sequence=8263,range_pitch_cdeg=12000)
++    old = StmSnapshot(mode=3,age_ms=0,camera_pitch_cdeg=12000,context_valid=True,task_id=32519,
++                      action_id=58402,accepted_command=CMD_APPROACH_TARGET,action_status=3)
++    planner.protocol_task = planner.protocol_task_cursor = 32520
++    planner.protocol_action = planner.protocol_action_cursor = 58404
++    pending = CommandRequest(CMD_RELEASE_BOTH,m._side_flags())
++    m._set_state(CompetitionState.INVALID_RELEASE,1.)
++    m.invalid_release_context, m.invalid_release_side, m.invalid_release_final = "safe_zone_target", "both", True
++    planner.protocol_last_output = CompetitionOutput(m.state,pending,"")
++    assert planner._output_for_cycle(v,p,old,False,1.1).command == pending
++    assert m.state == CompetitionState.INVALID_RELEASE
++    owner = replace(old,mode=24,task_id=32520,action_id=58404,accepted_command=CMD_RELEASE_BOTH,action_status=1)
++    assert planner._output_for_cycle(v,p,owner,False,1.2).command.opcode == CMD_HOLD
++    done = replace(owner,mode=3,action_status=3)
++    assert planner._output_for_cycle(v,p,done,False,1.3).state == CompetitionState.SEARCH
++
++    # The observed field failure: both ends already searching, upper bookkeeping still on 58402.
++    planner.protocol_task,planner.protocol_action = old.task_id,old.action_id
++    planner.protocol_last_output = CompetitionOutput(m.state,m._hold(),"")
++    m.search_site_turn_deg = m.search_yaw_accum_deg = 539.
++    m.search_last_yaw_deg = 20.
++    out=planner._output_for_cycle(replace(v,frame_sequence=8264),p,done,False,1.4)
++    assert (planner.protocol_task,planner.protocol_action)==(done.task_id,done.action_id)
++    assert out.state == CompetitionState.SEARCH_TRANSFER and m.search_transfer_route.target_point==3
++
++
++def test_single_orange_partial_green_requires_travel_and_current_contact():
++    from dataclasses import replace
++    from state_machine import CargoAudit, TrackedCargo
++    m = CompetitionMission(CompetitionSettings(side="red"))
++    m._latch_carried_manifest(CargoAudit(right_class="injured_orange", right_count=1,
++        total_count=1, right_stable_track_id=380, class_counts=(("injured_orange", 1),)))
++    memory = runner_module.SingleOrangeCompanions()
++    poly = ((200,150),(760,150),(1050,400),(1050,700),(200,700))
++    orange = TrackedCargo(380, "injured_orange", .95, (599,58,278,405))
++    green = TrackedCargo(387, "green_supply", .81, (798,64,207,258))
++    def frame(at_gate, x, g=green, o=orange, task=1, closed=True):
++        m.state = CompetitionState.TRANSPORT_AUDIT if at_gate else CompetitionState.NAVIGATE
++        stm = StmSnapshot(mode=48 if at_gate else 10, flags=(2 if closed else 0) | (1 if at_gate else 4),
++            camera_pitch_cdeg=14000, task_id=task, accepted_command=18 if at_gate else 3)
++        return memory.gate_greens((o,g),m,stm,PoseSnapshot(True,x,0.,0.,0.),poly,True)
++    def moved():
++        frame(False,0.)
++        frame(False,.21)
++    frame(False,0.)
++    frame(False,.19)
++    assert not frame(True,.3)  # Movement credited only while transporting.
++    memory.clear()
++    moved()
++    assert not frame(True,.21,replace(green,visible=False,misses=1))
++    assert frame(True,.21) == [green]
++    assert not frame(True,.21,replace(green,track_id=999))
++    memory.clear()
++    moved()
++    assert not frame(True,.21,replace(green,bbox=(820,64,207,258)))  # Still overlaps, shifted 22 px.
++    memory.clear()
++    moved()
++    assert not frame(True,.21,task=2)
++    memory.clear()
++    moved()
++    assert not frame(True,.21,closed=False)
++    assert not frame(True,.21)
+diff --git a/competition_rescue/tests/test_state_machine.py b/competition_rescue/tests/test_state_machine.py
+index a94edb4..32f62fd 100755
+--- a/competition_rescue/tests/test_state_machine.py
++++ b/competition_rescue/tests/test_state_machine.py
+@@ -3242,11 +3242,11 @@ def test_opening_attack_return_requires_paired_done_for_each_leg_and_search_read
+             assert m.step(v,replace(q,valid=False),done,1.2).command.arg_a==-100
+             out=m.step(v,q,done,1.3)
+             assert r.index==1 and out.command.flags>>4==13
+-            assert m.step(v,q,done,1.4).command.arg_a>0 and r.index==1
+-            q=replace(q,x_m=r.return_point[0])
++            assert m.step(v,q,replace(done,action_status=1),1.4).command.arg_a>0 and r.index==1
++            q=replace(q,x_m=r.return_point[0]+.06)  # wheel DONE, lateral residual remains
+             out=m.step(v,q,done,1.5)
+             assert r.index==2 and out.command.flags>>4==13
+-            at=replace(q,y_m=0.)
++            at=replace(q,x_m=r.return_point[0],y_m=0.)
+             out=m.step(v,at,done,1.6)
+             assert r.index==3 and out.command.flags>>4==14
+             assert m.step(v,at,replace(done,context_matches=False),1.7).command.flags>>4==14
+@@ -3257,11 +3257,37 @@ def test_opening_attack_return_requires_paired_done_for_each_leg_and_search_read
+             assert out.state==CompetitionState.SEARCH and m.search_point_number==1
+             assert m.return_search_frame_floor==21
+ 
+-    defense=CompetitionMission(CompetitionSettings(side='red',opening_strategy='defense'))
+-    defense._select_batch(CargoBatch((1,),('green_supply',),'stash',initial_stash=True))
+-    defense._set_state(CompetitionState.INITIAL_RELEASE,1.)
+-    out=defense.step(VisionSnapshot(),pose(),release,1.)
+-    assert out.state==CompetitionState.RETURN_CENTER and out.command.opcode==CMD_RETURN_CENTER
++
++def test_defense_release_backs_off_locally_before_direct_transfer_to_one():
++    import math
++    from protocol import CMD_BULLDOZER_STEP
++    for side in ("red", "blue"):
++        for zone in (1, 2, 3, 4):
++            m = CompetitionMission(CompetitionSettings(side=side, start_zone=zone, opening_strategy="defense"))
++            m._select_batch(CargoBatch((1,), ("green_supply",), "stash", initial_stash=True))
++            m._set_state(CompetitionState.INITIAL_RELEASE, 1.)
++            release = StmSnapshot(mode=34, flags=0, age_ms=0, context_valid=True, context_matches=True,
++                                  accepted_command=CMD_RELEASE_BOTH, action_status=3)
++            v = VisionSnapshot()
++            at = pose(*m.settings.stash_point)
++            out = m.step(v, at, release, 1.1)
++            assert m.initial_stash_done and m.return_search_station == 1
++            assert out.command.opcode == CMD_RETURN_CENTER and out.command.arg_a == 0
++            # A remembered pose at the centre or the previous batch's DONE cannot start the move.
++            returning = replace(release, mode=17, accepted_command=CMD_RETURN_CENTER, action_status=1)
++            assert m.step(v, at, returning, 1.2).command.arg_a == 0
++            done = replace(returning, mode=3, action_status=3)
++            assert m.step(v, at, replace(done, context_matches=False), 1.3).state == CompetitionState.RETURN_CENTER
++            # Historical blue/1 release heading was about 230 degrees; route uses the new live pose.
++            after = replace(at, x_m=at.x_m+.20, y_m=at.y_m+.27, yaw_deg=230.)
++            out = m.step(v, after, done, 1.4)
++            target = m.settings.search_point(1)
++            assert out.state == CompetitionState.SEARCH_TRANSFER and out.command.opcode == CMD_BULLDOZER_STEP
++            assert out.command.flags >> 4 == 13 and out.command.aux == 23000
++            assert m.search_transfer_route.waypoints == (target,)
++            assert out.command.arg_a == round(1000*math.hypot(target[0]-after.x_m, target[1]-after.y_m))
++            assert m.delivery_count == 0 and not m.first_common_delivered
++
+ 
+ 
+ def test_search_stations_one_and_three_alternate_directly_for_all_starts():
+@@ -3310,7 +3336,7 @@ def test_saved_search_station_does_not_skip_retrieval_after_obstacle_delivery():
+         (-.15, -.54), (-.29, -.51), ('injured_orange',), 'pickup', recover_after_delivery=True)
+     status = StmSnapshot(mode=17, age_ms=0, context_valid=True, context_matches=True,
+         accepted_command=CMD_RETURN_CENTER, action_status=1)
+-    m._begin_return(status, 1., after_delivery=True)
++    m._begin_return(status, 1., station=m.delivery_search_point_number)
+     m.step(VisionSnapshot(), pose(), status, 1.1)
+     out = m.step(VisionSnapshot(), pose(), replace(status, mode=3), 1.2)
+     assert out.state == CompetitionState.OBSTACLE_ROUTE
+@@ -3899,21 +3925,31 @@ def test_closed_gap_reappearance_and_pause_do_not_discard_real_evidence():
+     assert result.reason == 'confirmed_load_gap_resume'
+ 
+ 
+-def test_distant_zone_target_uses_stationary_recovery_before_any_range_move():
++def test_locked_zone_target_reviews_without_release_before_any_range_move():
++    from protocol import CMD_APPROACH_RANGE
+     for state in (CompetitionState.APPROACH, CompetitionState.CLUSTER_APPROACH):
+-        m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False))
+-        m.first_common_delivered = True
+-        m._select_batch(CargoBatch((594,), ("injured_orange",), "injury"))
+-        m.locked_target_track_id = m.cluster_target_track_id = 594
+-        m._set_state(state, 1.)
+-        item = replace(cargo(594, "injured_orange", 779, 195), inside_safe_zone=True)
+-        view = VisionSnapshot(frame_sequence=8214, cargo=(item,), range_pitch_cdeg=10500)
+-        st = replace(stm(mode=20), camera_pitch_cdeg=10500)
+-        out = m.step(view, pose(), st, 1.1)
+-        assert out.reason == "safe_zone_target_reselect" and out.command.opcode == CMD_HOLD
+-        assert m.state == CompetitionState.WAIT_SEARCH_RECOVERY and m.selected_batch is None
+-        assert m.step(view, pose(), replace(st, mode=24), 1.2).command.opcode == CMD_HOLD
+-        assert m.step(view, pose(), replace(st, mode=3), 1.3).state == CompetitionState.SEARCH
++        for name, pitch in (("green_supply",12000), ("injured_orange",10500)):
++            m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False))
++            m.first_common_delivered = True
++            m._select_batch(CargoBatch((56,), (name,), "injury" if name == "injured_orange" else "material"))
++            m.locked_target_track_id = m.cluster_target_track_id = 56
++            m._set_state(state, 1.)
++            m.search_site_turn_deg = m.search_yaw_accum_deg = 535.
++            item = replace(cargo(56, name, 779, 195), inside_safe_zone=True, safe_zone_name="safe_blue")
++            view = VisionSnapshot(frame_sequence=8263, cargo=(item,), range_pitch_cdeg=pitch)
++            old = replace(stm(mode=3), camera_pitch_cdeg=pitch, context_valid=True, action_status=3)
++            out = m.step(view, pose(), old, 1.1)
++            assert out.reason == "zone_view_align" and out.command.opcode == CMD_APPROACH_TARGET
++            assert not out.command.flags & CMD_APPROACH_RANGE
++            paired = replace(old, mode=52, context_matches=True, accepted_command=CMD_APPROACH_TARGET)
++            out = m.step(replace(view,frame_sequence=8264),pose(),paired,1.2)
++            assert (out.command.arg_a,out.command.arg_b,out.command.aux)==(0,10500,3)
++            high = replace(paired,camera_pitch_cdeg=10500)
++            m.step(replace(view,frame_sequence=8265),pose(),high,1.3)
++            frame = replace(view,frame_sequence=8266,range_pitch_cdeg=10500,observed_monotonic_s=1.4)
++            assert m.step(frame,pose(),high,1.4).command.opcode==CMD_HOLD
++            assert m.step(frame,pose(),replace(high,mode=3),1.5).state==CompetitionState.SEARCH
++            assert m.search_site_turn_deg == 535.
+ 
+ 
+ def test_safe_zone_target_cancels_before_finite_range_resend_and_waits_for_recovery():
+@@ -3933,8 +3969,12 @@ def test_safe_zone_target_cancels_before_finite_range_resend_and_waits_for_recov
+         assert m.range_command is None
+         again = m.step(replace(v, cargo=(), frame_sequence=11), pose(), stm(53), 1.1)
+         assert again.command.opcode == CMD_RELEASE_BOTH
+-        m.step(v, pose(), stm(24), 1.2)
+-        m.step(v, pose(), stm(3), 1.8)
++        old = replace(stm(3),context_valid=True,context_matches=False,accepted_command=CMD_APPROACH_TARGET,action_status=3)
++        assert m.step(v,pose(),old,1.15).command.opcode==CMD_RELEASE_BOTH
++        ack = replace(old,context_matches=True,accepted_command=CMD_RELEASE_BOTH,action_status=1)
++        assert m.step(v,pose(),replace(ack,mode=24),1.2).command.opcode==CMD_HOLD
++        assert m.state==CompetitionState.INVALID_RELEASE
++        m.step(v,pose(),replace(ack,action_status=3),1.8)
+         assert m.state == CompetitionState.SEARCH and m.selected_batch is None
+ 
+ 
+@@ -4385,3 +4425,157 @@ def test_empty_stations_one_and_three_both_switch_at_540():
+     m.search_site_turn_deg = 540
+     m._handle_search(high,at,ready,1.7)
+     assert m.search_transfer_route.target_point == 1 and not m.search_transfer_route.high_start
++
++
++def test_blue_pair_view_turns_toward_blue_and_reaudits_before_deciding():
++    from run_competition_rescue import audit_from_cargo
++    from protocol import CMD_SIDE_VALID
++
++    for sign, side, other in ((10, "left", "right"), (-10, "right", "left")):
++        green = replace(cargo(87, "green_supply", 0, 0),
++                        bbox=(494 if sign > 0 else 498, 199, 288, 285))
++        blue = replace(cargo(88, "danger_cyan", 0, 0),
++                       bbox=(243 if sign > 0 else 758, 221, 279, 265))
++        pair = (green, blue)
++        a = audit_from_cargo(pair, side_by_track={87: side, 88: side})
++        assert a.blue_pair_geometry == side
++        for resolved in (True, False):
++            m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False))
++            m._select_batch(CargoBatch((87,), ("green_supply",), "material"))
++            s = replace(stm(mode=37, flags=0x41), camera_pitch_cdeg=14000)
++            v = VisionSnapshot(frame_sequence=562, capture_audit=a, capture_cargo=pair)
++            output = m._start_danger_release(a, s, 1.0)
++            for n in range(1 if resolved else 2):
++                assert output.command.arg_a == sign and output.command.opcode == CMD_DISPERSE_PILE
++                assert not output.command.flags & CMD_SIDE_VALID
++                output.command.to_frame(n)
++                done = replace(s, mode=35, context_valid=True, context_matches=True,
++                               accepted_command=CMD_DISPERSE_PILE, action_status=3)
++                m._disperse_output(v, replace(done, action_status=1), 2.0+n)
++                assert m.blue_pair_turns == n * (sign // 10)
++                m._disperse_output(v, done, 2.1+n)
++                assert m.blue_pair_turns == (n+1) * (sign // 10) and m.disperse_attempts == 0
++                # Exercise the actual post-turn stable audit and its STM handoff.
++                if resolved:
++                    pair_after = (replace(green, bbox=(700 if sign > 0 else 300, 199, 200, 285)), blue)
++                    a_after = audit_from_cargo(pair_after, side_by_track={87:other, 88:side})
++                    assert a_after.blue_pair_geometry == "separated"
++                else:
++                    pair_after, a_after = pair, a
++                for j in range(5):
++                    now = 2.2+n+j*.12
++                    v = replace(v, frame_sequence=v.frame_sequence+1, observed_monotonic_s=now,
++                                capture_audit=a_after, capture_cargo=pair_after)
++                    output = m.step(v, pose(), replace(s, mode=21), now)
++                    if m.state == CompetitionState.AUDIT_CONFIRM:
++                        ack = replace(relay_stm(output, flags=0x41), camera_pitch_cdeg=14000)
++                        output = m.step(v, pose(), ack, now+.01)
++                        break
++            if resolved:
++                assert output.command.flags & CMD_SIDE_VALID
++                assert bool(output.command.flags & CMD_TARGET_RIGHT) == (other == "right")
++            else:
++                assert output.command.opcode == CMD_DISPERSE_PILE and output.command.flags & CMD_SIDE_VALID
++                assert output.command.arg_a == 0
++
++
++def test_outer_blue_and_inner_blue_both_turn_toward_gap_after_first_delivery():
++    from run_competition_rescue import audit_from_cargo
++    for side, target_x, blue_x, angle in (("right", 654, 949, -10), ("left", 386, 620, 10)):
++        for category in ("core_black", "green_supply", "injured_orange"):
++            m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False))
++            m.first_common_delivered = True
++            m._select_batch(CargoBatch((1,), (category,), "injury" if category == "injured_orange" else "material"))
++            items = (cargo(1, category, target_x - 20, 350), cargo(2, "danger_cyan", blue_x - 20, 370))
++            a = audit_from_cargo(items, side_by_track={1: side, 2: side})
++            out = m._start_danger_release(a, stm(mode=37, flags=0x41), 1.)
++            if category == "core_black":
++                assert out.command.arg_a == 0 and out.event != "blue_pair_view_turn"
++            else:
++                assert out.command.opcode == CMD_DISPERSE_PILE and out.command.arg_a == angle
++
++
++def test_visible_first_green_stops_after_five_accepted_separations():
++    from run_competition_rescue import audit_from_cargo
++    m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False))
++    m._select_batch(CargoBatch((1,), ("green_supply",), "material"))
++    g, black = cargo(1, "green_supply", 450, 400), cargo(2, "core_black", 800, 400)
++    a = audit_from_cargo((g, black), side_by_track={1:"left",2:"right"})
++    for attempts in (2, 3, 4, 5, 6):
++        m.disperse_attempts = m.separation_reviewed_attempt = attempts
++        assert m._separation_limit_reached(a) == (attempts >= 5)
++    m.disperse_attempts = m.separation_reviewed_attempt = 2
++    assert m._separation_limit_reached(audit_from_cargo((black,), side_by_track={2: "right"}))
++    m.first_common_delivered = True
++    assert m._separation_limit_reached(a)
++
++
++def test_outer_blue_brakes_same_turn_while_boxes_still_overlap_then_reaudits():
++    from run_competition_rescue import audit_from_cargo
++    from protocol import CMD_SIDE_VALID
++    for name in ("core_black", "green_supply"):
++        for sign, outer, inner in ((10, "left", "right"), (-10, "right", "left")):
++            m = CompetitionMission(CompetitionSettings(side="blue", initial_stash_enabled=False))
++            m.first_common_delivered = True
++            m._select_batch(CargoBatch((1,), (name,), "material"))
++            def item(tid, category, cx):
++                return replace(cargo(tid, category, 0, 0), bbox=(cx-90, 300, 180, 150))
++            target = item(1, name, 640-sign)
++            blue = item(2, "danger_cyan", 640-15*sign)
++            initial = audit_from_cargo((target, blue), side_by_track={1:outer,2:outer})
++            s = replace(stm(mode=37, flags=0x41), camera_pitch_cdeg=14000)
++            start = m._start_danger_release(initial, s, 1.)
++            if name == "core_black":
++                assert start.command.arg_a == 0 and start.event != "blue_pair_view_turn"
++                continue
++            epoch = m.separation_request_epoch
++            assert (start.command.arg_a, start.command.arg_b) == (sign, 0)
++            v = VisionSnapshot(frame_sequence=101, capture_audit=audit_from_cargo(
++                (item(1,name,640+2*sign),item(2,"danger_cyan",640-4*sign)),
++                side_by_track={1:inner,2:outer}))
++            moving = replace(s, mode=25, context_valid=True, context_matches=True,
++                             accepted_command=CMD_DISPERSE_PILE, action_status=1)
++            assert m._disperse_output(v,replace(moving,context_matches=False),1.1).command.arg_b == 0
++            out = m._disperse_output(v,moving,1.2)
++            assert (out.command.arg_a,out.command.arg_b,out.command.source_vision_frame) == (sign,1,101)
++            assert m.separation_request_epoch == epoch and m.blue_pair_turns == 0
++            assert m._disperse_output(VisionSnapshot(),moving,1.3).command == out.command
++            m._disperse_output(v,replace(moving,mode=35,action_status=3),1.5)
++            assert m.blue_pair_turns == sign//10 and m.state == CompetitionState.CAPTURE_AUDIT
++            assert m.audit_recheck_frame_floor == 101
++            out = m._start_danger_release(v.capture_audit,s,1.8)
++            assert out.command.flags & CMD_SIDE_VALID and out.command.arg_a == 0
++            assert bool(out.command.flags & CMD_TARGET_RIGHT) == (inner=="right")
++
++
++def test_blue_side_priority_counts_only_eligible_cargo_before_tiebreak():
++    from run_competition_rescue import audit_from_cargo
++    m = CompetitionMission(CompetitionSettings(side="blue", initial_stash_enabled=False))
++    m._select_batch(CargoBatch((1,), ("green_supply",), "material"))
++    def audit(left,right):
++        pairs=[(side,name) for side,group in (("left",left),("right",right)) for name in group]
++        return audit_from_cargo(tuple(cargo(i,name,200 if side=="left" else 900,300)
++            for i,(side,name) in enumerate(pairs)),side_by_track={i:side for i,(side,_) in enumerate(pairs)})
++    b,g,k,o="danger_cyan","green_supply","core_black","injured_orange"
++    for first_done in (False, True):
++        m.first_common_delivered=first_done
++        assert m._preferred_keep_side(audit([b,g,g],[g]))=="right"
++        assert m._preferred_keep_side(audit([g],[b,g,g]))=="left"
++        assert m._preferred_keep_side(audit([b,k,o],[b,g]))==("left" if first_done else "right")
++
++
++def test_pregrab_lost_green_with_visible_replacement_relooks_in_place():
++    from protocol import APPROACH_PRE_GRAB_RELOOK
++    m = CompetitionMission(CompetitionSettings(side="red", initial_stash_enabled=False, pre_grab_advance_enabled=True))
++    m._select_batch(CargoBatch((277,), ("green_supply",), "material"))
++    m._set_state(CompetitionState.CAPTURE_AUDIT,1.)
++    s = replace(stm(mode=21, flags=1), camera_pitch_cdeg=14000)
++    v = VisionSnapshot(frame_sequence=4248, cargo=(cargo(281,"green_supply",818,44),),
++                       capture_audit=CargoAudit(),pre_grab_configured_classes=("green_supply",))
++    out = m._pre_grab_depth_output(v,s,2.)
++    assert (out.command.aux,out.command.arg_a,out.command.arg_b)==(APPROACH_PRE_GRAB_RELOOK,0,12000)
++    out.command.to_frame(1)
++    accepted=replace(s,mode=3,camera_pitch_cdeg=12000,context_matches=True,
++                     accepted_command=CMD_APPROACH_TARGET,action_status=1)
++    m._pre_grab_advance_output(v,accepted,3.)
++    assert m.state == CompetitionState.SEARCH and m.selected_batch is None
+diff --git a/docs/CROSS_REPO_REQUESTS.md b/docs/CROSS_REPO_REQUESTS.md
+index e205aac..5068dd6 100644
+--- a/docs/CROSS_REPO_REQUESTS.md
++++ b/docs/CROSS_REPO_REQUESTS.md
+@@ -1,5 +1,9 @@
+ # 两端最新修改要求
+ 
++## 决赛流程复用初赛（2026-11-20）
++
++上位与下位按初赛 `6e16c72`／`743a33a` 配套。支持原地复看、U=5 空爪重选、普通蓝与目标的 ±10° 观察及同动作停车、0x80 首绿撤回、五次首绿分离、多件材料重推和站点返程。单黑单蓝走决赛原普通处理，不发专用试转或保黑命令。决赛模型、优先级、确认送达及禁止抬爪滤除继续适用。源码和离线检查不代表已更新实车。
++
+ ## FINALS-CLAW-TIGHTEN-40-20261119 决赛分离夹紧角与速度
+ 
+ 有保留侧的分离统一相对普通闭爪角再夹紧 20°，保左目标 64°、保右目标 116°。首轮、重试及保伤员使用同一目标角。保留爪到普通闭爪角后，以平均 40°/秒的指令速度完成额外夹紧。每 20 ms 累积 0.8°，累计满 1°才下发整数角度，完整的 20°约需 500 ms。两爪下发到目标角后沿用原 260 ms 收尾。
+diff --git a/docs/FINALS_PORT.md b/docs/FINALS_PORT.md
+index 66dd3d7..75c8c8a 100644
+--- a/docs/FINALS_PORT.md
++++ b/docs/FINALS_PORT.md
+@@ -1,8 +1,8 @@
+ # 决赛基线
+ 
+-决赛以上位初赛 `c1425ef` 为基础。首件确认前只抓普通物资。确认后按核心、普通、伤员选物和分离，同类搜寻就近。沿用初赛的夹内漏框和归侧、分离次数、搜索换点、门口侧挤和三件重推。正式入口默认保存录像和日志，赛间预留 10 GB。
++比赛流程对照初赛上位 `6e16c72`、下位 `743a33a`。首件正式投送要求单绿；确认送达后按核心、普通、伤员选物，同类就近。临时存放另走开局流程。防守放下后退 350 mm 直返①；进攻放下后退 100 mm，按轮程横移并回①。首绿仍可见时最多五次实际分离。空爪丢失原目标时支持 120° 原地重选；远目标疑似在区内时支持 105° 复看。两件或三件合法材料均可重推一次。蓝黑走普通分离或弃批，不使用专用转角。正式入口默认保存录像和日志，赛间预留 10 GB。
+ 
+-决赛按普通左右夹爪动作处理混装，禁用抓后自动抬爪滤除、橙黑直退滤除、门口横移滤除及分离抬爪 `U=8200`。首件确认已合入下位 `Final_task@6484448`。首次盲推前的 83° 补丁已通过离线检查，等待对端合入并烧录。[下位配套与接口](CROSS_REPO_REQUESTS.md)
++决赛按普通左右夹爪动作处理混装，禁用抓后自动抬爪滤除、橙黑直退滤除、门口横移滤除及分离抬爪 `U=8200`。正式进入安全区累计 400 mm 时停车调至 83°，按脉宽估时后继续盲推。首件只在视觉确认且下位实际开爪退出后登记。[两端配套](CROSS_REPO_REQUESTS.md)
+ 
+ 决赛上位机位于 `/home/sunrise/RDK_X5/finals`。比赛流程和定位基线来自初赛 `302427138e426536673738d83cdf57ac6cd7242f`。当前模型使用 `yolo26n/x5_output_640_1120_final/yolo26n_6cls_640_1120_final_bpu_bayese_640x640_nv12.bin`，SHA-256 为 `c24abb74e6c8b21c549202470ca9c93c1d910a878d0050b2c3af0c9112c7665b`。六类顺序沿用正式类别表，置信阈值为 0.20，NMS 为 0.45。
+ 
+-- 
+2.55.0.windows.3
+

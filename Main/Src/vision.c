@@ -307,7 +307,10 @@ static void vision_save_mission(const uint8_t *payload, uint8_t sequence,
   }
   if (code == VISION_CMD_DISPERSE_PILE || code == VISION_CMD_RELEASE_LEFT ||
       code == VISION_CMD_RELEASE_RIGHT) {
-    if (arg_a != 0 || arg_b != 0 ||
+    const bool view_turn = code == VISION_CMD_DISPERSE_PILE &&
+        flags == (VISION_CMD_VALID | (flags & VISION_CMD_RED_SIDE)) &&
+        (arg_a == 10 || arg_a == -10) && heading == 0U;
+    if ((arg_a != 0 && !view_turn) || (arg_b != 0 && !(view_turn && arg_b == 1)) ||
         (heading != 0U && heading != VISION_SEPARATION_ORANGE_CORE_82)) goto rejected_payload;
     if (code == VISION_CMD_DISPERSE_PILE && (flags & VISION_CMD_KEEP_ORANGE) != 0U &&
         (flags & VISION_CMD_SIDE_VALID) == 0U) goto rejected_payload;
@@ -344,10 +347,12 @@ static void vision_save_mission(const uint8_t *payload, uint8_t sequence,
       const bool zone_view = heading == VISION_APPROACH_RANGE_ZONE_VIEW &&
           arg_a == 0 && arg_b == APP_SEARCH_LOW_CAMERA_ANGLE * 100 &&
           (flags & VISION_CMD_CLUSTER_TARGET) == 0U;
+      const bool relook = heading == VISION_APPROACH_PRE_GRAB_RELOOK && arg_a == 0 &&
+          arg_b == APP_SEARCH_HIGH_CAMERA_ANGLE * 100 && (flags & VISION_CMD_CLUSTER_TARGET) == 0U;
       const bool orange_view = heading == VISION_APPROACH_ORANGE_TOP_VIEW &&
           arg_a == 0 && arg_b == APP_SEARCH_LOW_CAMERA_ANGLE * 100;
       if ((flags & VISION_CMD_DISTANCE_VALID) == 0U || (flags & (uint8_t)~permitted) != 0U ||
-          (!ordinary && !pre_grab && !zone_view && !orange_view)) goto rejected_payload;
+          (!ordinary && !pre_grab && !zone_view && !orange_view && !relook)) goto rejected_payload;
     } else if ((flags & VISION_CMD_DISTANCE_VALID) != 0U ||
                arg_a < 0 || arg_a > (int16_t)APP_VISION_MAX_X ||
                arg_b < 0 || arg_b > (int16_t)APP_VISION_MAX_Y) {
@@ -446,7 +451,7 @@ static void vision_save_mission(const uint8_t *payload, uint8_t sequence,
        (payload[3] == VISION_CARGO_MIXED_MATERIAL && ((payload[4] >> 2) & 3U) < 2U) ||
        (payload[2] == VISION_CARGO_MIXED_TWO_GREEN && (payload[4] & 3U) != 3U) ||
        (payload[3] == VISION_CARGO_MIXED_TWO_GREEN && ((payload[4] >> 2) & 3U) != 3U) ||
-       ((payload[4] & 0xF0U) != 0U) || ((payload[5] & 0x80U) != 0U))) {
+       ((payload[4] & 0xF0U) != 0U))) {
     goto rejected_payload;
   }
   if (code == VISION_CMD_CLEAR_SAFE_ZONE) {
