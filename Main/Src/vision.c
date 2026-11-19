@@ -307,6 +307,12 @@ static void vision_save_mission(const uint8_t *payload, uint8_t sequence,
   }
   if (code == VISION_CMD_DISPERSE_PILE || code == VISION_CMD_RELEASE_LEFT ||
       code == VISION_CMD_RELEASE_RIGHT) {
+    if (APP_FINALS_SIDE_ONLY_SEPARATION &&
+        (arg_a != 0 || arg_b != 0 || heading != 0U ||
+         (code == VISION_CMD_DISPERSE_PILE &&
+          ((flags & VISION_CMD_SIDE_VALID) == 0U || (flags & VISION_CMD_FIRST_GREEN_BUMP) != 0U)))) {
+      goto rejected_payload;
+    }
     const bool view_turn = code == VISION_CMD_DISPERSE_PILE &&
         flags == (VISION_CMD_VALID | (flags & VISION_CMD_RED_SIDE)) &&
         (arg_a == 10 || arg_a == -10) && heading == 0U;

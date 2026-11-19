@@ -743,6 +743,9 @@
 #define APP_ENABLE_FINALS_CLAW_TIGHTEN             0
 #endif
 #define APP_CLAW_FINALS_TIGHTEN_DEG               20U
+#ifndef APP_FINALS_SIDE_ONLY_SEPARATION
+#define APP_FINALS_SIDE_ONLY_SEPARATION            0
+#endif
 #define APP_CLAW_FINALS_TIGHTEN_DEG_S             40U
 #define APP_CARGO_SEPARATE_ARC_BACK_MM_S        300.0f
 #define APP_CARGO_SEPARATE_ARC_SIDE_MM_S          0.0f
