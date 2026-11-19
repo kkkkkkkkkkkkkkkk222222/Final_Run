@@ -67,6 +67,10 @@ typedef enum {
   REMOTE_ACTION_ORANGE_CORE_FILTER
 } RemoteAction;
 
+typedef enum {
+  EMPTY_SPEED_DEFAULT, EMPTY_SPEED_STATION, EMPTY_SPEED_ATTACK_LATERAL, EMPTY_SPEED_RETURN_S1
+} EmptyMoveSpeedProfile;
+
 typedef struct {
   RemoteAction type;
   uint8_t phase;
@@ -75,6 +79,7 @@ typedef struct {
   int16_t arg_b;
   uint16_t heading_cdeg;
   uint8_t step;
+  EmptyMoveSpeedProfile empty_speed_profile;
   uint32_t actuator_wait_ms;
   uint8_t separation_lift_angle;
   bool orange_core_82, lift_ready;
@@ -128,7 +133,7 @@ typedef enum {
 
 typedef struct {
   NavCoarsePhase phase;
-  float initial_remaining_mm, heading_deg;
+  float target_progress_mm, heading_deg;
   float origin_x_mm, origin_y_mm, direction_x, direction_y;
   float progress_mm;
   bool valid;
@@ -533,6 +538,14 @@ static bool task_mission_valid(const VisionMissionCommand *command)
 static bool task_report_valid(const VisionData *vision)
 {
   return (vision != NULL) && vision->valid && (vision->tick_ms != 0U);
+}
+
+/* Speed from which the existing deceleration can reach the old profile at
+ * the join. Only the distance before that join earns additional speed. */
+static float task_entry_speed(float extra_mm, float join_speed, float limit, float decel)
+{
+  if (extra_mm <= 0.0f) { return join_speed; }
+  return fminf(limit, sqrtf(join_speed * join_speed + 2.0f * decel * extra_mm));
 }
 
 static float task_step_toward(float current, float target, float step)
@@ -3254,8 +3267,13 @@ static void task_process_approach(const VisionData *vision, uint32_t now_ms)
         return;
       }
       Motor_ResumeFiniteMotion();
+      const float remaining_mm = (float)approach_range_mm -
+          fmaxf(0.0f, Motor_GetDistanceTravelledMm());
+      const float cruise = task_entry_speed(
+          remaining_mm - APP_APPROACH_RANGE_SLOW_MM, APP_APPROACH_RANGE_SPEED_MM_S,
+          APP_APPROACH_RANGE_FAST_MM_S, APP_GO_DISTANCE_DECEL_MM_S2);
       const MotorDistanceStatus result = Motor_MoveDistanceLinear(
-          approach_range_mm * 0.001f, APP_APPROACH_RANGE_SPEED_MM_S,
+          approach_range_mm * 0.001f, cruise,
           APP_APPROACH_RANGE_SLOW_MM, APP_APPROACH_RANGE_END_MM_S);
       task_status.motors_active = result == MOTOR_DISTANCE_RUNNING;
       const bool range_done = result == MOTOR_DISTANCE_DONE ||
@@ -4127,6 +4145,25 @@ static RemoteRouteStatus nav_push(uint32_t now_ms)
   return REMOTE_ROUTE_RUNNING;
 }
 
+static void nav_latch_coarse_line(int16_t initial_distance_mm, float field_heading_deg)
+{
+  nav_coarse.valid = true;
+  nav_coarse.target_progress_mm = (float)initial_distance_mm;
+  nav_coarse.heading_deg = field_heading_deg;
+  const float radians = field_heading_deg * (3.14159265358979323846f / 180.0f);
+  nav_coarse.direction_x = cosf(radians);
+  nav_coarse.direction_y = sinf(radians);
+}
+
+static void nav_update_coarse_progress(const LocationPose *pose)
+{
+  const float projection_mm =
+      ((float)pose->x_mm - nav_coarse.origin_x_mm) * nav_coarse.direction_x +
+      ((float)pose->y_mm - nav_coarse.origin_y_mm) * nav_coarse.direction_y;
+  /* Keep the furthest point reached along the original line. */
+  nav_coarse.progress_mm = fmaxf(nav_coarse.progress_mm, projection_mm);
+}
+
 static RemoteRouteStatus nav_follow_coarse(
     const VisionMissionCommand *command, const LocationPose *pose,
     float cruise_speed_mm_s, bool stage_route, uint32_t now_ms)
@@ -4135,13 +4172,7 @@ static RemoteRouteStatus nav_follow_coarse(
                                              APP_NAV_LINEAR_SLOWDOWN_MM;
   if (!nav_coarse.valid) {
     /* Owned by the accepted task/action, not by SEQ or each H/D refresh. */
-    nav_coarse.valid = true;
-    nav_coarse.initial_remaining_mm = (float)command->target_x_mm;
-    nav_coarse.heading_deg = (float)command->heading_cdeg * 0.01f;
-    const float heading_rad = nav_coarse.heading_deg *
-        (3.14159265358979323846f / 180.0f);
-    nav_coarse.direction_x = cosf(heading_rad);
-    nav_coarse.direction_y = sinf(heading_rad);
+    nav_latch_coarse_line(command->target_x_mm, (float)command->heading_cdeg * 0.01f);
     nav_coarse.phase = command->target_x_mm <= coarse_start_mm ?
         NAV_COARSE_BRAKE : NAV_COARSE_ALIGN;
     nav_terminal_translate = false;
@@ -4182,13 +4213,9 @@ static RemoteRouteStatus nav_follow_coarse(
   }
 
   if (nav_coarse.phase == NAV_COARSE_DRIVE) {
-    const float projection_mm =
-        ((float)pose->x_mm - nav_coarse.origin_x_mm) * nav_coarse.direction_x +
-        ((float)pose->y_mm - nav_coarse.origin_y_mm) * nav_coarse.direction_y;
-    /* Backward travel or a larger remote D cannot renew the coarse budget. */
-    nav_coarse.progress_mm = fmaxf(nav_coarse.progress_mm, projection_mm);
+    nav_update_coarse_progress(pose);
     const float remaining_mm = fminf(
-        nav_coarse.initial_remaining_mm - nav_coarse.progress_mm,
+        nav_coarse.target_progress_mm - nav_coarse.progress_mm,
         (float)command->target_x_mm);
     const float reserve_mm = stage_route ? APP_NAV_STAGE_COARSE_RESERVE_MM :
                                           APP_NAV_COARSE_RESERVE_MM;
@@ -4537,7 +4564,10 @@ static void task_process_safe_align(uint32_t now_ms)
 static float safe_enter_speed(int16_t fence_distance_mm)
 {
   if (fence_distance_mm >= (int16_t)APP_SAFE_ENTER_SLOWDOWN_MM) {
-    return APP_SAFE_ENTER_CRUISE_SPEED_MM_S;
+    const float front_mm = APP_SAFE_ENTER_TOTAL_DISTANCE_MM - APP_SAFE_FINAL_PUSH_DISTANCE_MM;
+    const float remaining_mm = (float)fence_distance_mm - APP_SAFE_ENTER_CONTACT_DISTANCE_MM;
+    return task_entry_speed(remaining_mm - 0.5f * front_mm, APP_SAFE_ENTER_CRUISE_SPEED_MM_S,
+                            APP_SAFE_ENTER_FAST_MM_S, APP_NAV_SPEED_DECEL_MM_S2);
   }
   const float span_mm = APP_SAFE_ENTER_SLOWDOWN_MM -
                         (float)APP_SAFE_ENTER_CONTACT_DISTANCE_MM;
@@ -5150,6 +5180,43 @@ static void task_bulldozer_prepare_search(uint32_t now_ms, bool begin_scan)
   }
 }
 
+/* Upper D/H keep flowing during both phases. Only D=0 finishes the action. */
+static float task_station_move_speed(const LocationPose *pose, float live_distance_mm)
+{
+  if (!nav_coarse.valid) {
+    /* arg_a/arg_b are the accepted first packet, not the latest D/H. The
+     * local wheel origin is taken before issuing the first movement. */
+    nav_latch_coarse_line(remote_action.arg_a, (float)remote_action.arg_b * 0.01f);
+    nav_coarse.origin_x_mm = (float)pose->x_mm;
+    nav_coarse.origin_y_mm = (float)pose->y_mm;
+    nav_coarse.phase = remote_action.empty_speed_profile == EMPTY_SPEED_ATTACK_LATERAL ||
+        remote_action.arg_a > APP_EMPTY_STATION_FINE_ENTRY_MM ?
+        NAV_COARSE_DRIVE : NAV_COARSE_FINE;
+  }
+  if (nav_coarse.phase == NAV_COARSE_DRIVE) {
+    nav_update_coarse_progress(pose);
+    /* A nearer fused fix can shorten the goal along this line. A later larger
+     * D or a backward wheel delta cannot give this coarse leg extra travel. */
+    nav_coarse.target_progress_mm = fminf(nav_coarse.target_progress_mm,
+        nav_coarse.progress_mm + live_distance_mm);
+    const float remaining_mm = nav_coarse.target_progress_mm - nav_coarse.progress_mm;
+    if (remote_action.empty_speed_profile == EMPTY_SPEED_ATTACK_LATERAL) {
+      return task_entry_speed(remaining_mm - APP_GO_DISTANCE_TOLERANCE_MM,
+          APP_GO_DISTANCE_MIN_SPEED_MM_S, APP_EMPTY_STATION_MAX_SPEED_MM_S, APP_OMNI_DECEL_MM_S2);
+    }
+    if (remaining_mm > APP_EMPTY_STATION_FINE_ENTRY_MM) {
+      if (remote_action.empty_speed_profile == EMPTY_SPEED_RETURN_S1) {
+        return task_entry_speed(remaining_mm - APP_EMPTY_STATION_FINE_ENTRY_MM,
+            APP_EMPTY_STATION_FINE_SPEED_MM_S, APP_EMPTY_STATION_MAX_SPEED_MM_S, APP_OMNI_DECEL_MM_S2);
+      }
+      return fminf(APP_EMPTY_STATION_MAX_SPEED_MM_S, remaining_mm);
+    }
+    nav_coarse.phase = NAV_COARSE_FINE;
+  }
+  return fminf(APP_EMPTY_STATION_FINE_SPEED_MM_S,
+      fmaxf(APP_NAV_TERMINAL_MIN_SPEED_MM_S, live_distance_mm));
+}
+
 static void task_process_bulldozer(const VisionMissionCommand *command,
                                    uint32_t now_ms)
 {
@@ -5167,10 +5234,12 @@ static void task_process_bulldozer(const VisionMissionCommand *command,
       task_status.motors_active = false;
       return;
     }
-    const float body_angle = task_wrap_angle(command->target_y_mm * 0.01f -
-                                             pose.heading_mdeg * 0.001f);
-    const float speed = fminf(APP_SAFE_SWEEP_RETURN_SPEED_MM_S,
-        fmaxf(APP_NAV_TERMINAL_MIN_SPEED_MM_S, (float)command->target_x_mm));
+    const float field_direction_deg = (float)command->target_y_mm * 0.01f;
+    const float speed = remote_action.empty_speed_profile != EMPTY_SPEED_DEFAULT ?
+        task_station_move_speed(&pose, (float)command->target_x_mm) :
+        fminf(APP_SAFE_SWEEP_RETURN_SPEED_MM_S,
+              fmaxf(APP_NAV_TERMINAL_MIN_SPEED_MM_S, (float)command->target_x_mm));
+    const float body_angle = task_wrap_angle(field_direction_deg - pose.heading_mdeg * 0.001f);
     task_status.motors_active = Motor_MoveAngleFineHeading(speed, body_angle, heading_deg);
     return;
   }
@@ -5399,7 +5468,21 @@ static bool task_accept_bulldozer(const VisionMissionCommand *command,
       !attack_face_entry) {
     return false;
   }
+  EmptyMoveSpeedProfile profile = EMPTY_SPEED_DEFAULT;
+  if (empty_search_entry) {
+    profile = EMPTY_SPEED_STATION;
+  } else if (empty_move && previous_step_done) {
+    if (remote_action.step == VISION_BULLDOZER_ATTACK_BACK_100) {
+      profile = EMPTY_SPEED_ATTACK_LATERAL;
+    } else if (remote_action.empty_speed_profile == EMPTY_SPEED_ATTACK_LATERAL) {
+      profile = EMPTY_SPEED_RETURN_S1;
+    } else if (remote_action.empty_speed_profile == EMPTY_SPEED_STATION) {
+      profile = EMPTY_SPEED_STATION;
+    }
+  }
   task_start_remote_action(REMOTE_ACTION_BULLDOZER, command, now_ms);
+  remote_action.empty_speed_profile = profile;
+  if (profile != EMPTY_SPEED_DEFAULT) { nav_reset_coarse(); }
   if (station_turn) {
     search_yaw_direction = (int8_t)command->target_y_mm;
     search_direction_latched = true;
@@ -8084,6 +8167,7 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
     TaskDiag_Event("SESSION", context_session_generation, vision->session_generation,
                    state, accepted_context.task_id, accepted_context.action_id, 0);
     context_session_generation = vision->session_generation;
+    remote_action.empty_speed_profile = EMPTY_SPEED_DEFAULT;
     remote_action.nudge_forward_mm = 0U;
     safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
     task_clear_confirmed_load();
