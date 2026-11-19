@@ -3149,19 +3149,23 @@ static bool task_prepare_separation(int8_t keep_side, bool keep_orange, uint32_t
   separation_turn_deg = release_three ? APP_CARGO_SEPARATE_THREE_TURN_DEG :
       APP_CARGO_SEPARATE_ONE_OR_TWO_TURN_DEG;
 
-  /* Keep the soft grip on retries and on anything except a confirmed singleton. */
-  uint8_t close_deg = APP_CLAW_SEPARATE_SOFT_CLOSE_DEG;
-  if (counts_known && separation_total_attempts == 0U &&
-      (audit_single_side_mask & keep_bit) != 0U) {
-    close_deg = release_three ? APP_CLAW_SEPARATE_THREE_CLOSE_DEG :
-        APP_CLAW_SEPARATE_ONE_OR_TWO_CLOSE_DEG;
-  }
-  const uint8_t keep_count = keep_side > 0 ? left_count : right_count;
-  const uint8_t keep_class = keep_side > 0 ? audit_last_left_class : audit_last_right_class;
-  if (keep_orange || (keep_count == 1U && keep_class == VISION_CARGO_INJURED)) {
-    Claw_SetOrangeSeparationHold(close_deg);
+  if (APP_ENABLE_FINALS_CLAW_TIGHTEN) {
+    Claw_SetSeparationHold(APP_CLAW_FINALS_TIGHTEN_DEG);
   } else {
-    Claw_SetSeparationHold(close_deg);
+    /* Keep the soft grip on retries and on anything except a confirmed singleton. */
+    uint8_t close_deg = APP_CLAW_SEPARATE_SOFT_CLOSE_DEG;
+    if (counts_known && separation_total_attempts == 0U &&
+        (audit_single_side_mask & keep_bit) != 0U) {
+      close_deg = release_three ? APP_CLAW_SEPARATE_THREE_CLOSE_DEG :
+          APP_CLAW_SEPARATE_ONE_OR_TWO_CLOSE_DEG;
+    }
+    const uint8_t keep_count = keep_side > 0 ? left_count : right_count;
+    const uint8_t keep_class = keep_side > 0 ? audit_last_left_class : audit_last_right_class;
+    if (keep_orange || (keep_count == 1U && keep_class == VISION_CARGO_INJURED)) {
+      Claw_SetOrangeSeparationHold(close_deg);
+    } else {
+      Claw_SetSeparationHold(close_deg);
+    }
   }
   separation_keep_side = keep_side;
   if (separation_total_attempts < UINT8_MAX) { ++separation_total_attempts; }

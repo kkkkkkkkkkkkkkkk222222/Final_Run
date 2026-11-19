@@ -26,6 +26,7 @@ static uint32_t claw_step_ms;
 static uint32_t claw_wait_ms;
 static bool claw_done;
 static uint8_t separation_left_hold_angle = APP_CLAW_LEFT_TOUCH_ANGLE;
+static uint32_t separation_tighten_mdeg;
 
 void Claw_RestartAction(void)
 {
@@ -217,12 +218,25 @@ bool Claw_OpenIfNeeded(uint32_t now_ms)
   return Claw_Open(now_ms);
 }
 
-static bool claw_step_to(uint8_t id, uint8_t target)
+static bool claw_step_to(uint8_t id, uint8_t target, bool retained)
 {
   const int current = Servo_GetAngle(id);
   if (current == target) { return true; }
-  const int step = APP_CLAW_SEPARATE_STEP_DEG;
+  int step = APP_CLAW_SEPARATE_STEP_DEG;
   int delta = (int)target - current;
+  if (APP_ENABLE_FINALS_CLAW_TIGHTEN && retained && (id == 4U ? delta < 0 : delta > 0)) {
+    const int before_touch = id == 4U ? current - (int)APP_CLAW_LEFT_TOUCH_ANGLE :
+        (int)APP_CLAW_RIGHT_TOUCH_ANGLE - current;
+    if (before_touch > 0) {
+      if (step > before_touch) { step = before_touch; }
+    } else {
+      /* The servo accepts integer degrees. Carry the fraction to the next task tick. */
+      separation_tighten_mdeg += APP_CLAW_FINALS_TIGHTEN_DEG_S * APP_TASK_PERIOD_MS;
+      step = (int)(separation_tighten_mdeg / 1000U);
+      separation_tighten_mdeg %= 1000U;
+      if (step == 0) { return false; }
+    }
+  }
   if (delta > step) { delta = step; }
   if (delta < -step) { delta = -step; }
   const uint8_t next = (uint8_t)(current + delta);
@@ -239,12 +253,15 @@ static bool claw_move_separation(ClawAction action, uint32_t now_ms,
     claw_step = 1U;
     claw_step_ms = now_ms;
     claw_done = false;
+    separation_tighten_mdeg = 0U;
   }
   if (!claw_done && claw_step == 1U &&
       (uint32_t)(now_ms - claw_step_ms) >= APP_TASK_PERIOD_MS) {
     /* At most one step after a pause; never catch up with a large angle jump. */
-    const bool left_at_target = claw_step_to(4U, left_angle);
-    const bool right_at_target = claw_step_to(2U, right_angle);
+    const bool keep_left = action == CLAW_ACTION_OPEN_RIGHT || action == CLAW_ACTION_CLUSTER_OPEN_RIGHT;
+    const bool keep_right = action == CLAW_ACTION_OPEN_LEFT || action == CLAW_ACTION_CLUSTER_OPEN_LEFT;
+    const bool left_at_target = claw_step_to(4U, left_angle, keep_left);
+    const bool right_at_target = claw_step_to(2U, right_angle, keep_right);
     claw_step_ms = now_ms;
     if (left_at_target && right_at_target) { claw_step = 2U; }
   }

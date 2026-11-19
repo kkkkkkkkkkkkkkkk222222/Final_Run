@@ -2,6 +2,12 @@
 
 更新日期为 2026-11-19，时区 Asia/Shanghai。
 
+## FINALS-CLAW-TIGHTEN-40-20261119
+
+已配套[上位交接 195073f](https://github.com/danmo-teng/shijue_fangan-finals/blob/195073f648671696d735dc0ef783a520acd10a4e/docs/CROSS_REPO_REQUESTS.md)。FinalRun 执行带侧分离与单侧释放时，保留爪从普通闭爪角额外夹紧 20°，保左目标指令角为 64°，保右为 116°，首次、重试和保伤员使用同一目标。每个 20 ms 任务周期累计 0.8°，满整数度才下发；两爪均下发到目标角后，沿用 260 ms 收尾。
+
+生产 Task 和机构代码配合硬件替身，通过左右侧、两种动作、首次／重试、普通／伤员的 16 组组合检查。从普通闭爪角起，500 ms 发完额外 20°，双爪到位后 259 ms 尚未结束、260 ms 完成。本次未烧录。OpenOCD 未找到 CMSIS-DAP，未读到板端版本；实物夹持待验。
+
 ## FINALS-PUSH-LIFT-83-20261119
 
 已配套[上位交接 5da28d4](https://github.com/danmo-teng/shijue_fangan-finals/blob/5da28d4ebf93ec9be62721c343bc21481986a569/docs/CROSS_REPO_REQUESTS.md)。仅 FinalRun 首次末段推进启用 83° 姿态，沿用原 ENTER、编码器轮程和锁定航向。累计到 400 mm 结束前段计时，舵机脉宽差估时结束后发起末段推进并开始末段计时，目标总轮程 670 mm。三件放货后的复推沿用原流程。
