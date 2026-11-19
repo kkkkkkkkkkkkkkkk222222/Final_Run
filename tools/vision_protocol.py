@@ -56,6 +56,7 @@ CMD_NAVIGATE_WAYPOINT = 0x03
 CMD_ALIGN_SAFE_ZONE = 0x04
 CMD_ENTER_SAFE_ZONE = 0x05
 CMD_TASK_COMPLETE = 0x06
+TASK_COMPLETE_UNCONFIRMED = 1
 CMD_ABORT = 0x07
 CMD_RETURN_CENTER = 0x08
 CMD_APPROACH_TARGET = 0x09
@@ -352,6 +353,10 @@ def mission_frame(
                         CMD_CORRIDOR_NUDGE, CMD_ORANGE_CORE_FILTER) and
             not CMD_GRAB_CONFIRMED <= command <= CMD_BULLDOZER_STEP):
         raise ValueError("invalid mission command")
+    if command == CMD_TASK_COMPLETE and (
+            not flags & CMD_VALID or flags & ~(CMD_VALID | CMD_RED_SIDE) or
+            target_x_mm != 0 or target_y_mm != 0 or heading_cdeg not in (0, TASK_COMPLETE_UNCONFIRMED)):
+        raise ValueError("invalid task completion payload")
     allowed_flags = 0xF9 if command == CMD_BULLDOZER_STEP else 0x1F
     if command == CMD_APPROACH_TARGET:
         allowed_flags |= CMD_CLUSTER_TARGET | CMD_APPROACH_RANGE

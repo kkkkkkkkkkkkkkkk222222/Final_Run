@@ -2,6 +2,12 @@
 
 更新日期为 2026-11-19，时区 Asia/Shanghai。
 
+## FINALS-CORE-PRIORITY-20261119
+
+已配套[决赛上位 978984f](https://github.com/danmo-teng/shijue_fangan-finals/blob/978984fb0693791be349111cdfb5c0669fce3412/docs/CROSS_REPO_REQUESTS.md)。上位负责首件前只选普通、之后按核心／普通／伤员排序及分离选侧。FinalRun 使用配对 TASK_COMPLETE（A=B=0）：U=0 视觉确认，完成开爪后登记；U=1 视觉超时，或由 ENTER 自主超时退出，均保留原首件状态。重发不能更换退出原因。三件重推期间或刚退出时收到有效视觉确认，只登记一次。抓后抬爪滤除仍关闭。
+
+生产 Task 离线检查覆盖首件已完成和未完成、两种 COMPLETE、ENTER 超时、重发及更改原因、三件重推中和退出边界的视觉确认。未烧录，未核对板端身份或做整车测试。
+
 ## FINALS-PRELIM-FLOW-20261119
 
 已对照[决赛上位 ec841c9](https://github.com/danmo-teng/shijue_fangan-finals/blob/ec841c901ec394eaf7cb84b2f2cbb35655ba6208/docs/CROSS_REPO_REQUESTS.md)合入基于初赛下位 `c3e1ae5` 的配套修改。FinalRun 在闭爪审核通过后跳过自动滤除，拒绝滤除命令 0x16、0x18 及分离抬爪 U=8200；普通分离、0x17 侧挤及实际轮程抵扣、三件放货重推和超时放货登记按初赛执行。此项取代旧决赛问卷流程。

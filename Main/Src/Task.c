@@ -381,7 +381,8 @@ static bool delivery_enter_active;
 typedef enum {
   DELIVERY_FINISH_NONE = 0,
   DELIVERY_FINISH_COMPLETE,
-  DELIVERY_FINISH_FRONT_TIMEOUT
+  DELIVERY_FINISH_FRONT_TIMEOUT,
+  DELIVERY_FINISH_UNCONFIRMED
 } DeliveryFinishReason;
 typedef enum {
   REPUSH_NONE, REPUSH_ARMED, REPUSH_RAISE, REPUSH_BACK, REPUSH_LOWER, REPUSH_FORWARD, REPUSH_DONE
@@ -4790,15 +4791,28 @@ static void task_delivery_check_front_budget(uint32_t now_ms)
   }
 }
 
-static void task_finish_delivery_exit(uint32_t now_ms)
+static DeliveryFinishReason task_delivery_completion_reason(uint16_t heading)
 {
-  /* Called only after the original Claw_Open reports its mechanical finish. */
-  if (state != TASK_OPEN_FOR_RAM && state != TASK_RAM_VERIFY) { return; }
+  return APP_FINALS_DELIVERY_CONFIRMATION && heading == VISION_TASK_COMPLETE_UNCONFIRMED ?
+      DELIVERY_FINISH_UNCONFIRMED : DELIVERY_FINISH_COMPLETE;
+}
+
+static void task_record_successful_delivery(void)
+{
   /* Legacy delivery parity applies until an explicit station direction wins. */
   if (!search_direction_latched) {
     search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
   }
   first_delivery_done = true;
+}
+
+static void task_finish_delivery_exit(uint32_t now_ms)
+{
+  /* Called only after the original Claw_Open reports its mechanical finish. */
+  if (state != TASK_OPEN_FOR_RAM && state != TASK_RAM_VERIFY) { return; }
+  if (!APP_FINALS_DELIVERY_CONFIRMATION || delivery.finish == DELIVERY_FINISH_COMPLETE) {
+    task_record_successful_delivery();
+  }
   task_bulldozer_clear_load();
   safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
   task_enter(TASK_EXIT_SAFE_ZONE, now_ms);
@@ -4872,8 +4886,8 @@ static void task_process_delivery_repush(uint32_t now_ms)
 static void task_process_delivery_open(const VisionMissionCommand *command,
                                        uint32_t now_ms)
 {
-  const uint8_t owner_opcode = delivery.finish == DELIVERY_FINISH_COMPLETE ?
-      VISION_CMD_TASK_COMPLETE : VISION_CMD_ENTER_SAFE_ZONE;
+  const uint8_t owner_opcode = delivery.finish == DELIVERY_FINISH_FRONT_TIMEOUT ?
+      VISION_CMD_ENTER_SAFE_ZONE : VISION_CMD_TASK_COMPLETE;
   const bool local_finish_owned = task_delivery_is_finishing() &&
       accepted_context.valid && !accepted_context.cancelled &&
       accepted_context.opcode == owner_opcode;
@@ -4899,7 +4913,8 @@ static void task_process_delivery_open(const VisionMissionCommand *command,
       step_started_ms = now_ms;
     }
   }
-  if (delivery.repush == REPUSH_ARMED && delivery.finish != DELIVERY_FINISH_COMPLETE) {
+  if (delivery.repush == REPUSH_ARMED &&
+      (delivery.finish == DELIVERY_FINISH_NONE || delivery.finish == DELIVERY_FINISH_FRONT_TIMEOUT)) {
     delivery.repush_wait_ms = Lift_PositionWaitMs(APP_LIFT_RELEASE_RAISE_ANGLE);
     Lift_SetReleaseRaisePosition();
     delivery.repush = REPUSH_RAISE;
@@ -7668,7 +7683,12 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
     /* ENTER may finish the repush as the host's visual COMPLETE is in flight. */
     task_status.acknowledged_sequence = command->sequence;
     command_accepted = true;
-    delivery.finish = DELIVERY_FINISH_COMPLETE;
+    const DeliveryFinishReason reason = task_delivery_completion_reason(command->heading_cdeg);
+    if (APP_FINALS_DELIVERY_CONFIRMATION && reason == DELIVERY_FINISH_COMPLETE &&
+        delivery.finish != DELIVERY_FINISH_COMPLETE) {
+      task_record_successful_delivery();
+    }
+    delivery.finish = reason;
   } else if ((command->command == VISION_CMD_TASK_COMPLETE) &&
              (delivery.finish == DELIVERY_FINISH_NONE || task_timeout_repush_can_complete()) &&
              ((!task_status.gripper_closed && state == TASK_RAM_VERIFY) ||
@@ -7678,7 +7698,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
     task_status.acknowledged_sequence = command->sequence;
     command_accepted = true;
     delivery.active = true;
-    delivery.finish = DELIVERY_FINISH_COMPLETE;
+    delivery.finish = task_delivery_completion_reason(command->heading_cdeg);
     if (delivery.repush == REPUSH_FORWARD) { task_record_repush_end(false); }
     delivery.repush = REPUSH_NONE;
     delivery.front_budget_active = false;
@@ -8323,12 +8343,16 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
   if (incoming.command == VISION_CMD_TASK_COMPLETE) {
     /* Only the current ENTER can hand off to COMPLETE. A visual confirmation
      * may end its three-material timeout repush, including at the exit boundary. */
+    const DeliveryFinishReason reason = task_delivery_completion_reason(incoming.heading_cdeg);
     if (new_target || !accepted_context.valid ||
         !task_side_flag_valid(incoming.flags) ||
         incoming.flags != (VISION_CMD_VALID | (incoming.flags & VISION_CMD_RED_SIDE)) ||
-        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 || incoming.heading_cdeg != 0U ||
+        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 ||
+        (incoming.heading_cdeg != 0U && reason != DELIVERY_FINISH_UNCONFIRMED) ||
+        (!new_action && APP_FINALS_DELIVERY_CONFIRMATION && delivery.finish != reason) ||
         (new_action && (accepted_context.opcode != VISION_CMD_ENTER_SAFE_ZONE ||
-                        (delivery.finish != DELIVERY_FINISH_NONE && !task_timeout_repush_can_complete())))) goto rejected;
+                        (delivery.finish != DELIVERY_FINISH_NONE &&
+                         (reason != DELIVERY_FINISH_COMPLETE || !task_timeout_repush_can_complete()))))) goto rejected;
   }
   if (incoming.command == VISION_CMD_ENTER_SAFE_ZONE && delivery.active && new_action &&
       !(state == TASK_NAVIGATE && delivery_enter_active &&
