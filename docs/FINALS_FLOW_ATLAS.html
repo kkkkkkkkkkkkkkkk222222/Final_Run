@@ -1,0 +1,1933 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>决赛机器人 · 完整比赛流程</title><style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:#162e39;background:#eff4f5;font:16px/1.55 "Microsoft YaHei",sans-serif}main{max-width:1520px;margin:auto;padding:24px}h1{margin:0}h2{font-size:21px;margin:0}p{margin:.4em 0}nav{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}a,button{color:#135168;background:white;border:1px solid #acc3cd;border-radius:6px;padding:5px 10px;text-decoration:none}aside{position:sticky;top:0;z-index:2;background:#eff4f5;padding:5px 0}button{cursor:pointer;font:inherit}section{background:white;border-radius:10px;margin:18px 0;padding:14px;scroll-margin-top:54px}.scroller{overflow:auto;max-height:80vh;border-top:1px solid #d8e4e8;padding-top:8px}.scroller svg{display:block;margin:0 auto;height:auto;max-width:none}header p{color:#456671}@media print{@page{size:A3 landscape;margin:8mm}nav,aside{display:none}main{padding:0}section{break-before:page;break-inside:avoid;margin:0;padding:0}.scroller{overflow:visible;max-height:none}.scroller svg{width:100%!important;height:245mm!important}}</style><main><h1>决赛机器人 · 完整比赛流程</h1><p>适用源码：决赛 1121 模型配套上位机及 F405 FinalRun。图中数值为控制参数；阶段判断以本次配对回包和有效观察为准。</p><nav><a href="#s0">总览 从发车到下一趟</a><a href="#s1">A 发车、暂存和两种开局返程</a><a href="#s2">B 搜索、选物和站点切换</a><a href="#s3">C 对准、定距、空爪重选</a><a href="#s4">D 审核、绿蓝拨分和弃批</a><a href="#s5">E 运输、门口复审和通道清障</a><a href="#s6">F 推入、重推、确认送达和返站</a><a href="#s7">G 暂停、通信、定位与恢复</a></nav><aside><button onclick="zoom(-.2)">缩小</button> <button onclick="zoom(.2)">放大</button> <button onclick="fit()">适应宽度</button> <button onclick="print()">打印分图</button> <a href="#s0">回到总览</a></aside><section id="s0"><header><h2>总览 · 从发车到下一趟</h2><p>从 A 开始。蓝色框标出下一张详图；橙色菱形表示程序需要作出判断。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="从发车到下一趟" width="875pt" height="843pt"
+ viewBox="0.00 0.00 875.00 843.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s0-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 828.7)">
+<title>flow</title>
+<!-- a -->
+<g id="s0-node1" class="node">
+<title>a</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M516.8,-814.3C516.8,-814.3 260,-814.3 260,-814.3 254,-814.3 248,-808.3 248,-802.3 248,-802.3 248,-790.3 248,-790.3 248,-784.3 254,-778.3 260,-778.3 260,-778.3 516.8,-778.3 516.8,-778.3 522.8,-778.3 528.8,-784.3 528.8,-790.3 528.8,-790.3 528.8,-802.3 528.8,-802.3 528.8,-808.3 522.8,-814.3 516.8,-814.3"/>
+<text xml:space="preserve" text-anchor="middle" x="388.4" y="-792.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">A　发车、开局首放、返站</text>
+</g>
+<!-- b -->
+<g id="s0-node2" class="node">
+<title>b</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M598.8,-646.3C598.8,-646.3 342,-646.3 342,-646.3 336,-646.3 330,-640.3 330,-634.3 330,-634.3 330,-622.3 330,-622.3 330,-616.3 336,-610.3 342,-610.3 342,-610.3 598.8,-610.3 598.8,-610.3 604.8,-610.3 610.8,-616.3 610.8,-622.3 610.8,-622.3 610.8,-634.3 610.8,-634.3 610.8,-640.3 604.8,-646.3 598.8,-646.3"/>
+<text xml:space="preserve" text-anchor="middle" x="470.4" y="-624.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">B　正式搜索与选物</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s0-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M441.78,-777.84C447.82,-773.91 453.28,-769.12 457.4,-763.3 480.26,-731.06 478.59,-682.95 474.82,-654"/>
+<polygon fill="#496b78" stroke="#496b78" points="477.12,-653.98 473.94,-647.87 472.62,-654.62 477.12,-653.98"/>
+</g>
+<!-- k -->
+<g id="s0-node11" class="node">
+<title>k</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M433.8,-730.3C433.8,-730.3 177,-730.3 177,-730.3 171,-730.3 165,-724.3 165,-718.3 165,-718.3 165,-706.3 165,-706.3 165,-700.3 171,-694.3 177,-694.3 177,-694.3 433.8,-694.3 433.8,-694.3 439.8,-694.3 445.8,-700.3 445.8,-706.3 445.8,-706.3 445.8,-718.3 445.8,-718.3 445.8,-724.3 439.8,-730.3 433.8,-730.3"/>
+<text xml:space="preserve" text-anchor="middle" x="305.4" y="-708.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">G　暂停、恢复、超时和故障</text>
+</g>
+<!-- a&#45;&gt;k -->
+<g id="s0-edge2" class="edge">
+<title>a&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M352.26,-777.87C345.6,-773.67 339.06,-768.79 333.65,-763.3 326.43,-755.98 320.45,-746.44 315.87,-737.67"/>
+<polygon fill="#496b78" stroke="#496b78" points="317.94,-736.72 313.03,-731.89 313.86,-738.73 317.94,-736.72"/>
+<text xml:space="preserve" text-anchor="middle" x="395.52" y="-749.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">暂停或故障（全程适用）</text>
+</g>
+<!-- c -->
+<g id="s0-node3" class="node">
+<title>c</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M598.8,-562.3C598.8,-562.3 342,-562.3 342,-562.3 336,-562.3 330,-556.3 330,-550.3 330,-550.3 330,-538.3 330,-538.3 330,-532.3 336,-526.3 342,-526.3 342,-526.3 598.8,-526.3 598.8,-526.3 604.8,-526.3 610.8,-532.3 610.8,-538.3 610.8,-538.3 610.8,-550.3 610.8,-550.3 610.8,-556.3 604.8,-562.3 598.8,-562.3"/>
+<text xml:space="preserve" text-anchor="middle" x="470.4" y="-540.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">C　对准、定距与抓前复看</text>
+</g>
+<!-- b&#45;&gt;c -->
+<g id="s0-edge3" class="edge">
+<title>b&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M470.4,-609.91C470.4,-598.5 470.4,-583.38 470.4,-570.64"/>
+<polygon fill="#496b78" stroke="#496b78" points="472.68,-570.68 470.4,-564.18 468.13,-570.68 472.68,-570.68"/>
+</g>
+<!-- d -->
+<g id="s0-node4" class="node">
+<title>d</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M565.8,-478.3C565.8,-478.3 309,-478.3 309,-478.3 303,-478.3 297,-472.3 297,-466.3 297,-466.3 297,-454.3 297,-454.3 297,-448.3 303,-442.3 309,-442.3 309,-442.3 565.8,-442.3 565.8,-442.3 571.8,-442.3 577.8,-448.3 577.8,-454.3 577.8,-454.3 577.8,-466.3 577.8,-466.3 577.8,-472.3 571.8,-478.3 565.8,-478.3"/>
+<text xml:space="preserve" text-anchor="middle" x="437.4" y="-456.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">D　真实爪内审核与分离</text>
+</g>
+<!-- c&#45;&gt;d -->
+<g id="s0-edge4" class="edge">
+<title>c&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M463.4,-525.91C458.72,-514.28 452.49,-498.8 447.3,-485.91"/>
+<polygon fill="#496b78" stroke="#496b78" points="449.49,-485.25 444.95,-480.07 445.27,-486.95 449.49,-485.25"/>
+</g>
+<!-- e -->
+<g id="s0-node5" class="node">
+<title>e</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M568.78,-370.16C568.78,-370.16 505.22,-390.63 505.22,-390.63 499.51,-392.47 487.8,-394.3 481.8,-394.3 481.8,-394.3 333,-394.3 333,-394.3 327,-394.3 315.29,-392.47 309.58,-390.63 309.58,-390.63 246.02,-370.16 246.02,-370.16 240.31,-368.32 240.31,-364.64 246.02,-362.8 246.02,-362.8 309.58,-342.33 309.58,-342.33 315.29,-340.49 327,-338.65 333,-338.65 333,-338.65 481.8,-338.65 481.8,-338.65 487.8,-338.65 499.51,-340.49 505.22,-342.33 505.22,-342.33 568.78,-362.8 568.78,-362.8 574.49,-364.64 574.49,-368.32 568.78,-370.16"/>
+<text xml:space="preserve" text-anchor="middle" x="407.4" y="-362.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">合爪后本批能运吗？</text>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s0-edge5" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M427.15,-442.1C424.67,-437.42 422.22,-432.27 420.4,-427.3 417.52,-419.44 415.18,-410.75 413.32,-402.48"/>
+<polygon fill="#496b78" stroke="#496b78" points="415.57,-402.1 412,-396.21 411.11,-403.04 415.57,-402.1"/>
+</g>
+<!-- e&#45;&gt;b -->
+<g id="s0-edge8" class="edge">
+<title>e&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M502.73,-391.65C532.26,-403 562.91,-419.28 585.4,-442.3 613.43,-471 610.94,-486.89 618.4,-526.3 621.38,-542.03 627.15,-548.91 618.4,-562.3 604.83,-583.08 582.98,-597.26 560.18,-606.92"/>
+<polygon fill="#496b78" stroke="#496b78" points="559.35,-604.81 554.16,-609.34 561.04,-609.03 559.35,-604.81"/>
+<text xml:space="preserve" text-anchor="middle" x="643.89" y="-497.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">空爪或弃批</text>
+</g>
+<!-- e&#45;&gt;d -->
+<g id="s0-edge7" class="edge">
+<title>e&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M416.32,-394.78C420.46,-407.46 425.35,-422.42 429.38,-434.75"/>
+<polygon fill="#496b78" stroke="#496b78" points="427.11,-435.12 431.29,-440.59 431.43,-433.71 427.11,-435.12"/>
+<text xml:space="preserve" text-anchor="middle" x="454.96" y="-413.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">混装可处理</text>
+</g>
+<!-- f -->
+<g id="s0-node6" class="node">
+<title>f</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M566.8,-290.65C566.8,-290.65 310,-290.65 310,-290.65 304,-290.65 298,-284.65 298,-278.65 298,-278.65 298,-266.65 298,-266.65 298,-260.65 304,-254.65 310,-254.65 310,-254.65 566.8,-254.65 566.8,-254.65 572.8,-254.65 578.8,-260.65 578.8,-266.65 578.8,-266.65 578.8,-278.65 578.8,-278.65 578.8,-284.65 572.8,-290.65 566.8,-290.65"/>
+<text xml:space="preserve" text-anchor="middle" x="438.4" y="-268.45" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">E　持载导航、门口复审与清障</text>
+</g>
+<!-- e&#45;&gt;f -->
+<g id="s0-edge6" class="edge">
+<title>e&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M416.53,-338.42C420.82,-325.72 425.9,-310.68 430.08,-298.3"/>
+<polygon fill="#496b78" stroke="#496b78" points="432.15,-299.29 432.07,-292.41 427.83,-297.84 432.15,-299.29"/>
+<text xml:space="preserve" text-anchor="middle" x="438.74" y="-310.15" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">合法</text>
+</g>
+<!-- f&#45;&gt;d -->
+<g id="s0-edge9" class="edge">
+<title>f&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M522.63,-291.1C548.1,-300.73 573.29,-315.64 588.4,-338.65 601.97,-359.33 602,-373.64 588.4,-394.3 574.68,-415.15 552.71,-429.34 529.73,-438.99"/>
+<polygon fill="#496b78" stroke="#496b78" points="529.17,-436.76 523.98,-441.28 530.86,-440.99 529.17,-436.76"/>
+<text xml:space="preserve" text-anchor="middle" x="621.09" y="-361.98" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">需要复审</text>
+</g>
+<!-- g -->
+<g id="s0-node7" class="node">
+<title>g</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M566.8,-206.65C566.8,-206.65 310,-206.65 310,-206.65 304,-206.65 298,-200.65 298,-194.65 298,-194.65 298,-182.65 298,-182.65 298,-176.65 304,-170.65 310,-170.65 310,-170.65 566.8,-170.65 566.8,-170.65 572.8,-170.65 578.8,-176.65 578.8,-182.65 578.8,-182.65 578.8,-194.65 578.8,-194.65 578.8,-200.65 572.8,-206.65 566.8,-206.65"/>
+<text xml:space="preserve" text-anchor="middle" x="438.4" y="-184.45" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">F　推入、开爪、重推与送达</text>
+</g>
+<!-- f&#45;&gt;g -->
+<g id="s0-edge10" class="edge">
+<title>f&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M438.4,-254.26C438.4,-242.85 438.4,-227.73 438.4,-214.99"/>
+<polygon fill="#496b78" stroke="#496b78" points="440.68,-215.03 438.4,-208.53 436.13,-215.03 440.68,-215.03"/>
+<text xml:space="preserve" text-anchor="middle" x="460.9" y="-226.15" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">通道就绪</text>
+</g>
+<!-- h -->
+<g id="s0-node8" class="node">
+<title>h</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M599.78,-115.5C599.78,-115.5 536.22,-135.97 536.22,-135.97 530.51,-137.81 518.8,-139.65 512.8,-139.65 512.8,-139.65 364,-139.65 364,-139.65 358,-139.65 346.29,-137.81 340.58,-135.97 340.58,-135.97 277.02,-115.5 277.02,-115.5 271.31,-113.67 271.31,-109.99 277.02,-108.15 277.02,-108.15 340.58,-87.68 340.58,-87.68 346.29,-85.84 358,-84 364,-84 364,-84 512.8,-84 512.8,-84 518.8,-84 530.51,-85.84 536.22,-87.68 536.22,-87.68 599.78,-108.15 599.78,-108.15 605.49,-109.99 605.49,-113.67 599.78,-115.5"/>
+<text xml:space="preserve" text-anchor="middle" x="438.4" y="-107.63" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">本次退出已配对确认？</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s0-edge11" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M438.4,-170.3C438.4,-163.56 438.4,-155.6 438.4,-147.77"/>
+<polygon fill="#496b78" stroke="#496b78" points="440.68,-148.07 438.4,-141.57 436.13,-148.07 440.68,-148.07"/>
+</g>
+<!-- i -->
+<g id="s0-node9" class="node">
+<title>i</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M536.8,-36C536.8,-36 280,-36 280,-36 274,-36 268,-30 268,-24 268,-24 268,-12 268,-12 268,-6 274,0 280,0 280,0 536.8,0 536.8,0 542.8,0 548.8,-6 548.8,-12 548.8,-12 548.8,-24 548.8,-24 548.8,-30 542.8,-36 536.8,-36"/>
+<text xml:space="preserve" text-anchor="middle" x="408.4" y="-13.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">保留进度，继续原交接</text>
+</g>
+<!-- h&#45;&gt;i -->
+<g id="s0-edge12" class="edge">
+<title>h&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M429.56,-83.77C425.41,-71.07 420.5,-56.03 416.45,-43.64"/>
+<polygon fill="#496b78" stroke="#496b78" points="418.71,-43.23 414.53,-37.76 414.38,-44.64 418.71,-43.23"/>
+<text xml:space="preserve" text-anchor="middle" x="441.17" y="-55.5" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">缺回包</text>
+</g>
+<!-- j -->
+<g id="s0-node10" class="node">
+<title>j</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M833.8,-36C833.8,-36 577,-36 577,-36 571,-36 565,-30 565,-24 565,-24 565,-12 565,-12 565,-6 571,0 577,0 577,0 833.8,0 833.8,0 839.8,0 845.8,-6 845.8,-12 845.8,-12 845.8,-24 845.8,-24 845.8,-30 839.8,-36 833.8,-36"/>
+<text xml:space="preserve" text-anchor="middle" x="705.4" y="-13.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">脱离安全区，返搜索点</text>
+</g>
+<!-- h&#45;&gt;j -->
+<g id="s0-edge14" class="edge">
+<title>h&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M510.79,-83.56C539.24,-73.07 572.25,-61.18 602.4,-51 614.56,-46.9 627.59,-42.69 640.16,-38.74"/>
+<polygon fill="#496b78" stroke="#496b78" points="640.53,-41.01 646.05,-36.9 639.17,-36.67 640.53,-41.01"/>
+<text xml:space="preserve" text-anchor="middle" x="647.4" y="-55.5" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">确认或未确认退出</text>
+</g>
+<!-- i&#45;&gt;h -->
+<g id="s0-edge13" class="edge">
+<title>i&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M412.3,-36.29C414.64,-45.99 417.84,-58.27 421.4,-69 422.19,-71.38 423.05,-73.82 423.94,-76.27"/>
+<polygon fill="#496b78" stroke="#496b78" points="421.75,-76.89 426.18,-82.16 426,-75.27 421.75,-76.89"/>
+</g>
+<!-- j&#45;&gt;b -->
+<g id="s0-edge15" class="edge">
+<title>j&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M705.4,-36.26C705.4,-54.72 705.4,-84.84 705.4,-110.83 705.4,-545.3 705.4,-545.3 705.4,-545.3 705.4,-573.69 643.51,-594.54 583.25,-608.11"/>
+<polygon fill="#496b78" stroke="#496b78" points="582.86,-605.86 577.01,-609.48 583.84,-610.31 582.86,-605.86"/>
+</g>
+<!-- k&#45;&gt;b -->
+<g id="s0-edge18" class="edge">
+<title>k&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M340.39,-693.91C366.1,-681.14 401.13,-663.73 428.36,-650.2"/>
+<polygon fill="#496b78" stroke="#496b78" points="429.29,-652.27 434.1,-647.34 427.27,-648.2 429.29,-652.27"/>
+<text xml:space="preserve" text-anchor="middle" x="425.18" y="-665.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">空爪恢复</text>
+</g>
+<!-- k&#45;&gt;d -->
+<g id="s0-edge17" class="edge">
+<title>k&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M302.06,-694.06C296.3,-659.22 288.16,-579.25 322.4,-526.3 335.15,-506.58 356.11,-492.23 376.67,-482.12"/>
+<polygon fill="#496b78" stroke="#496b78" points="377.62,-484.18 382.54,-479.36 375.69,-480.07 377.62,-484.18"/>
+<text xml:space="preserve" text-anchor="middle" x="324.63" y="-581.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">恢复审核</text>
+</g>
+<!-- l -->
+<g id="s0-node12" class="node">
+<title>l</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M268.8,-646.3C268.8,-646.3 12,-646.3 12,-646.3 6,-646.3 0,-640.3 0,-634.3 0,-634.3 0,-622.3 0,-622.3 0,-616.3 6,-610.3 12,-610.3 12,-610.3 268.8,-610.3 268.8,-610.3 274.8,-610.3 280.8,-616.3 280.8,-622.3 280.8,-622.3 280.8,-634.3 280.8,-634.3 280.8,-640.3 274.8,-646.3 268.8,-646.3"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-624.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">终止或完成后等待人工操作</text>
+</g>
+<!-- k&#45;&gt;l -->
+<g id="s0-edge16" class="edge">
+<title>k&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M266.78,-693.86C256.76,-689.23 246.01,-684.16 236.15,-679.3 217.28,-670.03 196.58,-659.28 179.26,-650.14"/>
+<polygon fill="#496b78" stroke="#496b78" points="180.7,-648.33 173.89,-647.3 178.57,-652.35 180.7,-648.33"/>
+<text xml:space="preserve" text-anchor="middle" x="264.27" y="-665.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">终止或结束</text>
+</g>
+</g>
+</svg>
+</div></section><section id="s1"><header><h2>A · 发车、暂存和两种开局返程</h2><p>开局搬放与首件正式投送分别计数。空车步骤的距离、方向、完成回包属于本次动作。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="发车、暂存和两种开局返程" width="862pt" height="1127pt"
+ viewBox="0.00 0.00 862.00 1127.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s1-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 1112.53)">
+<title>flow</title>
+<!-- a -->
+<g id="s1-node1" class="node">
+<title>a</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M671.8,-1098.13C671.8,-1098.13 415,-1098.13 415,-1098.13 409,-1098.13 403,-1092.13 403,-1086.13 403,-1086.13 403,-1074.13 403,-1074.13 403,-1068.13 409,-1062.13 415,-1062.13 415,-1062.13 671.8,-1062.13 671.8,-1062.13 677.8,-1062.13 683.8,-1068.13 683.8,-1074.13 683.8,-1074.13 683.8,-1086.13 683.8,-1086.13 683.8,-1092.13 677.8,-1098.13 671.8,-1098.13"/>
+<text xml:space="preserve" text-anchor="middle" x="543.4" y="-1075.93" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">上电准备，等待有效 CONFIG</text>
+</g>
+<!-- b -->
+<g id="s1-node2" class="node">
+<title>b</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M704.78,-1006.98C704.78,-1006.98 641.22,-1027.45 641.22,-1027.45 635.51,-1029.29 623.8,-1031.13 617.8,-1031.13 617.8,-1031.13 469,-1031.13 469,-1031.13 463,-1031.13 451.29,-1029.29 445.58,-1027.45 445.58,-1027.45 382.02,-1006.98 382.02,-1006.98 376.31,-1005.14 376.31,-1001.46 382.02,-999.62 382.02,-999.62 445.58,-979.16 445.58,-979.16 451.29,-977.32 463,-975.48 469,-975.48 469,-975.48 617.8,-975.48 617.8,-975.48 623.8,-975.48 635.51,-977.32 641.22,-979.16 641.22,-979.16 704.78,-999.62 704.78,-999.62 710.49,-1001.46 710.49,-1005.14 704.78,-1006.98"/>
+<text xml:space="preserve" text-anchor="middle" x="543.4" y="-999.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">当前发车方式？</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s1-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M543.4,-1061.77C543.4,-1055.04 543.4,-1047.07 543.4,-1039.25"/>
+<polygon fill="#496b78" stroke="#496b78" points="545.68,-1039.54 543.4,-1033.04 541.13,-1039.54 545.68,-1039.54"/>
+</g>
+<!-- c -->
+<g id="s1-node3" class="node">
+<title>c</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M523.8,-927.48C523.8,-927.48 267,-927.48 267,-927.48 261,-927.48 255,-921.48 255,-915.48 255,-915.48 255,-903.48 255,-903.48 255,-897.48 261,-891.48 267,-891.48 267,-891.48 523.8,-891.48 523.8,-891.48 529.8,-891.48 535.8,-897.48 535.8,-903.48 535.8,-903.48 535.8,-915.48 535.8,-915.48 535.8,-921.48 529.8,-927.48 523.8,-927.48"/>
+<text xml:space="preserve" text-anchor="middle" x="395.4" y="-905.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">新局：接收阵营、出发位与策略</text>
+</g>
+<!-- b&#45;&gt;c -->
+<g id="s1-edge2" class="edge">
+<title>b&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M499.4,-975C477.2,-961.23 450.66,-944.76 429.95,-931.91"/>
+<polygon fill="#496b78" stroke="#496b78" points="431.17,-929.99 424.45,-928.5 428.77,-933.86 431.17,-929.99"/>
+<text xml:space="preserve" text-anchor="middle" x="485.09" y="-946.98" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">新局</text>
+</g>
+<!-- d -->
+<g id="s1-node4" class="node">
+<title>d</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M820.8,-927.48C820.8,-927.48 564,-927.48 564,-927.48 558,-927.48 552,-921.48 552,-915.48 552,-915.48 552,-903.48 552,-903.48 552,-897.48 558,-891.48 564,-891.48 564,-891.48 820.8,-891.48 820.8,-891.48 826.8,-891.48 832.8,-897.48 832.8,-903.48 832.8,-903.48 832.8,-915.48 832.8,-915.48 832.8,-921.48 826.8,-927.48 820.8,-927.48"/>
+<text xml:space="preserve" text-anchor="middle" x="692.4" y="-905.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">保局重发：恢复上位保存的进度</text>
+</g>
+<!-- b&#45;&gt;d -->
+<g id="s1-edge3" class="edge">
+<title>b&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M587.7,-975C610.15,-961.17 637,-944.62 657.89,-931.75"/>
+<polygon fill="#496b78" stroke="#496b78" points="658.82,-933.84 663.16,-928.5 656.43,-929.97 658.82,-933.84"/>
+<text xml:space="preserve" text-anchor="middle" x="662.45" y="-946.98" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">快速重发</text>
+</g>
+<!-- e -->
+<g id="s1-node5" class="node">
+<title>e</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M671.8,-843.48C671.8,-843.48 415,-843.48 415,-843.48 409,-843.48 403,-837.48 403,-831.48 403,-831.48 403,-804.6 403,-804.6 403,-798.6 409,-792.6 415,-792.6 415,-792.6 671.8,-792.6 671.8,-792.6 677.8,-792.6 683.8,-798.6 683.8,-804.6 683.8,-804.6 683.8,-831.48 683.8,-831.48 683.8,-837.48 677.8,-843.48 671.8,-843.48"/>
+<text xml:space="preserve" text-anchor="middle" x="543.4" y="-822.24" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">开局退 0.60 m、转向、前进 1.10 </text>
+<text xml:space="preserve" text-anchor="middle" x="543.4" y="-805.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">m</text>
+</g>
+<!-- c&#45;&gt;e -->
+<g id="s1-edge4" class="edge">
+<title>c&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M424.29,-891.02C444.5,-878.8 471.98,-862.2 495.44,-848.02"/>
+<polygon fill="#496b78" stroke="#496b78" points="496.58,-849.99 500.97,-844.68 494.23,-846.09 496.58,-849.99"/>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s1-edge5" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M663.32,-891.02C642.97,-878.8 615.31,-862.2 591.68,-848.02"/>
+<polygon fill="#496b78" stroke="#496b78" points="592.85,-846.07 586.11,-844.67 590.51,-849.97 592.85,-846.07"/>
+<text xml:space="preserve" text-anchor="middle" x="675" y="-862.98" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">按发车配置接续</text>
+</g>
+<!-- f -->
+<g id="s1-node6" class="node">
+<title>f</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M704.78,-737.45C704.78,-737.45 641.22,-757.92 641.22,-757.92 635.51,-759.76 623.8,-761.6 617.8,-761.6 617.8,-761.6 469,-761.6 469,-761.6 463,-761.6 451.29,-759.76 445.58,-757.92 445.58,-757.92 382.02,-737.45 382.02,-737.45 376.31,-735.61 376.31,-731.93 382.02,-730.09 382.02,-730.09 445.58,-709.62 445.58,-709.62 451.29,-707.78 463,-705.94 469,-705.94 469,-705.94 617.8,-705.94 617.8,-705.94 623.8,-705.94 635.51,-707.78 641.22,-709.62 641.22,-709.62 704.78,-730.09 704.78,-730.09 710.49,-731.93 710.49,-735.61 704.78,-737.45"/>
+<text xml:space="preserve" text-anchor="middle" x="543.4" y="-729.57" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">启用开局暂存？</text>
+</g>
+<!-- e&#45;&gt;f -->
+<g id="s1-edge6" class="edge">
+<title>e&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M543.4,-792.35C543.4,-785.33 543.4,-777.55 543.4,-770.03"/>
+<polygon fill="#496b78" stroke="#496b78" points="545.68,-770.04 543.4,-763.54 541.13,-770.04 545.68,-770.04"/>
+</g>
+<!-- g -->
+<g id="s1-node7" class="node">
+<title>g</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M547.8,-657.94C547.8,-657.94 291,-657.94 291,-657.94 285,-657.94 279,-651.94 279,-645.94 279,-645.94 279,-633.94 279,-633.94 279,-627.94 285,-621.94 291,-621.94 291,-621.94 547.8,-621.94 547.8,-621.94 553.8,-621.94 559.8,-627.94 559.8,-633.94 559.8,-633.94 559.8,-645.94 559.8,-645.94 559.8,-651.94 553.8,-657.94 547.8,-657.94"/>
+<text xml:space="preserve" text-anchor="middle" x="419.4" y="-635.74" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">视觉找开局目标，抓取并复审</text>
+</g>
+<!-- f&#45;&gt;g -->
+<g id="s1-edge8" class="edge">
+<title>f&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M506.53,-705.47C488.09,-691.81 466.08,-675.52 448.8,-662.72"/>
+<polygon fill="#496b78" stroke="#496b78" points="450.45,-661.11 443.88,-659.07 447.75,-664.77 450.45,-661.11"/>
+<text xml:space="preserve" text-anchor="middle" x="490.74" y="-677.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- p -->
+<g id="s1-node16" class="node">
+<title>p</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M709.8,-36C709.8,-36 453,-36 453,-36 447,-36 441,-30 441,-24 441,-24 441,-12 441,-12 441,-6 447,0 453,0 453,0 709.8,0 709.8,0 715.8,0 721.8,-6 721.8,-12 721.8,-12 721.8,-24 721.8,-24 721.8,-30 715.8,-36 709.8,-36"/>
+<text xml:space="preserve" text-anchor="middle" x="581.4" y="-13.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">B　正式找物；暂存不登记为首件</text>
+</g>
+<!-- f&#45;&gt;p -->
+<g id="s1-edge7" class="edge">
+<title>f&#45;&gt;p</title>
+<path fill="none" stroke="#496b78" d="M619.1,-705.59C644.92,-691.13 667.4,-670.14 667.4,-640.94 667.4,-640.94 667.4,-640.94 667.4,-91.44 667.4,-68.99 650.05,-52.09 630.93,-40.29"/>
+<polygon fill="#496b78" stroke="#496b78" points="632.47,-38.55 625.71,-37.24 630.18,-42.48 632.47,-38.55"/>
+<text xml:space="preserve" text-anchor="middle" x="673.02" y="-353.7" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- h -->
+<g id="s1-node8" class="node">
+<title>h</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M480.78,-566.8C480.78,-566.8 417.22,-587.27 417.22,-587.27 411.51,-589.11 399.8,-590.94 393.8,-590.94 393.8,-590.94 245,-590.94 245,-590.94 239,-590.94 227.29,-589.11 221.58,-587.27 221.58,-587.27 158.02,-566.8 158.02,-566.8 152.31,-564.96 152.31,-561.28 158.02,-559.44 158.02,-559.44 221.58,-538.97 221.58,-538.97 227.29,-537.13 239,-535.29 245,-535.29 245,-535.29 393.8,-535.29 393.8,-535.29 399.8,-535.29 411.51,-537.13 417.22,-538.97 417.22,-538.97 480.78,-559.44 480.78,-559.44 486.49,-561.28 486.49,-564.96 480.78,-566.8"/>
+<text xml:space="preserve" text-anchor="middle" x="319.4" y="-558.92" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">暂存取物与导航是否完成？</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s1-edge9" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M396.21,-621.59C386.08,-614.01 373.87,-604.88 362.2,-596.14"/>
+<polygon fill="#496b78" stroke="#496b78" points="363.56,-594.32 357,-592.25 360.84,-597.97 363.56,-594.32"/>
+</g>
+<!-- i -->
+<g id="s1-node9" class="node">
+<title>i</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M268.8,-477.47C268.8,-477.47 12,-477.47 12,-477.47 6,-477.47 0,-471.47 0,-465.47 0,-465.47 0,-453.47 0,-453.47 0,-447.47 6,-441.47 12,-441.47 12,-441.47 268.8,-441.47 268.8,-441.47 274.8,-441.47 280.8,-447.47 280.8,-453.47 280.8,-453.47 280.8,-465.47 280.8,-465.47 280.8,-471.47 274.8,-477.47 268.8,-477.47"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-455.27" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">继续观察、重审或等待有效定位</text>
+</g>
+<!-- h&#45;&gt;i -->
+<g id="s1-edge10" class="edge">
+<title>h&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M259.19,-534.86C249.78,-530.21 240.24,-525.27 231.4,-520.29 210.71,-508.65 188.42,-494.03 171.08,-482.16"/>
+<polygon fill="#496b78" stroke="#496b78" points="172.82,-480.59 166.17,-478.78 170.24,-484.34 172.82,-480.59"/>
+<text xml:space="preserve" text-anchor="middle" x="253.9" y="-506.79" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">尚未完成</text>
+</g>
+<!-- j -->
+<g id="s1-node10" class="node">
+<title>j</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M630.78,-463.14C630.78,-463.14 567.22,-483.61 567.22,-483.61 561.51,-485.45 549.8,-487.29 543.8,-487.29 543.8,-487.29 395,-487.29 395,-487.29 389,-487.29 377.29,-485.45 371.58,-483.61 371.58,-483.61 308.02,-463.14 308.02,-463.14 302.31,-461.31 302.31,-457.63 308.02,-455.79 308.02,-455.79 371.58,-435.32 371.58,-435.32 377.29,-433.48 389,-431.64 395,-431.64 395,-431.64 543.8,-431.64 543.8,-431.64 549.8,-431.64 561.51,-433.48 567.22,-435.32 567.22,-435.32 630.78,-455.79 630.78,-455.79 636.49,-457.63 636.49,-461.31 630.78,-463.14"/>
+<text xml:space="preserve" text-anchor="middle" x="469.4" y="-455.27" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">首放策略？</text>
+</g>
+<!-- h&#45;&gt;j -->
+<g id="s1-edge12" class="edge">
+<title>h&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M359.6,-534.88C379.02,-521.72 402.44,-505.85 422.65,-492.15"/>
+<polygon fill="#496b78" stroke="#496b78" points="423.73,-494.16 427.84,-488.63 421.18,-490.39 423.73,-494.16"/>
+<text xml:space="preserve" text-anchor="middle" x="425.88" y="-506.79" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">到放置点</text>
+</g>
+<!-- i&#45;&gt;h -->
+<g id="s1-edge11" class="edge">
+<title>i&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M227.08,-477.9C244.4,-483.85 261.75,-491.77 276.4,-502.29 285.94,-509.14 294.16,-518.78 300.79,-528.31"/>
+<polygon fill="#496b78" stroke="#496b78" points="298.81,-529.44 304.29,-533.6 302.6,-526.93 298.81,-529.44"/>
+</g>
+<!-- k -->
+<g id="s1-node11" class="node">
+<title>k</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M458.8,-317.76C458.8,-317.76 202,-317.76 202,-317.76 196,-317.76 190,-311.76 190,-305.76 190,-305.76 190,-278.88 190,-278.88 190,-272.88 196,-266.88 202,-266.88 202,-266.88 458.8,-266.88 458.8,-266.88 464.8,-266.88 470.8,-272.88 470.8,-278.88 470.8,-278.88 470.8,-305.76 470.8,-305.76 470.8,-311.76 464.8,-317.76 458.8,-317.76"/>
+<text xml:space="preserve" text-anchor="middle" x="330.4" y="-296.52" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">防守：暂存点放下，沿原航向退 350 </text>
+<text xml:space="preserve" text-anchor="middle" x="330.4" y="-279.72" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">mm</text>
+</g>
+<!-- j&#45;&gt;k -->
+<g id="s1-edge13" class="edge">
+<title>j&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M403.45,-431.23C382.55,-419.52 361.29,-403.79 347.4,-383.64 335.76,-366.74 331.52,-344.02 330.19,-325.6"/>
+<polygon fill="#496b78" stroke="#496b78" points="332.48,-325.88 329.86,-319.51 327.94,-326.12 332.48,-325.88"/>
+<text xml:space="preserve" text-anchor="middle" x="391.82" y="-403.14" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">防守</text>
+</g>
+<!-- l -->
+<g id="s1-node12" class="node">
+<title>l</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M623.8,-383.64C623.8,-383.64 367,-383.64 367,-383.64 361,-383.64 355,-377.64 355,-371.64 355,-371.64 355,-344.76 355,-344.76 355,-338.76 361,-332.76 367,-332.76 367,-332.76 623.8,-332.76 623.8,-332.76 629.8,-332.76 635.8,-338.76 635.8,-344.76 635.8,-344.76 635.8,-371.64 635.8,-371.64 635.8,-377.64 629.8,-383.64 623.8,-383.64"/>
+<text xml:space="preserve" text-anchor="middle" x="495.4" y="-362.4" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">进攻：到放置点，朝对方安全区转正后</text>
+<text xml:space="preserve" text-anchor="middle" x="495.4" y="-345.6" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">放下</text>
+</g>
+<!-- j&#45;&gt;l -->
+<g id="s1-edge14" class="edge">
+<title>j&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M476.5,-431.34C479.72,-419.08 483.54,-404.49 486.9,-391.65"/>
+<polygon fill="#496b78" stroke="#496b78" points="489.1,-392.24 488.54,-385.38 484.7,-391.09 489.1,-392.24"/>
+<text xml:space="preserve" text-anchor="middle" x="495.98" y="-403.14" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">进攻</text>
+</g>
+<!-- o -->
+<g id="s1-node15" class="node">
+<title>o</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M623.8,-117.88C623.8,-117.88 367,-117.88 367,-117.88 361,-117.88 355,-111.88 355,-105.88 355,-105.88 355,-79 355,-79 355,-73 361,-67 367,-67 367,-67 623.8,-67 623.8,-67 629.8,-67 635.8,-73 635.8,-79 635.8,-79 635.8,-105.88 635.8,-105.88 635.8,-111.88 629.8,-117.88 623.8,-117.88"/>
+<text xml:space="preserve" text-anchor="middle" x="495.4" y="-96.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">直返①；粗段用轮程，末 350 mm 精</text>
+<text xml:space="preserve" text-anchor="middle" x="495.4" y="-79.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">靠</text>
+</g>
+<!-- k&#45;&gt;o -->
+<g id="s1-edge18" class="edge">
+<title>k&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M326.18,-266.53C322.38,-235.6 320.87,-182.67 347.4,-148.88 356.05,-137.86 367.13,-129.04 379.34,-121.96"/>
+<polygon fill="#496b78" stroke="#496b78" points="380.28,-124.04 384.9,-118.93 378.1,-120.05 380.28,-124.04"/>
+</g>
+<!-- m -->
+<g id="s1-node13" class="node">
+<title>m</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M623.8,-251.88C623.8,-251.88 367,-251.88 367,-251.88 361,-251.88 355,-245.88 355,-239.88 355,-239.88 355,-227.88 355,-227.88 355,-221.88 361,-215.88 367,-215.88 367,-215.88 623.8,-215.88 623.8,-215.88 629.8,-215.88 635.8,-221.88 635.8,-227.88 635.8,-227.88 635.8,-239.88 635.8,-239.88 635.8,-245.88 629.8,-251.88 623.8,-251.88"/>
+<text xml:space="preserve" text-anchor="middle" x="495.4" y="-229.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">退 100 mm，记录退完的位置</text>
+</g>
+<!-- l&#45;&gt;m -->
+<g id="s1-edge15" class="edge">
+<title>l&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M495.4,-332.45C495.4,-311.37 495.4,-281.22 495.4,-260.03"/>
+<polygon fill="#496b78" stroke="#496b78" points="497.68,-260.12 495.4,-253.62 493.13,-260.12 497.68,-260.12"/>
+</g>
+<!-- n -->
+<g id="s1-node14" class="node">
+<title>n</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M623.8,-184.88C623.8,-184.88 367,-184.88 367,-184.88 361,-184.88 355,-178.88 355,-172.88 355,-172.88 355,-160.88 355,-160.88 355,-154.88 361,-148.88 367,-148.88 367,-148.88 623.8,-148.88 623.8,-148.88 629.8,-148.88 635.8,-154.88 635.8,-160.88 635.8,-160.88 635.8,-172.88 635.8,-172.88 635.8,-178.88 629.8,-184.88 623.8,-184.88"/>
+<text xml:space="preserve" text-anchor="middle" x="495.4" y="-162.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">按首包方向及轮程完成横移</text>
+</g>
+<!-- m&#45;&gt;n -->
+<g id="s1-edge16" class="edge">
+<title>m&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M495.4,-215.46C495.4,-208.61 495.4,-200.62 495.4,-193.15"/>
+<polygon fill="#496b78" stroke="#496b78" points="497.68,-193.36 495.4,-186.86 493.13,-193.36 497.68,-193.36"/>
+</g>
+<!-- n&#45;&gt;o -->
+<g id="s1-edge17" class="edge">
+<title>n&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M495.4,-148.71C495.4,-141.87 495.4,-133.76 495.4,-125.9"/>
+<polygon fill="#496b78" stroke="#496b78" points="497.68,-126.18 495.4,-119.68 493.13,-126.18 497.68,-126.18"/>
+</g>
+<!-- o&#45;&gt;p -->
+<g id="s1-edge19" class="edge">
+<title>o&#45;&gt;p</title>
+<path fill="none" stroke="#496b78" d="M525,-66.51C534.64,-58.39 545.29,-49.42 554.71,-41.48"/>
+<polygon fill="#496b78" stroke="#496b78" points="556.03,-43.34 559.54,-37.41 553.1,-39.86 556.03,-43.34"/>
+</g>
+</g>
+</svg>
+</div></section><section id="s2"><header><h2>B · 搜索、选物和站点切换</h2><p>540° 指本站累计有效扫角。换点粗段锁初始方向，近段再接受实时方向修正。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="搜索、选物和站点切换" width="1067pt" height="829pt"
+ viewBox="0.00 0.00 1067.00 829.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s2-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 814.3)">
+<title>flow</title>
+<!-- a -->
+<g id="s2-node1" class="node">
+<title>a</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M909.78,-775.75C909.78,-775.75 846.22,-796.22 846.22,-796.22 840.51,-798.06 828.8,-799.9 822.8,-799.9 822.8,-799.9 674,-799.9 674,-799.9 668,-799.9 656.29,-798.06 650.58,-796.22 650.58,-796.22 587.02,-775.75 587.02,-775.75 581.31,-773.92 581.31,-770.24 587.02,-768.4 587.02,-768.4 650.58,-747.93 650.58,-747.93 656.29,-746.09 668,-744.25 674,-744.25 674,-744.25 822.8,-744.25 822.8,-744.25 828.8,-744.25 840.51,-746.09 846.22,-747.93 846.22,-747.93 909.78,-768.4 909.78,-768.4 915.49,-770.24 915.49,-773.92 909.78,-775.75"/>
+<text xml:space="preserve" text-anchor="middle" x="748.4" y="-767.88" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">已有首件普通物资确认送达？</text>
+</g>
+<!-- b -->
+<g id="s2-node2" class="node">
+<title>b</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M728.8,-688.81C728.8,-688.81 472,-688.81 472,-688.81 466,-688.81 460,-682.81 460,-676.81 460,-676.81 460,-664.81 460,-664.81 460,-658.81 466,-652.81 472,-652.81 472,-652.81 728.8,-652.81 728.8,-652.81 734.8,-652.81 740.8,-658.81 740.8,-664.81 740.8,-664.81 740.8,-676.81 740.8,-676.81 740.8,-682.81 734.8,-688.81 728.8,-688.81"/>
+<text xml:space="preserve" text-anchor="middle" x="600.4" y="-666.61" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">否：仅选择合规的绿色普通物资</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s2-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M707.96,-743.95C684.38,-728.14 655.03,-708.45 632.95,-693.64"/>
+<polygon fill="#496b78" stroke="#496b78" points="634.27,-691.79 627.61,-690.06 631.74,-695.57 634.27,-691.79"/>
+<text xml:space="preserve" text-anchor="middle" x="700.14" y="-715.75" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">未确认</text>
+</g>
+<!-- c -->
+<g id="s2-node3" class="node">
+<title>c</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1025.8,-696.25C1025.8,-696.25 769,-696.25 769,-696.25 763,-696.25 757,-690.25 757,-684.25 757,-684.25 757,-657.37 757,-657.37 757,-651.37 763,-645.37 769,-645.37 769,-645.37 1025.8,-645.37 1025.8,-645.37 1031.8,-645.37 1037.8,-651.37 1037.8,-657.37 1037.8,-657.37 1037.8,-684.25 1037.8,-684.25 1037.8,-690.25 1031.8,-696.25 1025.8,-696.25"/>
+<text xml:space="preserve" text-anchor="middle" x="897.4" y="-675.01" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">是：核心优先，其次普通、伤员；同类</text>
+<text xml:space="preserve" text-anchor="middle" x="897.4" y="-658.21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">就近</text>
+</g>
+<!-- a&#45;&gt;c -->
+<g id="s2-edge2" class="edge">
+<title>a&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M789.11,-743.95C809.1,-730.64 833.19,-714.59 853.58,-701.01"/>
+<polygon fill="#496b78" stroke="#496b78" points="854.65,-703.03 858.79,-697.53 852.12,-699.24 854.65,-703.03"/>
+<text xml:space="preserve" text-anchor="middle" x="853.12" y="-715.75" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">已确认</text>
+</g>
+<!-- d -->
+<g id="s2-node4" class="node">
+<title>d</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M909.78,-590.22C909.78,-590.22 846.22,-610.69 846.22,-610.69 840.51,-612.53 828.8,-614.37 822.8,-614.37 822.8,-614.37 674,-614.37 674,-614.37 668,-614.37 656.29,-612.53 650.58,-610.69 650.58,-610.69 587.02,-590.22 587.02,-590.22 581.31,-588.38 581.31,-584.7 587.02,-582.86 587.02,-582.86 650.58,-562.4 650.58,-562.4 656.29,-560.56 668,-558.72 674,-558.72 674,-558.72 822.8,-558.72 822.8,-558.72 828.8,-558.72 840.51,-560.56 846.22,-562.4 846.22,-562.4 909.78,-582.86 909.78,-582.86 915.49,-584.7 915.49,-588.38 909.78,-590.22"/>
+<text xml:space="preserve" text-anchor="middle" x="748.4" y="-582.34" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">有合规、可锁定的目标？</text>
+</g>
+<!-- b&#45;&gt;d -->
+<g id="s2-edge3" class="edge">
+<title>b&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M631.79,-652.36C649.4,-642.57 671.89,-630.07 692.42,-618.66"/>
+<polygon fill="#496b78" stroke="#496b78" points="693.39,-620.72 697.97,-615.58 691.18,-616.75 693.39,-620.72"/>
+</g>
+<!-- c&#45;&gt;d -->
+<g id="s2-edge4" class="edge">
+<title>c&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M852.29,-644.9C837.23,-636.59 820.25,-627.21 804.46,-618.49"/>
+<polygon fill="#496b78" stroke="#496b78" points="805.89,-616.68 799.1,-615.53 803.69,-620.67 805.89,-616.68"/>
+</g>
+<!-- e -->
+<g id="s2-node5" class="node">
+<title>e</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M334.8,-508.33C334.8,-508.33 78,-508.33 78,-508.33 72,-508.33 66,-502.33 66,-496.33 66,-496.33 66,-469.45 66,-469.45 66,-463.45 72,-457.45 78,-457.45 78,-457.45 334.8,-457.45 334.8,-457.45 340.8,-457.45 346.8,-463.45 346.8,-469.45 346.8,-469.45 346.8,-496.33 346.8,-496.33 346.8,-502.33 340.8,-508.33 334.8,-508.33"/>
+<text xml:space="preserve" text-anchor="middle" x="206.4" y="-487.09" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">锁定目标并跟随，已有目标沿原规则认</text>
+<text xml:space="preserve" text-anchor="middle" x="206.4" y="-470.29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">回</text>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s2-edge5" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M640.35,-565.28C556.09,-549.48 438.41,-527.4 346.85,-510.23"/>
+<polygon fill="#496b78" stroke="#496b78" points="347.49,-508.04 340.68,-509.08 346.65,-512.51 347.49,-508.04"/>
+<text xml:space="preserve" text-anchor="middle" x="521.1" y="-530.22" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">找到</text>
+</g>
+<!-- g -->
+<g id="s2-node7" class="node">
+<title>g</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M761.78,-486.57C761.78,-486.57 698.22,-507.04 698.22,-507.04 692.51,-508.88 680.8,-510.72 674.8,-510.72 674.8,-510.72 526,-510.72 526,-510.72 520,-510.72 508.29,-508.88 502.58,-507.04 502.58,-507.04 439.02,-486.57 439.02,-486.57 433.31,-484.73 433.31,-481.05 439.02,-479.21 439.02,-479.21 502.58,-458.74 502.58,-458.74 508.29,-456.9 520,-455.06 526,-455.06 526,-455.06 674.8,-455.06 674.8,-455.06 680.8,-455.06 692.51,-456.9 698.22,-458.74 698.22,-458.74 761.78,-479.21 761.78,-479.21 767.49,-481.05 767.49,-484.73 761.78,-486.57"/>
+<text xml:space="preserve" text-anchor="middle" x="600.4" y="-478.69" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">本站累计有效扫角满 540°？</text>
+</g>
+<!-- d&#45;&gt;g -->
+<g id="s2-edge7" class="edge">
+<title>d&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M708.74,-558.3C689.58,-545.14 666.47,-529.27 646.53,-515.57"/>
+<polygon fill="#496b78" stroke="#496b78" points="648.06,-513.87 641.42,-512.06 645.49,-517.62 648.06,-513.87"/>
+<text xml:space="preserve" text-anchor="middle" x="694.51" y="-530.22" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">没有</text>
+</g>
+<!-- f -->
+<g id="s2-node6" class="node">
+<title>f</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M268.8,-397.24C268.8,-397.24 12,-397.24 12,-397.24 6,-397.24 0,-391.24 0,-385.24 0,-385.24 0,-373.24 0,-373.24 0,-367.24 6,-361.24 12,-361.24 12,-361.24 268.8,-361.24 268.8,-361.24 274.8,-361.24 280.8,-367.24 280.8,-373.24 280.8,-373.24 280.8,-385.24 280.8,-385.24 280.8,-391.24 274.8,-397.24 268.8,-397.24"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-375.04" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">C　对准与测距</text>
+</g>
+<!-- e&#45;&gt;f -->
+<g id="s2-edge6" class="edge">
+<title>e&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M190.25,-457.02C179.77,-440.87 166.18,-419.95 155.84,-404.02"/>
+<polygon fill="#496b78" stroke="#496b78" points="157.9,-403.01 152.45,-398.8 154.08,-405.49 157.9,-403.01"/>
+</g>
+<!-- h -->
+<g id="s2-node8" class="node">
+<title>h</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M926.8,-397.24C926.8,-397.24 670,-397.24 670,-397.24 664,-397.24 658,-391.24 658,-385.24 658,-385.24 658,-373.24 658,-373.24 658,-367.24 664,-361.24 670,-361.24 670,-361.24 926.8,-361.24 926.8,-361.24 932.8,-361.24 938.8,-367.24 938.8,-373.24 938.8,-373.24 938.8,-385.24 938.8,-385.24 938.8,-391.24 932.8,-397.24 926.8,-397.24"/>
+<text xml:space="preserve" text-anchor="middle" x="798.4" y="-375.04" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">继续在本站按搜索视角扫场</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s2-edge8" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M653.46,-454.65C686.12,-437.88 727.36,-416.71 757.49,-401.24"/>
+<polygon fill="#496b78" stroke="#496b78" points="758.42,-403.32 763.16,-398.33 756.34,-399.27 758.42,-403.32"/>
+<text xml:space="preserve" text-anchor="middle" x="722.5" y="-426.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">未满</text>
+</g>
+<!-- i -->
+<g id="s2-node9" class="node">
+<title>i</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M630.78,-382.92C630.78,-382.92 567.22,-403.39 567.22,-403.39 561.51,-405.23 549.8,-407.06 543.8,-407.06 543.8,-407.06 395,-407.06 395,-407.06 389,-407.06 377.29,-405.23 371.58,-403.39 371.58,-403.39 308.02,-382.92 308.02,-382.92 302.31,-381.08 302.31,-377.4 308.02,-375.56 308.02,-375.56 371.58,-355.09 371.58,-355.09 377.29,-353.25 389,-351.41 395,-351.41 395,-351.41 543.8,-351.41 543.8,-351.41 549.8,-351.41 561.51,-353.25 567.22,-355.09 567.22,-355.09 630.78,-375.56 630.78,-375.56 636.49,-377.4 636.49,-381.08 630.78,-382.92"/>
+<text xml:space="preserve" text-anchor="middle" x="469.4" y="-375.04" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">当前在哪个点？</text>
+</g>
+<!-- g&#45;&gt;i -->
+<g id="s2-edge10" class="edge">
+<title>g&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M565.29,-454.65C548.55,-441.66 528.41,-426.03 510.92,-412.45"/>
+<polygon fill="#496b78" stroke="#496b78" points="512.33,-410.67 505.8,-408.48 509.54,-414.26 512.33,-410.67"/>
+<text xml:space="preserve" text-anchor="middle" x="553.99" y="-426.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">已满</text>
+</g>
+<!-- h&#45;&gt;d -->
+<g id="s2-edge9" class="edge">
+<title>h&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M797.72,-397.44C796.37,-422.7 792.47,-471.11 781.4,-510.72 777.57,-524.43 771.67,-538.89 765.92,-551.4"/>
+<polygon fill="#496b78" stroke="#496b78" points="763.92,-550.3 763.21,-557.15 768.04,-552.24 763.92,-550.3"/>
+</g>
+<!-- j -->
+<g id="s2-node10" class="node">
+<title>j</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M894.8,-303.41C894.8,-303.41 638,-303.41 638,-303.41 632,-303.41 626,-297.41 626,-291.41 626,-291.41 626,-279.41 626,-279.41 626,-273.41 632,-267.41 638,-267.41 638,-267.41 894.8,-267.41 894.8,-267.41 900.8,-267.41 906.8,-273.41 906.8,-279.41 906.8,-279.41 906.8,-291.41 906.8,-291.41 906.8,-297.41 900.8,-303.41 894.8,-303.41"/>
+<text xml:space="preserve" text-anchor="middle" x="766.4" y="-281.21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">①无果去③；指定 105° 起扫</text>
+</g>
+<!-- i&#45;&gt;j -->
+<g id="s2-edge11" class="edge">
+<title>i&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M556.5,-351.31C603.33,-336.83 660.04,-319.3 702.7,-306.11"/>
+<polygon fill="#496b78" stroke="#496b78" points="703.25,-308.32 708.79,-304.23 701.9,-303.97 703.25,-308.32"/>
+<text xml:space="preserve" text-anchor="middle" x="667.48" y="-322.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">①</text>
+</g>
+<!-- k -->
+<g id="s2-node11" class="node">
+<title>k</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M597.8,-303.41C597.8,-303.41 341,-303.41 341,-303.41 335,-303.41 329,-297.41 329,-291.41 329,-291.41 329,-279.41 329,-279.41 329,-273.41 335,-267.41 341,-267.41 341,-267.41 597.8,-267.41 597.8,-267.41 603.8,-267.41 609.8,-273.41 609.8,-279.41 609.8,-279.41 609.8,-291.41 609.8,-291.41 609.8,-297.41 603.8,-303.41 597.8,-303.41"/>
+<text xml:space="preserve" text-anchor="middle" x="469.4" y="-281.21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">③无果返①；按返站姿态起扫</text>
+</g>
+<!-- i&#45;&gt;k -->
+<g id="s2-edge12" class="edge">
+<title>i&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M469.4,-351.18C469.4,-338.6 469.4,-323.73 469.4,-311.41"/>
+<polygon fill="#496b78" stroke="#496b78" points="471.68,-311.74 469.4,-305.24 467.13,-311.74 471.68,-311.74"/>
+<text xml:space="preserve" text-anchor="middle" x="475.02" y="-322.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">③</text>
+</g>
+<!-- l -->
+<g id="s2-node12" class="node">
+<title>l</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M894.8,-236.41C894.8,-236.41 638,-236.41 638,-236.41 632,-236.41 626,-230.41 626,-224.41 626,-224.41 626,-197.53 626,-197.53 626,-191.53 632,-185.53 638,-185.53 638,-185.53 894.8,-185.53 894.8,-185.53 900.8,-185.53 906.8,-191.53 906.8,-197.53 906.8,-197.53 906.8,-224.41 906.8,-224.41 906.8,-230.41 900.8,-236.41 894.8,-236.41"/>
+<text xml:space="preserve" text-anchor="middle" x="766.4" y="-215.17" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">换点粗段锁首包方向，速度上限 1000</text>
+<text xml:space="preserve" text-anchor="middle" x="766.4" y="-198.37" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646"> mm/s</text>
+</g>
+<!-- j&#45;&gt;l -->
+<g id="s2-edge13" class="edge">
+<title>j&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M766.4,-267.25C766.4,-260.4 766.4,-252.3 766.4,-244.43"/>
+<polygon fill="#496b78" stroke="#496b78" points="768.68,-244.71 766.4,-238.21 764.13,-244.71 768.68,-244.71"/>
+</g>
+<!-- k&#45;&gt;l -->
+<g id="s2-edge14" class="edge">
+<title>k&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M540.92,-266.97C575.59,-258.51 618.01,-248.16 656.66,-238.74"/>
+<polygon fill="#496b78" stroke="#496b78" points="657.1,-240.97 662.87,-237.22 656.02,-236.55 657.1,-240.97"/>
+</g>
+<!-- m -->
+<g id="s2-node13" class="node">
+<title>m</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M918.8,-154.53C918.8,-154.53 662,-154.53 662,-154.53 656,-154.53 650,-148.53 650,-142.53 650,-142.53 650,-115.65 650,-115.65 650,-109.65 656,-103.65 662,-103.65 662,-103.65 918.8,-103.65 918.8,-103.65 924.8,-103.65 930.8,-109.65 930.8,-115.65 930.8,-115.65 930.8,-142.53 930.8,-142.53 930.8,-148.53 924.8,-154.53 918.8,-154.53"/>
+<text xml:space="preserve" text-anchor="middle" x="790.4" y="-133.29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">剩余 350 mm 内精靠，限速 350 mm</text>
+<text xml:space="preserve" text-anchor="middle" x="790.4" y="-116.49" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">/s</text>
+</g>
+<!-- l&#45;&gt;m -->
+<g id="s2-edge15" class="edge">
+<title>l&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M773.86,-185.14C776.03,-177.92 778.43,-169.94 780.71,-162.34"/>
+<polygon fill="#496b78" stroke="#496b78" points="782.82,-163.24 782.51,-156.36 778.46,-161.93 782.82,-163.24"/>
+</g>
+<!-- n -->
+<g id="s2-node14" class="node">
+<title>n</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M1010.78,-31.5C1010.78,-31.5 947.22,-51.97 947.22,-51.97 941.51,-53.81 929.8,-55.65 923.8,-55.65 923.8,-55.65 775,-55.65 775,-55.65 769,-55.65 757.29,-53.81 751.58,-51.97 751.58,-51.97 688.02,-31.5 688.02,-31.5 682.31,-29.67 682.31,-25.99 688.02,-24.15 688.02,-24.15 751.58,-3.68 751.58,-3.68 757.29,-1.84 769,0 775,0 775,0 923.8,0 923.8,0 929.8,0 941.51,-1.84 947.22,-3.68 947.22,-3.68 1010.78,-24.15 1010.78,-24.15 1016.49,-25.99 1016.49,-29.67 1010.78,-31.5"/>
+<text xml:space="preserve" text-anchor="middle" x="849.4" y="-23.63" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">到点且收到匹配完成回报？</text>
+</g>
+<!-- m&#45;&gt;n -->
+<g id="s2-edge16" class="edge">
+<title>m&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M824.78,-103.21C829.2,-98.78 833.27,-93.89 836.4,-88.65 840.86,-81.18 843.8,-72.36 845.73,-63.82"/>
+<polygon fill="#496b78" stroke="#496b78" points="847.93,-64.41 846.95,-57.59 843.47,-63.54 847.93,-64.41"/>
+</g>
+<!-- n&#45;&gt;d -->
+<g id="s2-edge18" class="edge">
+<title>n&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M911.07,-56.03C937.93,-72.42 963.4,-96.34 963.4,-128.09 963.4,-483.89 963.4,-483.89 963.4,-483.89 963.4,-528.97 924.3,-554.08 879.45,-568.07"/>
+<polygon fill="#496b78" stroke="#496b78" points="878.95,-565.84 873.36,-569.87 880.24,-570.21 878.95,-565.84"/>
+<text xml:space="preserve" text-anchor="middle" x="985.9" y="-280.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">转正起扫</text>
+</g>
+<!-- n&#45;&gt;m -->
+<g id="s2-edge17" class="edge">
+<title>n&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M798.92,-55.89C794.33,-60.24 790.33,-65.15 787.4,-70.65 783.42,-78.14 782.41,-86.97 782.84,-95.44"/>
+<polygon fill="#496b78" stroke="#496b78" points="780.57,-95.64 783.49,-101.88 785.1,-95.19 780.57,-95.64"/>
+<text xml:space="preserve" text-anchor="middle" x="809.9" y="-75.15" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">仍在移动</text>
+</g>
+</g>
+</svg>
+</div></section><section id="s3"><header><h2>C · 对准、定距、空爪重选</h2><p>丢失原目标、目标靠近安全区、爪内已经有物，是三种不同的情况。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="对准、定距、空爪重选" width="942pt" height="1119pt"
+ viewBox="0.00 0.00 942.00 1119.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s3-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 1104.17)">
+<title>flow</title>
+<!-- a -->
+<g id="s3-node1" class="node">
+<title>a</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M431.4,-1089.77C431.4,-1089.77 174.6,-1089.77 174.6,-1089.77 168.6,-1089.77 162.6,-1083.77 162.6,-1077.77 162.6,-1077.77 162.6,-1065.77 162.6,-1065.77 162.6,-1059.77 168.6,-1053.77 174.6,-1053.77 174.6,-1053.77 431.4,-1053.77 431.4,-1053.77 437.4,-1053.77 443.4,-1059.77 443.4,-1065.77 443.4,-1065.77 443.4,-1077.77 443.4,-1077.77 443.4,-1083.77 437.4,-1089.77 431.4,-1089.77"/>
+<text xml:space="preserve" text-anchor="middle" x="303" y="-1067.57" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">对准已锁定目标或聚堆锚点</text>
+</g>
+<!-- b -->
+<g id="s3-node2" class="node">
+<title>b</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M464.99,-986.43C464.99,-986.43 400.21,-1017.57 400.21,-1017.57 394.81,-1020.17 383.4,-1022.77 377.4,-1022.77 377.4,-1022.77 228.6,-1022.77 228.6,-1022.77 222.6,-1022.77 211.19,-1020.17 205.79,-1017.57 205.79,-1017.57 141.01,-986.43 141.01,-986.43 135.61,-983.83 135.61,-978.63 141.01,-976.03 141.01,-976.03 205.79,-944.88 205.79,-944.88 211.19,-942.28 222.6,-939.68 228.6,-939.68 228.6,-939.68 377.4,-939.68 377.4,-939.68 383.4,-939.68 394.81,-942.28 400.21,-944.88 400.21,-944.88 464.99,-976.03 464.99,-976.03 470.39,-978.63 470.39,-983.83 464.99,-986.43"/>
+<text xml:space="preserve" text-anchor="middle" x="303" y="-985.43" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">首次正距离前进前，目标疑似被安全区</text>
+<text xml:space="preserve" text-anchor="middle" x="303" y="-968.63" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">覆盖？</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s3-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M303,-1053.28C303,-1046.78 303,-1039.04 303,-1031.11"/>
+<polygon fill="#496b78" stroke="#496b78" points="305.28,-1031.16 303,-1024.66 300.73,-1031.16 305.28,-1031.16"/>
+</g>
+<!-- c -->
+<g id="s3-node3" class="node">
+<title>c</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M341.4,-891.68C341.4,-891.68 84.6,-891.68 84.6,-891.68 78.6,-891.68 72.6,-885.68 72.6,-879.68 72.6,-879.68 72.6,-852.8 72.6,-852.8 72.6,-846.8 78.6,-840.8 84.6,-840.8 84.6,-840.8 341.4,-840.8 341.4,-840.8 347.4,-840.8 353.4,-846.8 353.4,-852.8 353.4,-852.8 353.4,-879.68 353.4,-879.68 353.4,-885.68 347.4,-891.68 341.4,-891.68"/>
+<text xml:space="preserve" text-anchor="middle" x="213" y="-870.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">原地对准；120° 抬至 105°，已在 </text>
+<text xml:space="preserve" text-anchor="middle" x="213" y="-853.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">105° 则等新图</text>
+</g>
+<!-- b&#45;&gt;c -->
+<g id="s3-edge2" class="edge">
+<title>b&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M270.51,-939.44C259.6,-925.75 247.64,-910.72 237.45,-897.94"/>
+<polygon fill="#496b78" stroke="#496b78" points="239.38,-896.71 233.55,-893.05 235.83,-899.55 239.38,-896.71"/>
+<text xml:space="preserve" text-anchor="middle" x="263.62" y="-911.18" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- f -->
+<g id="s3-node6" class="node">
+<title>f</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M514.4,-689.15C514.4,-689.15 257.6,-689.15 257.6,-689.15 251.6,-689.15 245.6,-683.15 245.6,-677.15 245.6,-677.15 245.6,-665.15 245.6,-665.15 245.6,-659.15 251.6,-653.15 257.6,-653.15 257.6,-653.15 514.4,-653.15 514.4,-653.15 520.4,-653.15 526.4,-659.15 526.4,-665.15 526.4,-665.15 526.4,-677.15 526.4,-677.15 526.4,-683.15 520.4,-689.15 514.4,-689.15"/>
+<text xml:space="preserve" text-anchor="middle" x="386" y="-666.95" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">上位给距离；下位按轮程走定距段</text>
+</g>
+<!-- b&#45;&gt;f -->
+<g id="s3-edge6" class="edge">
+<title>b&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M335.32,-939.59C345.15,-925.22 354.94,-908.45 361,-891.68 385.2,-824.69 387.45,-739.37 386.85,-697.56"/>
+<polygon fill="#496b78" stroke="#496b78" points="389.13,-697.53 386.73,-691.08 384.58,-697.62 389.13,-697.53"/>
+<text xml:space="preserve" text-anchor="middle" x="386.13" y="-812.3" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- d -->
+<g id="s3-node4" class="node">
+<title>d</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M349.38,-768.66C349.38,-768.66 285.82,-789.13 285.82,-789.13 280.11,-790.96 268.4,-792.8 262.4,-792.8 262.4,-792.8 113.6,-792.8 113.6,-792.8 107.6,-792.8 95.89,-790.96 90.18,-789.13 90.18,-789.13 26.62,-768.66 26.62,-768.66 20.91,-766.82 20.91,-763.14 26.62,-761.3 26.62,-761.3 90.18,-740.83 90.18,-740.83 95.89,-738.99 107.6,-737.15 113.6,-737.15 113.6,-737.15 262.4,-737.15 262.4,-737.15 268.4,-737.15 280.11,-738.99 285.82,-740.83 285.82,-740.83 349.38,-761.3 349.38,-761.3 355.09,-763.14 355.09,-766.82 349.38,-768.66"/>
+<text xml:space="preserve" text-anchor="middle" x="188" y="-760.78" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">新图能认回原物且明确在区外？</text>
+</g>
+<!-- c&#45;&gt;d -->
+<g id="s3-edge3" class="edge">
+<title>c&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M206.76,-840.45C203.73,-828.45 200.05,-813.84 196.76,-800.75"/>
+<polygon fill="#496b78" stroke="#496b78" points="199.03,-800.46 195.24,-794.71 194.62,-801.57 199.03,-800.46"/>
+</g>
+<!-- e -->
+<g id="s3-node5" class="node">
+<title>e</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M604.4,-36C604.4,-36 347.6,-36 347.6,-36 341.6,-36 335.6,-30 335.6,-24 335.6,-24 335.6,-12 335.6,-12 335.6,-6 341.6,0 347.6,0 347.6,0 604.4,0 604.4,0 610.4,0 616.4,-6 616.4,-12 616.4,-12 616.4,-24 616.4,-24 616.4,-30 610.4,-36 604.4,-36"/>
+<text xml:space="preserve" text-anchor="middle" x="476" y="-13.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">B　结束当前目标，重新搜索</text>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s3-edge4" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M71.34,-746.46C33,-733.54 0,-711.11 0,-672.15 0,-672.15 0,-672.15 0,-108.44 0,-74.66 187.6,-48.04 327.25,-32.91"/>
+<polygon fill="#496b78" stroke="#496b78" points="327.39,-35.18 333.61,-32.22 326.91,-30.66 327.39,-35.18"/>
+<text xml:space="preserve" text-anchor="middle" x="28.12" y="-440.95" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">区内或不清</text>
+</g>
+<!-- d&#45;&gt;f -->
+<g id="s3-edge5" class="edge">
+<title>d&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M246.87,-736.68C277.24,-722.59 313.68,-705.69 341.64,-692.72"/>
+<polygon fill="#496b78" stroke="#496b78" points="342.25,-694.95 347.19,-690.15 340.33,-690.82 342.25,-694.95"/>
+<text xml:space="preserve" text-anchor="middle" x="338.8" y="-708.65" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">明确区外</text>
+</g>
+<!-- g -->
+<g id="s3-node7" class="node">
+<title>g</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M611.4,-622.15C611.4,-622.15 354.6,-622.15 354.6,-622.15 348.6,-622.15 342.6,-616.15 342.6,-610.15 342.6,-610.15 342.6,-583.27 342.6,-583.27 342.6,-577.27 348.6,-571.27 354.6,-571.27 354.6,-571.27 611.4,-571.27 611.4,-571.27 617.4,-571.27 623.4,-577.27 623.4,-583.27 623.4,-583.27 623.4,-610.15 623.4,-610.15 623.4,-616.15 617.4,-622.15 611.4,-622.15"/>
+<text xml:space="preserve" text-anchor="middle" x="483" y="-600.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">远段最高 1000 mm/s；最后 250 </text>
+<text xml:space="preserve" text-anchor="middle" x="483" y="-584.11" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">mm 按近段减速</text>
+</g>
+<!-- f&#45;&gt;g -->
+<g id="s3-edge7" class="edge">
+<title>f&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M408.99,-652.98C419.39,-645.22 431.98,-635.82 443.8,-626.99"/>
+<polygon fill="#496b78" stroke="#496b78" points="444.84,-629.05 448.68,-623.34 442.11,-625.41 444.84,-629.05"/>
+</g>
+<!-- h -->
+<g id="s3-node8" class="node">
+<title>h</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M614.4,-540.27C614.4,-540.27 357.6,-540.27 357.6,-540.27 351.6,-540.27 345.6,-534.27 345.6,-528.27 345.6,-528.27 345.6,-516.27 345.6,-516.27 345.6,-510.27 351.6,-504.27 357.6,-504.27 357.6,-504.27 614.4,-504.27 614.4,-504.27 620.4,-504.27 626.4,-510.27 626.4,-516.27 626.4,-516.27 626.4,-528.27 626.4,-528.27 626.4,-534.27 620.4,-540.27 614.4,-540.27"/>
+<text xml:space="preserve" text-anchor="middle" x="486" y="-518.07" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">140° 检查爪内实际组成</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s3-edge8" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M484.03,-570.78C484.34,-563.45 484.67,-555.43 484.97,-548.1"/>
+<polygon fill="#496b78" stroke="#496b78" points="487.23,-548.59 485.22,-542 482.68,-548.4 487.23,-548.59"/>
+</g>
+<!-- i -->
+<g id="s3-node9" class="node">
+<title>i</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M700.38,-449.12C700.38,-449.12 636.82,-469.59 636.82,-469.59 631.11,-471.43 619.4,-473.27 613.4,-473.27 613.4,-473.27 464.6,-473.27 464.6,-473.27 458.6,-473.27 446.89,-471.43 441.18,-469.59 441.18,-469.59 377.62,-449.12 377.62,-449.12 371.91,-447.28 371.91,-443.61 377.62,-441.77 377.62,-441.77 441.18,-421.3 441.18,-421.3 446.89,-419.46 458.6,-417.62 464.6,-417.62 464.6,-417.62 613.4,-417.62 613.4,-417.62 619.4,-417.62 631.11,-419.46 636.82,-421.3 636.82,-421.3 700.38,-441.77 700.38,-441.77 706.09,-443.61 706.09,-447.28 700.38,-449.12"/>
+<text xml:space="preserve" text-anchor="middle" x="539" y="-441.25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">当前观察结果？</text>
+</g>
+<!-- h&#45;&gt;i -->
+<g id="s3-edge9" class="edge">
+<title>h&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M498.29,-503.92C503.36,-496.76 509.41,-488.22 515.28,-479.93"/>
+<polygon fill="#496b78" stroke="#496b78" points="516.94,-481.53 518.84,-474.91 513.23,-478.9 516.94,-481.53"/>
+</g>
+<!-- j -->
+<g id="s3-node10" class="node">
+<title>j</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M374.4,-359.79C374.4,-359.79 117.6,-359.79 117.6,-359.79 111.6,-359.79 105.6,-353.79 105.6,-347.79 105.6,-347.79 105.6,-335.79 105.6,-335.79 105.6,-329.79 111.6,-323.79 117.6,-323.79 117.6,-323.79 374.4,-323.79 374.4,-323.79 380.4,-323.79 386.4,-329.79 386.4,-335.79 386.4,-335.79 386.4,-347.79 386.4,-347.79 386.4,-353.79 380.4,-359.79 374.4,-359.79"/>
+<text xml:space="preserve" text-anchor="middle" x="246" y="-337.59" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">D　已有物块：提交真实审核</text>
+</g>
+<!-- i&#45;&gt;j -->
+<g id="s3-edge10" class="edge">
+<title>i&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M460.48,-417.2C411.02,-400.05 348.29,-378.28 303.46,-362.73"/>
+<polygon fill="#496b78" stroke="#496b78" points="304.47,-360.67 297.58,-360.69 302.98,-364.97 304.47,-360.67"/>
+<text xml:space="preserve" text-anchor="middle" x="421.29" y="-389.12" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">有物</text>
+</g>
+<!-- k -->
+<g id="s3-node11" class="node">
+<title>k</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M736.38,-345.47C736.38,-345.47 672.82,-365.94 672.82,-365.94 667.11,-367.78 655.4,-369.62 649.4,-369.62 649.4,-369.62 500.6,-369.62 500.6,-369.62 494.6,-369.62 482.89,-367.78 477.18,-365.94 477.18,-365.94 413.62,-345.47 413.62,-345.47 407.91,-343.63 407.91,-339.95 413.62,-338.11 413.62,-338.11 477.18,-317.65 477.18,-317.65 482.89,-315.81 494.6,-313.97 500.6,-313.97 500.6,-313.97 649.4,-313.97 649.4,-313.97 655.4,-313.97 667.11,-315.81 672.82,-317.65 672.82,-317.65 736.38,-338.11 736.38,-338.11 742.09,-339.95 742.09,-343.63 736.38,-345.47"/>
+<text xml:space="preserve" text-anchor="middle" x="575" y="-337.59" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">空爪且认回原目标，位于可补进区？</text>
+</g>
+<!-- i&#45;&gt;k -->
+<g id="s3-edge11" class="edge">
+<title>i&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M548.65,-417.2C552.97,-405.01 558.11,-390.49 562.7,-377.53"/>
+<polygon fill="#496b78" stroke="#496b78" points="564.8,-378.42 564.82,-371.54 560.51,-376.9 564.8,-378.42"/>
+<text xml:space="preserve" text-anchor="middle" x="581.66" y="-389.12" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">实际空爪</text>
+</g>
+<!-- o -->
+<g id="s3-node15" class="node">
+<title>o</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M901.4,-134.88C901.4,-134.88 644.6,-134.88 644.6,-134.88 638.6,-134.88 632.6,-128.88 632.6,-122.88 632.6,-122.88 632.6,-96 632.6,-96 632.6,-90 638.6,-84 644.6,-84 644.6,-84 901.4,-84 901.4,-84 907.4,-84 913.4,-90 913.4,-96 913.4,-96 913.4,-122.88 913.4,-122.88 913.4,-128.88 907.4,-134.88 901.4,-134.88"/>
+<text xml:space="preserve" text-anchor="middle" x="773" y="-113.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">证据不足先等待；达到原恢复／弃批条</text>
+<text xml:space="preserve" text-anchor="middle" x="773" y="-96.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">件则退出</text>
+</g>
+<!-- i&#45;&gt;o -->
+<g id="s3-edge12" class="edge">
+<title>i&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M660.98,-428.67C697.03,-417.87 732.96,-399.79 756,-369.62 769.45,-352 772.27,-208.6 772.85,-142.99"/>
+<polygon fill="#496b78" stroke="#496b78" points="775.13,-143.04 772.9,-136.53 770.58,-143.01 775.13,-143.04"/>
+<text xml:space="preserve" text-anchor="middle" x="785.68" y="-285.47" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">图无效</text>
+</g>
+<!-- l -->
+<g id="s3-node12" class="node">
+<title>l</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M334.4,-249.86C334.4,-249.86 77.6,-249.86 77.6,-249.86 71.6,-249.86 65.6,-243.86 65.6,-237.86 65.6,-237.86 65.6,-210.98 65.6,-210.98 65.6,-204.98 71.6,-198.98 77.6,-198.98 77.6,-198.98 334.4,-198.98 334.4,-198.98 340.4,-198.98 346.4,-204.98 346.4,-210.98 346.4,-210.98 346.4,-237.86 346.4,-237.86 346.4,-243.86 340.4,-249.86 334.4,-249.86"/>
+<text xml:space="preserve" text-anchor="middle" x="206" y="-228.62" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">在本次行程预算内补进 50 mm，再看</text>
+<text xml:space="preserve" text-anchor="middle" x="206" y="-211.82" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">新图</text>
+</g>
+<!-- k&#45;&gt;l -->
+<g id="s3-edge13" class="edge">
+<title>k&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M488.49,-313.74C429.65,-295.35 352.09,-271.1 293.13,-252.67"/>
+<polygon fill="#496b78" stroke="#496b78" points="294,-250.55 287.11,-250.78 292.64,-254.9 294,-250.55"/>
+<text xml:space="preserve" text-anchor="middle" x="440.03" y="-285.47" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- m -->
+<g id="s3-node13" class="node">
+<title>m</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M736.99,-229.62C736.99,-229.62 672.21,-260.77 672.21,-260.77 666.81,-263.37 655.4,-265.97 649.4,-265.97 649.4,-265.97 500.6,-265.97 500.6,-265.97 494.6,-265.97 483.19,-263.37 477.79,-260.77 477.79,-260.77 413.01,-229.62 413.01,-229.62 407.61,-227.02 407.61,-221.82 413.01,-219.22 413.01,-219.22 477.79,-188.08 477.79,-188.08 483.19,-185.48 494.6,-182.88 500.6,-182.88 500.6,-182.88 649.4,-182.88 649.4,-182.88 655.4,-182.88 666.81,-185.48 672.21,-188.08 672.21,-188.08 736.99,-219.22 736.99,-219.22 742.39,-221.82 742.39,-227.02 736.99,-229.62"/>
+<text xml:space="preserve" text-anchor="middle" x="575" y="-228.62" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">确认空爪、原目标丢失且有合规替代物</text>
+<text xml:space="preserve" text-anchor="middle" x="575" y="-211.82" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">？</text>
+</g>
+<!-- k&#45;&gt;m -->
+<g id="s3-edge15" class="edge">
+<title>k&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M575,-313.74C575,-301.94 575,-287.73 575,-274.19"/>
+<polygon fill="#496b78" stroke="#496b78" points="577.28,-274.33 575,-267.83 572.73,-274.33 577.28,-274.33"/>
+<text xml:space="preserve" text-anchor="middle" x="580.62" y="-285.47" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- l&#45;&gt;h -->
+<g id="s3-edge14" class="edge">
+<title>l&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M159.45,-250.28C136.39,-265.34 110.81,-286.9 98,-313.97 87.42,-336.32 84.12,-349.15 98,-369.62 151.38,-448.36 252.33,-486.22 337.88,-504.42"/>
+<polygon fill="#496b78" stroke="#496b78" points="337.27,-506.62 344.1,-505.71 338.19,-502.17 337.27,-506.62"/>
+</g>
+<!-- n -->
+<g id="s3-node14" class="node">
+<title>n</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M604.4,-134.88C604.4,-134.88 347.6,-134.88 347.6,-134.88 341.6,-134.88 335.6,-128.88 335.6,-122.88 335.6,-122.88 335.6,-96 335.6,-96 335.6,-90 341.6,-84 347.6,-84 347.6,-84 604.4,-84 604.4,-84 610.4,-84 616.4,-90 616.4,-96 616.4,-96 616.4,-122.88 616.4,-122.88 616.4,-128.88 610.4,-134.88 604.4,-134.88"/>
+<text xml:space="preserve" text-anchor="middle" x="476" y="-113.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">同任务新动作 U=5，回 120° 原地重</text>
+<text xml:space="preserve" text-anchor="middle" x="476" y="-96.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">选并重测</text>
+</g>
+<!-- m&#45;&gt;n -->
+<g id="s3-edge16" class="edge">
+<title>m&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M539.26,-182.63C527.16,-168.82 513.86,-153.65 502.59,-140.79"/>
+<polygon fill="#496b78" stroke="#496b78" points="504.57,-139.59 498.57,-136.2 501.14,-142.59 504.57,-139.59"/>
+<text xml:space="preserve" text-anchor="middle" x="531.12" y="-154.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- m&#45;&gt;o -->
+<g id="s3-edge18" class="edge">
+<title>m&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M646.76,-182.47C671.94,-168.1 699.68,-152.28 722.72,-139.13"/>
+<polygon fill="#496b78" stroke="#496b78" points="723.57,-141.27 728.08,-136.07 721.31,-137.32 723.57,-141.27"/>
+<text xml:space="preserve" text-anchor="middle" x="708.93" y="-154.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- n&#45;&gt;e -->
+<g id="s3-edge17" class="edge">
+<title>n&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M476,-83.53C476,-71.23 476,-56.43 476,-44.11"/>
+<polygon fill="#496b78" stroke="#496b78" points="478.28,-44.43 476,-37.93 473.73,-44.43 478.28,-44.43"/>
+</g>
+<!-- o&#45;&gt;e -->
+<g id="s3-edge20" class="edge">
+<title>o&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M690.27,-83.53C643.22,-69.36 585.12,-51.86 541.3,-38.66"/>
+<polygon fill="#496b78" stroke="#496b78" points="542.17,-36.55 535.29,-36.86 540.86,-40.91 542.17,-36.55"/>
+<text xml:space="preserve" text-anchor="middle" x="655.91" y="-55.5" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">结束旧批</text>
+</g>
+<!-- o&#45;&gt;h -->
+<g id="s3-edge19" class="edge">
+<title>o&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M790.33,-135.19C804.08,-157.27 821,-191.03 821,-223.42 821,-446.45 821,-446.45 821,-446.45 821,-487.49 724.03,-506.02 634.43,-514.39"/>
+<polygon fill="#496b78" stroke="#496b78" points="634.39,-512.11 628.12,-514.96 634.8,-516.65 634.39,-512.11"/>
+<text xml:space="preserve" text-anchor="middle" x="849.12" y="-337.29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">可继续观察</text>
+</g>
+</g>
+</svg>
+</div></section><section id="s4"><header><h2>D · 审核、绿蓝拨分和弃批</h2><p>蓝是危险物。近爪证据只用于选侧，不能把暂时看不到的绿色写成已抓到。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="审核、绿蓝拨分和弃批" width="1306pt" height="1337pt"
+ viewBox="0.00 0.00 1306.00 1337.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s4-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 1322.11)">
+<title>flow</title>
+<!-- a -->
+<g id="s4-node1" class="node">
+<title>a</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M346.2,-1307.71C346.2,-1307.71 89.4,-1307.71 89.4,-1307.71 83.4,-1307.71 77.4,-1301.71 77.4,-1295.71 77.4,-1295.71 77.4,-1268.83 77.4,-1268.83 77.4,-1262.83 83.4,-1256.83 89.4,-1256.83 89.4,-1256.83 346.2,-1256.83 346.2,-1256.83 352.2,-1256.83 358.2,-1262.83 358.2,-1268.83 358.2,-1268.83 358.2,-1295.71 358.2,-1295.71 358.2,-1301.71 352.2,-1307.71 346.2,-1307.71"/>
+<text xml:space="preserve" text-anchor="middle" x="217.8" y="-1286.47" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">停车，取得本次有效 140° 图和稳定</text>
+<text xml:space="preserve" text-anchor="middle" x="217.8" y="-1269.67" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">审核</text>
+</g>
+<!-- b -->
+<g id="s4-node2" class="node">
+<title>b</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M931.18,-1201.68C931.18,-1201.68 867.62,-1222.15 867.62,-1222.15 861.91,-1223.99 850.2,-1225.83 844.2,-1225.83 844.2,-1225.83 695.4,-1225.83 695.4,-1225.83 689.4,-1225.83 677.69,-1223.99 671.98,-1222.15 671.98,-1222.15 608.42,-1201.68 608.42,-1201.68 602.71,-1199.84 602.71,-1196.16 608.42,-1194.32 608.42,-1194.32 671.98,-1173.85 671.98,-1173.85 677.69,-1172.01 689.4,-1170.17 695.4,-1170.17 695.4,-1170.17 844.2,-1170.17 844.2,-1170.17 850.2,-1170.17 861.91,-1172.01 867.62,-1173.85 867.62,-1173.85 931.18,-1194.32 931.18,-1194.32 936.89,-1196.16 936.89,-1199.84 931.18,-1201.68"/>
+<text xml:space="preserve" text-anchor="middle" x="769.8" y="-1193.8" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">载荷是否符合本阶段运输资格？</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s4-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M358.52,-1260.29C446.96,-1247.11 560.01,-1230.27 645.19,-1217.57"/>
+<polygon fill="#496b78" stroke="#496b78" points="645.5,-1219.82 651.59,-1216.62 644.83,-1215.32 645.5,-1219.82"/>
+</g>
+<!-- c -->
+<g id="s4-node3" class="node">
+<title>c</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1040.2,-255.8C1040.2,-255.8 783.4,-255.8 783.4,-255.8 777.4,-255.8 771.4,-249.8 771.4,-243.8 771.4,-243.8 771.4,-216.92 771.4,-216.92 771.4,-210.92 777.4,-204.92 783.4,-204.92 783.4,-204.92 1040.2,-204.92 1040.2,-204.92 1046.2,-204.92 1052.2,-210.92 1052.2,-216.92 1052.2,-216.92 1052.2,-243.8 1052.2,-243.8 1052.2,-249.8 1046.2,-255.8 1040.2,-255.8"/>
+<text xml:space="preserve" text-anchor="middle" x="911.8" y="-234.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">首件：单绿；首件后：1～3 件绿黑纯</text>
+<text xml:space="preserve" text-anchor="middle" x="911.8" y="-217.76" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">材料，或单橙</text>
+</g>
+<!-- b&#45;&gt;c -->
+<g id="s4-edge2" class="edge">
+<title>b&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M894.09,-1182.05C987.63,-1167.21 1099.8,-1140.08 1099.8,-1095.35 1099.8,-1095.35 1099.8,-1095.35 1099.8,-333.01 1099.8,-297.59 1073.66,-274.45 1040.87,-259.36"/>
+<polygon fill="#496b78" stroke="#496b78" points="1042.04,-257.39 1035.17,-256.87 1040.21,-261.56 1042.04,-257.39"/>
+<text xml:space="preserve" text-anchor="middle" x="1111.05" y="-665.19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">合法</text>
+</g>
+<!-- g -->
+<g id="s4-node7" class="node">
+<title>g</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M931.18,-1098.03C931.18,-1098.03 867.62,-1118.49 867.62,-1118.49 861.91,-1120.33 850.2,-1122.17 844.2,-1122.17 844.2,-1122.17 695.4,-1122.17 695.4,-1122.17 689.4,-1122.17 677.69,-1120.33 671.98,-1118.49 671.98,-1118.49 608.42,-1098.03 608.42,-1098.03 602.71,-1096.19 602.71,-1092.51 608.42,-1090.67 608.42,-1090.67 671.98,-1070.2 671.98,-1070.2 677.69,-1068.36 689.4,-1066.52 695.4,-1066.52 695.4,-1066.52 844.2,-1066.52 844.2,-1066.52 850.2,-1066.52 861.91,-1068.36 867.62,-1070.2 867.62,-1070.2 931.18,-1090.67 931.18,-1090.67 936.89,-1092.51 936.89,-1096.19 931.18,-1098.03"/>
+<text xml:space="preserve" text-anchor="middle" x="769.8" y="-1090.15" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">不合法的具体原因？</text>
+</g>
+<!-- b&#45;&gt;g -->
+<g id="s4-edge7" class="edge">
+<title>b&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M769.8,-1169.76C769.8,-1157.68 769.8,-1143.32 769.8,-1130.45"/>
+<polygon fill="#496b78" stroke="#496b78" points="772.08,-1130.68 769.8,-1124.18 767.53,-1130.68 772.08,-1130.68"/>
+<text xml:space="preserve" text-anchor="middle" x="781.05" y="-1141.67" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">非法</text>
+</g>
+<!-- d -->
+<g id="s4-node4" class="node">
+<title>d</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M1073.18,-130.38C1073.18,-130.38 1009.62,-150.85 1009.62,-150.85 1003.91,-152.69 992.2,-154.53 986.2,-154.53 986.2,-154.53 837.4,-154.53 837.4,-154.53 831.4,-154.53 819.69,-152.69 813.98,-150.85 813.98,-150.85 750.42,-130.38 750.42,-130.38 744.71,-128.55 744.71,-124.87 750.42,-123.03 750.42,-123.03 813.98,-102.56 813.98,-102.56 819.69,-100.72 831.4,-98.88 837.4,-98.88 837.4,-98.88 986.2,-98.88 986.2,-98.88 992.2,-98.88 1003.91,-100.72 1009.62,-102.56 1009.62,-102.56 1073.18,-123.03 1073.18,-123.03 1078.89,-124.87 1078.89,-128.55 1073.18,-130.38"/>
+<text xml:space="preserve" text-anchor="middle" x="911.8" y="-122.51" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">夹爪是否已闭合？</text>
+</g>
+<!-- c&#45;&gt;d -->
+<g id="s4-edge3" class="edge">
+<title>c&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M911.8,-204.49C911.8,-191.91 911.8,-176.44 911.8,-162.68"/>
+<polygon fill="#496b78" stroke="#496b78" points="914.08,-162.83 911.8,-156.33 909.53,-162.83 914.08,-162.83"/>
+</g>
+<!-- e -->
+<g id="s4-node5" class="node">
+<title>e</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1265.2,-50.88C1265.2,-50.88 1008.4,-50.88 1008.4,-50.88 1002.4,-50.88 996.4,-44.88 996.4,-38.88 996.4,-38.88 996.4,-12 996.4,-12 996.4,-6 1002.4,0 1008.4,0 1008.4,0 1265.2,0 1265.2,0 1271.2,0 1277.2,-6 1277.2,-12 1277.2,-12 1277.2,-38.88 1277.2,-38.88 1277.2,-44.88 1271.2,-50.88 1265.2,-50.88"/>
+<text xml:space="preserve" text-anchor="middle" x="1136.8" y="-29.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">按本次审核合爪，重新拍 140° 闭爪</text>
+<text xml:space="preserve" text-anchor="middle" x="1136.8" y="-12.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">复审</text>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s4-edge4" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M973.58,-98.45C1004.66,-84.74 1042.28,-68.14 1073.56,-54.34"/>
+<polygon fill="#496b78" stroke="#496b78" points="1074.14,-56.57 1079.16,-51.87 1072.3,-52.41 1074.14,-56.57"/>
+<text xml:space="preserve" text-anchor="middle" x="1055.7" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">开爪</text>
+</g>
+<!-- f -->
+<g id="s4-node6" class="node">
+<title>f</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M968.2,-43.44C968.2,-43.44 711.4,-43.44 711.4,-43.44 705.4,-43.44 699.4,-37.44 699.4,-31.44 699.4,-31.44 699.4,-19.44 699.4,-19.44 699.4,-13.44 705.4,-7.44 711.4,-7.44 711.4,-7.44 968.2,-7.44 968.2,-7.44 974.2,-7.44 980.2,-13.44 980.2,-19.44 980.2,-19.44 980.2,-31.44 980.2,-31.44 980.2,-37.44 974.2,-43.44 968.2,-43.44"/>
+<text xml:space="preserve" text-anchor="middle" x="839.8" y="-21.24" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">E　闭爪审核合法，按载荷导航</text>
+</g>
+<!-- d&#45;&gt;f -->
+<g id="s4-edge6" class="edge">
+<title>d&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M892.13,-98.58C881.15,-83.45 867.6,-64.77 857.05,-50.22"/>
+<polygon fill="#496b78" stroke="#496b78" points="858.97,-49 853.31,-45.07 855.29,-51.67 858.97,-49"/>
+<text xml:space="preserve" text-anchor="middle" x="891.36" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">闭爪</text>
+</g>
+<!-- e&#45;&gt;a -->
+<g id="s4-edge5" class="edge">
+<title>e&#45;&gt;a</title>
+<path fill="none" stroke="#496b78" d="M1136.8,-51.33C1136.8,-71.4 1136.8,-100.37 1136.8,-125.71 1136.8,-1199 1136.8,-1199 1136.8,-1199 1136.8,-1237.19 626.78,-1264.13 366.63,-1275.39"/>
+<polygon fill="#496b78" stroke="#496b78" points="366.54,-1273.12 360.14,-1275.67 366.73,-1277.67 366.54,-1273.12"/>
+</g>
+<!-- h -->
+<g id="s4-node8" class="node">
+<title>h</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M1063.2,-1008.69C1063.2,-1008.69 806.4,-1008.69 806.4,-1008.69 800.4,-1008.69 794.4,-1002.69 794.4,-996.69 794.4,-996.69 794.4,-984.69 794.4,-984.69 794.4,-978.69 800.4,-972.69 806.4,-972.69 806.4,-972.69 1063.2,-972.69 1063.2,-972.69 1069.2,-972.69 1075.2,-978.69 1075.2,-984.69 1075.2,-984.69 1075.2,-996.69 1075.2,-996.69 1075.2,-1002.69 1069.2,-1008.69 1063.2,-1008.69"/>
+<text xml:space="preserve" text-anchor="middle" x="934.8" y="-986.49" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">C　空爪按抓前条件补进或重选</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s4-edge8" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M814.02,-1066.11C840.89,-1049.55 874.73,-1028.7 899.75,-1013.29"/>
+<polygon fill="#496b78" stroke="#496b78" points="900.93,-1015.23 905.27,-1009.89 898.54,-1011.36 900.93,-1015.23"/>
+<text xml:space="preserve" text-anchor="middle" x="873.43" y="-1038.02" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">空爪</text>
+</g>
+<!-- i -->
+<g id="s4-node9" class="node">
+<title>i</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M733.18,-994.37C733.18,-994.37 669.62,-1014.84 669.62,-1014.84 663.91,-1016.68 652.2,-1018.52 646.2,-1018.52 646.2,-1018.52 497.4,-1018.52 497.4,-1018.52 491.4,-1018.52 479.69,-1016.68 473.98,-1014.84 473.98,-1014.84 410.42,-994.37 410.42,-994.37 404.71,-992.53 404.71,-988.86 410.42,-987.02 410.42,-987.02 473.98,-966.55 473.98,-966.55 479.69,-964.71 491.4,-962.87 497.4,-962.87 497.4,-962.87 646.2,-962.87 646.2,-962.87 652.2,-962.87 663.91,-964.71 669.62,-966.55 669.62,-966.55 733.18,-987.02 733.18,-987.02 738.89,-988.86 738.89,-992.53 733.18,-994.37"/>
+<text xml:space="preserve" text-anchor="middle" x="571.8" y="-986.49" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">一绿一蓝，当前停稳且各归一爪？</text>
+</g>
+<!-- g&#45;&gt;i -->
+<g id="s4-edge9" class="edge">
+<title>g&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M716.74,-1066.11C690.66,-1052.72 659.12,-1036.52 632.13,-1022.67"/>
+<polygon fill="#496b78" stroke="#496b78" points="633.17,-1020.65 626.35,-1019.7 631.1,-1024.69 633.17,-1020.65"/>
+<text xml:space="preserve" text-anchor="middle" x="705.15" y="-1038.02" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">一绿一蓝</text>
+</g>
+<!-- o -->
+<g id="s4-node15" class="node">
+<title>o</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M816.18,-605.1C816.18,-605.1 752.62,-625.57 752.62,-625.57 746.91,-627.41 735.2,-629.25 729.2,-629.25 729.2,-629.25 580.4,-629.25 580.4,-629.25 574.4,-629.25 562.69,-627.41 556.98,-625.57 556.98,-625.57 493.42,-605.1 493.42,-605.1 487.71,-603.26 487.71,-599.58 493.42,-597.74 493.42,-597.74 556.98,-577.28 556.98,-577.28 562.69,-575.44 574.4,-573.6 580.4,-573.6 580.4,-573.6 729.2,-573.6 729.2,-573.6 735.2,-573.6 746.91,-575.44 752.62,-577.28 752.62,-577.28 816.18,-597.74 816.18,-597.74 821.89,-599.58 821.89,-603.26 816.18,-605.1"/>
+<text xml:space="preserve" text-anchor="middle" x="654.8" y="-597.22" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">有可保留的一侧，且分离预算允许？</text>
+</g>
+<!-- g&#45;&gt;o -->
+<g id="s4-edge10" class="edge">
+<title>g&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M769.8,-1066.17C769.8,-1045.69 769.8,-1016.93 769.8,-991.69 769.8,-991.69 769.8,-991.69 769.8,-736.96 769.8,-694.18 735.79,-658.14 704.76,-634.16"/>
+<polygon fill="#496b78" stroke="#496b78" points="706.38,-632.53 699.81,-630.44 703.64,-636.17 706.38,-632.53"/>
+<text xml:space="preserve" text-anchor="middle" x="809.17" y="-868.83" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">黑蓝或其他混装</text>
+</g>
+<!-- j -->
+<g id="s4-node10" class="node">
+<title>j</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M744.2,-816.78C744.2,-816.78 487.4,-816.78 487.4,-816.78 481.4,-816.78 475.4,-810.78 475.4,-804.78 475.4,-804.78 475.4,-792.78 475.4,-792.78 475.4,-786.78 481.4,-780.78 487.4,-780.78 487.4,-780.78 744.2,-780.78 744.2,-780.78 750.2,-780.78 756.2,-786.78 756.2,-792.78 756.2,-792.78 756.2,-804.78 756.2,-804.78 756.2,-810.78 750.2,-816.78 744.2,-816.78"/>
+<text xml:space="preserve" text-anchor="middle" x="615.8" y="-794.58" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">直接按当前真实归侧保绿、放蓝</text>
+</g>
+<!-- i&#45;&gt;j -->
+<g id="s4-edge11" class="edge">
+<title>i&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M583.14,-962.39C588.57,-948.39 594.76,-930.94 598.8,-914.87 606.47,-884.38 611.1,-848.42 613.55,-824.92"/>
+<polygon fill="#496b78" stroke="#496b78" points="615.79,-825.35 614.17,-818.66 611.26,-824.9 615.79,-825.35"/>
+<text xml:space="preserve" text-anchor="middle" x="599.75" y="-934.37" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- k -->
+<g id="s4-node11" class="node">
+<title>k</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M579.79,-878.53C579.79,-878.53 515.01,-909.67 515.01,-909.67 509.61,-912.27 498.2,-914.87 492.2,-914.87 492.2,-914.87 343.4,-914.87 343.4,-914.87 337.4,-914.87 325.99,-912.27 320.59,-909.67 320.59,-909.67 255.81,-878.53 255.81,-878.53 250.41,-875.93 250.41,-870.73 255.81,-868.13 255.81,-868.13 320.59,-836.98 320.59,-836.98 325.99,-834.38 337.4,-831.78 343.4,-831.78 343.4,-831.78 492.2,-831.78 492.2,-831.78 498.2,-831.78 509.61,-834.38 515.01,-836.98 515.01,-836.98 579.79,-868.13 579.79,-868.13 585.19,-870.73 585.19,-875.93 579.79,-878.53"/>
+<text xml:space="preserve" text-anchor="middle" x="417.8" y="-877.53" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">开爪同侧，绿近蓝远且蓝有明确横向偏</text>
+<text xml:space="preserve" text-anchor="middle" x="417.8" y="-860.73" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">移？本批未拨？</text>
+</g>
+<!-- i&#45;&gt;k -->
+<g id="s4-edge13" class="edge">
+<title>i&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M535.69,-962.65C518.69,-949.91 497.93,-934.36 478.6,-919.88"/>
+<polygon fill="#496b78" stroke="#496b78" points="480.16,-918.2 473.59,-916.12 477.43,-921.84 480.16,-918.2"/>
+<text xml:space="preserve" text-anchor="middle" x="518.75" y="-934.37" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- j&#45;&gt;o -->
+<g id="s4-edge12" class="edge">
+<title>j&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M624.98,-780.53C627.16,-775.85 629.29,-770.71 630.8,-765.78 643.98,-722.63 650.02,-670.8 652.73,-637.26"/>
+<polygon fill="#496b78" stroke="#496b78" points="654.97,-637.73 653.2,-631.07 650.43,-637.38 654.97,-637.73"/>
+<text xml:space="preserve" text-anchor="middle" x="688.31" y="-733.46" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">检查限次后选绿侧</text>
+</g>
+<!-- l -->
+<g id="s4-node12" class="node">
+<title>l</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M574.2,-695.13C574.2,-695.13 317.4,-695.13 317.4,-695.13 311.4,-695.13 305.4,-689.13 305.4,-683.13 305.4,-683.13 305.4,-656.25 305.4,-656.25 305.4,-650.25 311.4,-644.25 317.4,-644.25 317.4,-644.25 574.2,-644.25 574.2,-644.25 580.2,-644.25 586.2,-650.25 586.2,-656.25 586.2,-656.25 586.2,-683.13 586.2,-683.13 586.2,-689.13 580.2,-695.13 574.2,-695.13"/>
+<text xml:space="preserve" text-anchor="middle" x="445.8" y="-673.89" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">蓝偏右保左，蓝偏左保右；只拨一次，</text>
+<text xml:space="preserve" text-anchor="middle" x="445.8" y="-657.09" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">再审核</text>
+</g>
+<!-- k&#45;&gt;l -->
+<g id="s4-edge14" class="edge">
+<title>k&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M337.96,-831.36C286.17,-799.36 234.24,-753.24 268.8,-710.13 271.92,-706.23 284.37,-701.85 301.32,-697.45"/>
+<polygon fill="#496b78" stroke="#496b78" points="301.63,-699.72 307.38,-695.94 300.52,-695.31 301.63,-699.72"/>
+<text xml:space="preserve" text-anchor="middle" x="363.35" y="-794.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">满足且仍有分离预算</text>
+</g>
+<!-- m -->
+<g id="s4-node13" class="node">
+<title>m</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M611.18,-741.63C611.18,-741.63 547.62,-762.1 547.62,-762.1 541.91,-763.94 530.2,-765.78 524.2,-765.78 524.2,-765.78 375.4,-765.78 375.4,-765.78 369.4,-765.78 357.69,-763.94 351.98,-762.1 351.98,-762.1 288.42,-741.63 288.42,-741.63 282.71,-739.8 282.71,-736.12 288.42,-734.28 288.42,-734.28 351.98,-713.81 351.98,-713.81 357.69,-711.97 369.4,-710.13 375.4,-710.13 375.4,-710.13 524.2,-710.13 524.2,-710.13 530.2,-710.13 541.91,-711.97 547.62,-713.81 547.62,-713.81 611.18,-734.28 611.18,-734.28 616.89,-736.12 616.89,-739.8 611.18,-741.63"/>
+<text xml:space="preserve" text-anchor="middle" x="449.8" y="-733.76" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">满足普通蓝与目标的观察转向条件？</text>
+</g>
+<!-- k&#45;&gt;m -->
+<g id="s4-edge16" class="edge">
+<title>k&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M427.57,-831.59C432.05,-812.95 437.29,-791.12 441.55,-773.33"/>
+<polygon fill="#496b78" stroke="#496b78" points="443.66,-774.29 442.97,-767.44 439.24,-773.23 443.66,-774.29"/>
+<text xml:space="preserve" text-anchor="middle" x="450.7" y="-794.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">其他</text>
+</g>
+<!-- r -->
+<g id="s4-node18" class="node">
+<title>r</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M545.18,-337.69C545.18,-337.69 481.62,-358.16 481.62,-358.16 475.91,-360 464.2,-361.84 458.2,-361.84 458.2,-361.84 309.4,-361.84 309.4,-361.84 303.4,-361.84 291.69,-360 285.98,-358.16 285.98,-358.16 222.42,-337.69 222.42,-337.69 216.71,-335.85 216.71,-332.17 222.42,-330.33 222.42,-330.33 285.98,-309.86 285.98,-309.86 291.69,-308.02 303.4,-306.18 309.4,-306.18 309.4,-306.18 458.2,-306.18 458.2,-306.18 464.2,-306.18 475.91,-308.02 481.62,-309.86 481.62,-309.86 545.18,-330.33 545.18,-330.33 550.89,-332.17 550.89,-335.85 545.18,-337.69"/>
+<text xml:space="preserve" text-anchor="middle" x="383.8" y="-329.81" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">新审核是否已得到合法载荷？</text>
+</g>
+<!-- l&#45;&gt;r -->
+<g id="s4-edge15" class="edge">
+<title>l&#45;&gt;r</title>
+<path fill="none" stroke="#496b78" d="M447.46,-643.82C448.92,-619.93 450.8,-582.81 450.8,-550.6 450.8,-550.6 450.8,-550.6 450.8,-417.28 450.8,-398.26 439.9,-381.2 426.9,-367.61"/>
+<polygon fill="#496b78" stroke="#496b78" points="428.52,-366.02 422.29,-363.07 425.32,-369.26 428.52,-366.02"/>
+</g>
+<!-- n -->
+<g id="s4-node14" class="node">
+<title>n</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M414.2,-626.86C414.2,-626.86 157.4,-626.86 157.4,-626.86 151.4,-626.86 145.4,-620.86 145.4,-614.86 145.4,-614.86 145.4,-587.98 145.4,-587.98 145.4,-581.98 151.4,-575.98 157.4,-575.98 157.4,-575.98 414.2,-575.98 414.2,-575.98 420.2,-575.98 426.2,-581.98 426.2,-587.98 426.2,-587.98 426.2,-614.86 426.2,-614.86 426.2,-620.86 420.2,-626.86 414.2,-626.86"/>
+<text xml:space="preserve" text-anchor="middle" x="285.8" y="-605.62" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">按画面 ±10° 试转；分居中线可提前</text>
+<text xml:space="preserve" text-anchor="middle" x="285.8" y="-588.82" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">停车，取新图</text>
+</g>
+<!-- m&#45;&gt;n -->
+<g id="s4-edge17" class="edge">
+<title>m&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M331.67,-719.93C305.75,-713.72 283.55,-705.59 275.3,-695.13 262.02,-678.29 265.29,-654.06 271.54,-634.6"/>
+<polygon fill="#496b78" stroke="#496b78" points="273.65,-635.45 273.65,-628.56 269.36,-633.94 273.65,-635.45"/>
+<text xml:space="preserve" text-anchor="middle" x="286.55" y="-665.19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">允许</text>
+</g>
+<!-- m&#45;&gt;o -->
+<g id="s4-edge19" class="edge">
+<title>m&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M554.91,-715.66C566.52,-710.29 577.49,-703.56 586.8,-695.13 604.97,-678.68 593.85,-664.22 608.05,-644.25 610.22,-641.19 612.66,-638.2 615.25,-635.31"/>
+<polygon fill="#496b78" stroke="#496b78" points="616.86,-636.92 619.69,-630.64 613.56,-633.78 616.86,-636.92"/>
+<text xml:space="preserve" text-anchor="middle" x="624.92" y="-665.19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">不满足</text>
+</g>
+<!-- n&#45;&gt;a -->
+<g id="s4-edge18" class="edge">
+<title>n&#45;&gt;a</title>
+<path fill="none" stroke="#496b78" d="M264.28,-627.33C244.36,-653 217.8,-695.08 217.8,-736.96 217.8,-1199 217.8,-1199 217.8,-1199 217.8,-1215.42 217.8,-1233.68 217.8,-1248.82"/>
+<polygon fill="#496b78" stroke="#496b78" points="215.53,-1248.41 217.8,-1254.91 220.08,-1248.41 215.53,-1248.41"/>
+</g>
+<!-- p -->
+<g id="s4-node16" class="node">
+<title>p</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M882.2,-525.6C882.2,-525.6 625.4,-525.6 625.4,-525.6 619.4,-525.6 613.4,-519.6 613.4,-513.6 613.4,-513.6 613.4,-486.72 613.4,-486.72 613.4,-480.72 619.4,-474.72 625.4,-474.72 625.4,-474.72 882.2,-474.72 882.2,-474.72 888.2,-474.72 894.2,-480.72 894.2,-486.72 894.2,-486.72 894.2,-513.6 894.2,-513.6 894.2,-519.6 888.2,-525.6 882.2,-525.6"/>
+<text xml:space="preserve" text-anchor="middle" x="753.8" y="-504.36" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">选侧分离；保留爪额外夹紧 20°，</text>
+<text xml:space="preserve" text-anchor="middle" x="753.8" y="-487.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">40°/秒</text>
+</g>
+<!-- o&#45;&gt;p -->
+<g id="s4-edge20" class="edge">
+<title>o&#45;&gt;p</title>
+<path fill="none" stroke="#496b78" d="M681.85,-573.3C694.78,-560.34 710.29,-544.78 723.6,-531.44"/>
+<polygon fill="#496b78" stroke="#496b78" points="725.11,-533.15 728.08,-526.94 721.88,-529.94 725.11,-533.15"/>
+<text xml:space="preserve" text-anchor="middle" x="724.42" y="-545.1" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">允许</text>
+</g>
+<!-- u -->
+<g id="s4-node21" class="node">
+<title>u</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M506.2,-43.44C506.2,-43.44 249.4,-43.44 249.4,-43.44 243.4,-43.44 237.4,-37.44 237.4,-31.44 237.4,-31.44 237.4,-19.44 237.4,-19.44 237.4,-13.44 243.4,-7.44 249.4,-7.44 249.4,-7.44 506.2,-7.44 506.2,-7.44 512.2,-7.44 518.2,-13.44 518.2,-19.44 518.2,-19.44 518.2,-31.44 518.2,-31.44 518.2,-37.44 512.2,-43.44 506.2,-43.44"/>
+<text xml:space="preserve" text-anchor="middle" x="377.8" y="-21.24" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">按原释放／脱离流程弃批，再找目标</text>
+</g>
+<!-- o&#45;&gt;u -->
+<g id="s4-edge23" class="edge">
+<title>o&#45;&gt;u</title>
+<path fill="none" stroke="#496b78" d="M624.12,-573.17C606.88,-554.79 588.8,-528.89 588.8,-501.16 588.8,-501.16 588.8,-501.16 588.8,-125.71 588.8,-84.64 555.67,-60.53 515.67,-46.39"/>
+<polygon fill="#496b78" stroke="#496b78" points="516.45,-44.25 509.56,-44.35 515,-48.57 516.45,-44.25"/>
+<text xml:space="preserve" text-anchor="middle" x="611.3" y="-329.51" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">不能处理</text>
+</g>
+<!-- q -->
+<g id="s4-node17" class="node">
+<title>q</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M882.2,-443.72C882.2,-443.72 625.4,-443.72 625.4,-443.72 619.4,-443.72 613.4,-437.72 613.4,-431.72 613.4,-431.72 613.4,-404.84 613.4,-404.84 613.4,-398.84 619.4,-392.84 625.4,-392.84 625.4,-392.84 882.2,-392.84 882.2,-392.84 888.2,-392.84 894.2,-398.84 894.2,-404.84 894.2,-404.84 894.2,-431.72 894.2,-431.72 894.2,-437.72 888.2,-443.72 882.2,-443.72"/>
+<text xml:space="preserve" text-anchor="middle" x="753.8" y="-422.48" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">保左 64°／保右 116°；双爪到位等 </text>
+<text xml:space="preserve" text-anchor="middle" x="753.8" y="-405.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">260 ms</text>
+</g>
+<!-- p&#45;&gt;q -->
+<g id="s4-edge21" class="edge">
+<title>p&#45;&gt;q</title>
+<path fill="none" stroke="#496b78" d="M753.8,-474.32C753.8,-467.26 753.8,-459.46 753.8,-452"/>
+<polygon fill="#496b78" stroke="#496b78" points="756.08,-452.11 753.8,-445.61 751.53,-452.11 756.08,-452.11"/>
+</g>
+<!-- q&#45;&gt;r -->
+<g id="s4-edge22" class="edge">
+<title>q&#45;&gt;r</title>
+<path fill="none" stroke="#496b78" d="M641.78,-392.37C594.54,-381.87 539.73,-369.68 492.81,-359.25"/>
+<polygon fill="#496b78" stroke="#496b78" points="493.36,-357.04 486.53,-357.85 492.38,-361.48 493.36,-357.04"/>
+</g>
+<!-- r&#45;&gt;c -->
+<g id="s4-edge24" class="edge">
+<title>r&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M490.97,-312.38C572.83,-296.62 686.25,-274.78 774.72,-257.75"/>
+<polygon fill="#496b78" stroke="#496b78" points="774.96,-260.02 780.91,-256.56 774.09,-255.55 774.96,-260.02"/>
+<text xml:space="preserve" text-anchor="middle" x="690.66" y="-277.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">合法</text>
+</g>
+<!-- s -->
+<g id="s4-node19" class="node">
+<title>s</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M473.18,-234.04C473.18,-234.04 409.62,-254.51 409.62,-254.51 403.91,-256.35 392.2,-258.18 386.2,-258.18 386.2,-258.18 237.4,-258.18 237.4,-258.18 231.4,-258.18 219.69,-256.35 213.98,-254.51 213.98,-254.51 150.42,-234.04 150.42,-234.04 144.71,-232.2 144.71,-228.52 150.42,-226.68 150.42,-226.68 213.98,-206.21 213.98,-206.21 219.69,-204.37 231.4,-202.53 237.4,-202.53 237.4,-202.53 386.2,-202.53 386.2,-202.53 392.2,-202.53 403.91,-204.37 409.62,-206.21 409.62,-206.21 473.18,-226.68 473.18,-226.68 478.89,-228.52 478.89,-232.2 473.18,-234.04"/>
+<text xml:space="preserve" text-anchor="middle" x="311.8" y="-226.16" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">首绿仍可见且本批实际分离已达五次？</text>
+</g>
+<!-- r&#45;&gt;s -->
+<g id="s4-edge25" class="edge">
+<title>r&#45;&gt;s</title>
+<path fill="none" stroke="#496b78" d="M364.51,-305.77C355.63,-293.24 345.01,-278.24 335.64,-265.01"/>
+<polygon fill="#496b78" stroke="#496b78" points="337.64,-263.9 332.02,-259.91 333.92,-266.53 337.64,-263.9"/>
+<text xml:space="preserve" text-anchor="middle" x="374.61" y="-277.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">仍不合法</text>
+</g>
+<!-- s&#45;&gt;a -->
+<g id="s4-edge27" class="edge">
+<title>s&#45;&gt;a</title>
+<path fill="none" stroke="#496b78" d="M201.25,-250.78C159.01,-265.13 120.8,-290 120.8,-333.01 120.8,-1199 120.8,-1199 120.8,-1199 120.8,-1221.52 136.19,-1239.15 154.71,-1252.21"/>
+<polygon fill="#496b78" stroke="#496b78" points="153.16,-1253.92 159.83,-1255.63 155.69,-1250.13 153.16,-1253.92"/>
+<text xml:space="preserve" text-anchor="middle" x="154.55" y="-733.46" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">首绿未满五次</text>
+</g>
+<!-- t -->
+<g id="s4-node20" class="node">
+<title>t</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M334.18,-130.38C334.18,-130.38 270.62,-150.85 270.62,-150.85 264.91,-152.69 253.2,-154.53 247.2,-154.53 247.2,-154.53 98.4,-154.53 98.4,-154.53 92.4,-154.53 80.69,-152.69 74.98,-150.85 74.98,-150.85 11.42,-130.38 11.42,-130.38 5.71,-128.55 5.71,-124.87 11.42,-123.03 11.42,-123.03 74.98,-102.56 74.98,-102.56 80.69,-100.72 92.4,-98.88 98.4,-98.88 98.4,-98.88 247.2,-98.88 247.2,-98.88 253.2,-98.88 264.91,-100.72 270.62,-102.56 270.62,-102.56 334.18,-123.03 334.18,-123.03 339.89,-124.87 339.89,-128.55 334.18,-130.38"/>
+<text xml:space="preserve" text-anchor="middle" x="172.8" y="-122.51" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">普通批连续无进展次数是否达到限值？</text>
+</g>
+<!-- s&#45;&gt;t -->
+<g id="s4-edge28" class="edge">
+<title>s&#45;&gt;t</title>
+<path fill="none" stroke="#496b78" d="M274.55,-202.12C256.63,-189.01 235.04,-173.22 216.36,-159.57"/>
+<polygon fill="#496b78" stroke="#496b78" points="217.96,-157.92 211.37,-155.92 215.28,-161.59 217.96,-157.92"/>
+<text xml:space="preserve" text-anchor="middle" x="273.12" y="-174.03" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">其他批次</text>
+</g>
+<!-- s&#45;&gt;u -->
+<g id="s4-edge26" class="edge">
+<title>s&#45;&gt;u</title>
+<path fill="none" stroke="#496b78" d="M329.81,-202.32C338.25,-188.54 347.75,-171.2 353.8,-154.53 366.27,-120.18 372.56,-78.19 375.5,-51.87"/>
+<polygon fill="#496b78" stroke="#496b78" points="377.77,-52.11 376.19,-45.41 373.24,-51.63 377.77,-52.11"/>
+<text xml:space="preserve" text-anchor="middle" x="374.07" y="-122.21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- t&#45;&gt;a -->
+<g id="s4-edge30" class="edge">
+<title>t&#45;&gt;a</title>
+<path fill="none" stroke="#496b78" d="M81.15,-153.23C47.19,-168.74 16.8,-192.83 16.8,-229.36 16.8,-1199 16.8,-1199 16.8,-1199 16.8,-1231.46 39.54,-1251.4 69.71,-1263.55"/>
+<polygon fill="#496b78" stroke="#496b78" points="68.8,-1265.64 75.69,-1265.8 70.4,-1261.38 68.8,-1265.64"/>
+<text xml:space="preserve" text-anchor="middle" x="61.8" y="-665.19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">仍有进展或可重试</text>
+</g>
+<!-- t&#45;&gt;u -->
+<g id="s4-edge29" class="edge">
+<title>t&#45;&gt;u</title>
+<path fill="none" stroke="#496b78" d="M222.26,-98.48C241.93,-87.94 264.89,-76 286.05,-65.88 299.64,-59.38 314.57,-52.76 328.36,-46.83"/>
+<polygon fill="#496b78" stroke="#496b78" points="328.98,-49.04 334.07,-44.4 327.2,-44.86 328.98,-49.04"/>
+<text xml:space="preserve" text-anchor="middle" x="325.42" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">连续两次无进展</text>
+</g>
+</g>
+</svg>
+</div></section><section id="s5"><header><h2>E · 运输、门口复审和通道清障</h2><p>上位依据区域、位置和实物框规划；下位按本次动作执行并回报。找回物资仍需真实审核。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="运输、门口复审和通道清障" width="1267pt" height="940pt"
+ viewBox="0.00 0.00 1267.00 940.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s5-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 925.74)">
+<title>flow</title>
+<!-- a -->
+<g id="s5-node1" class="node">
+<title>a</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M527.8,-911.34C527.8,-911.34 271,-911.34 271,-911.34 265,-911.34 259,-905.34 259,-899.34 259,-899.34 259,-887.34 259,-887.34 259,-881.34 265,-875.34 271,-875.34 271,-875.34 527.8,-875.34 527.8,-875.34 533.8,-875.34 539.8,-881.34 539.8,-887.34 539.8,-887.34 539.8,-899.34 539.8,-899.34 539.8,-905.34 533.8,-911.34 527.8,-911.34"/>
+<text xml:space="preserve" text-anchor="middle" x="399.4" y="-889.14" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">材料去物资区，单橙去伤员区</text>
+</g>
+<!-- b -->
+<g id="s5-node2" class="node">
+<title>b</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M560.78,-820.19C560.78,-820.19 497.22,-840.66 497.22,-840.66 491.51,-842.5 479.8,-844.34 473.8,-844.34 473.8,-844.34 325,-844.34 325,-844.34 319,-844.34 307.29,-842.5 301.58,-840.66 301.58,-840.66 238.02,-820.19 238.02,-820.19 232.31,-818.35 232.31,-814.67 238.02,-812.83 238.02,-812.83 301.58,-792.36 301.58,-792.36 307.29,-790.52 319,-788.68 325,-788.68 325,-788.68 473.8,-788.68 473.8,-788.68 479.8,-788.68 491.51,-790.52 497.22,-792.36 497.22,-792.36 560.78,-812.83 560.78,-812.83 566.49,-814.67 566.49,-818.35 560.78,-820.19"/>
+<text xml:space="preserve" text-anchor="middle" x="399.4" y="-812.31" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">导航所需定位和载荷资格可用？</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s5-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M399.4,-874.98C399.4,-868.25 399.4,-860.28 399.4,-852.46"/>
+<polygon fill="#496b78" stroke="#496b78" points="401.68,-852.75 399.4,-846.25 397.13,-852.75 401.68,-852.75"/>
+</g>
+<!-- c -->
+<g id="s5-node3" class="node">
+<title>c</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M461.8,-740.68C461.8,-740.68 205,-740.68 205,-740.68 199,-740.68 193,-734.68 193,-728.68 193,-728.68 193,-701.8 193,-701.8 193,-695.8 199,-689.8 205,-689.8 205,-689.8 461.8,-689.8 461.8,-689.8 467.8,-689.8 473.8,-695.8 473.8,-701.8 473.8,-701.8 473.8,-728.68 473.8,-728.68 473.8,-734.68 467.8,-740.68 461.8,-740.68"/>
+<text xml:space="preserve" text-anchor="middle" x="333.4" y="-719.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">位置无效等待；载荷证据改变则要求门</text>
+<text xml:space="preserve" text-anchor="middle" x="333.4" y="-702.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">口实审</text>
+</g>
+<!-- b&#45;&gt;c -->
+<g id="s5-edge2" class="edge">
+<title>b&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M393.7,-788.48C390.59,-777.68 386,-765.5 379.4,-755.68 377.31,-752.57 374.91,-749.57 372.32,-746.69"/>
+<polygon fill="#496b78" stroke="#496b78" points="374.01,-745.17 367.86,-742.08 370.74,-748.33 374.01,-745.17"/>
+<text xml:space="preserve" text-anchor="middle" x="393.79" y="-760.18" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- d -->
+<g id="s5-node4" class="node">
+<title>d</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M758.8,-740.68C758.8,-740.68 502,-740.68 502,-740.68 496,-740.68 490,-734.68 490,-728.68 490,-728.68 490,-701.8 490,-701.8 490,-695.8 496,-689.8 502,-689.8 502,-689.8 758.8,-689.8 758.8,-689.8 764.8,-689.8 770.8,-695.8 770.8,-701.8 770.8,-701.8 770.8,-728.68 770.8,-728.68 770.8,-734.68 764.8,-740.68 758.8,-740.68"/>
+<text xml:space="preserve" text-anchor="middle" x="630.4" y="-719.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">到预备点、转正，做门口视觉复核与横</text>
+<text xml:space="preserve" text-anchor="middle" x="630.4" y="-702.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">向对准</text>
+</g>
+<!-- b&#45;&gt;d -->
+<g id="s5-edge5" class="edge">
+<title>b&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M462.83,-788.25C494.74,-774.54 533.36,-757.94 565.48,-744.14"/>
+<polygon fill="#496b78" stroke="#496b78" points="566.18,-746.32 571.26,-741.66 564.39,-742.13 566.18,-746.32"/>
+<text xml:space="preserve" text-anchor="middle" x="541.22" y="-760.18" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- c&#45;&gt;b -->
+<g id="s5-edge3" class="edge">
+<title>c&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M326.41,-741.07C324.8,-751.73 324.91,-763.94 330.4,-773.68 332.24,-776.95 334.44,-779.98 336.92,-782.8"/>
+<polygon fill="#496b78" stroke="#496b78" points="335.1,-784.2 341.29,-787.22 338.34,-781 335.1,-784.2"/>
+<text xml:space="preserve" text-anchor="middle" x="352.9" y="-760.18" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">定位恢复</text>
+</g>
+<!-- f -->
+<g id="s5-node6" class="node">
+<title>f</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M461.8,-527.72C461.8,-527.72 205,-527.72 205,-527.72 199,-527.72 193,-521.72 193,-515.72 193,-515.72 193,-488.84 193,-488.84 193,-482.84 199,-476.84 205,-476.84 205,-476.84 461.8,-476.84 461.8,-476.84 467.8,-476.84 473.8,-482.84 473.8,-488.84 473.8,-488.84 473.8,-515.72 473.8,-515.72 473.8,-521.72 467.8,-527.72 461.8,-527.72"/>
+<text xml:space="preserve" text-anchor="middle" x="333.4" y="-506.48" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">撤回旧资格或取消旧审核复用；140° </text>
+<text xml:space="preserve" text-anchor="middle" x="333.4" y="-489.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">重新核对</text>
+</g>
+<!-- c&#45;&gt;f -->
+<g id="s5-edge4" class="edge">
+<title>c&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M333.4,-689.63C333.4,-651.54 333.4,-578.3 333.4,-535.86"/>
+<polygon fill="#496b78" stroke="#496b78" points="335.68,-536.07 333.4,-529.57 331.13,-536.07 335.68,-536.07"/>
+<text xml:space="preserve" text-anchor="middle" x="355.9" y="-612.76" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">资格改变</text>
+</g>
+<!-- e -->
+<g id="s5-node5" class="node">
+<title>e</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M792.39,-622.46C792.39,-622.46 727.61,-653.6 727.61,-653.6 722.21,-656.2 710.8,-658.8 704.8,-658.8 704.8,-658.8 556,-658.8 556,-658.8 550,-658.8 538.59,-656.2 533.19,-653.6 533.19,-653.6 468.41,-622.46 468.41,-622.46 463.01,-619.86 463.01,-614.66 468.41,-612.06 468.41,-612.06 533.19,-580.92 533.19,-580.92 538.59,-578.32 550,-575.72 556,-575.72 556,-575.72 704.8,-575.72 704.8,-575.72 710.8,-575.72 722.21,-578.32 727.61,-580.92 727.61,-580.92 792.39,-612.06 792.39,-612.06 797.79,-614.66 797.79,-619.86 792.39,-622.46"/>
+<text xml:space="preserve" text-anchor="middle" x="630.4" y="-621.46" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">首绿门口见黑／单橙旁有持续跟随绿块</text>
+<text xml:space="preserve" text-anchor="middle" x="630.4" y="-604.66" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">？</text>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s5-edge6" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M630.4,-689.53C630.4,-682.61 630.4,-674.84 630.4,-667.05"/>
+<polygon fill="#496b78" stroke="#496b78" points="632.68,-667.29 630.4,-660.79 628.13,-667.29 632.68,-667.29"/>
+</g>
+<!-- e&#45;&gt;f -->
+<g id="s5-edge7" class="edge">
+<title>e&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M534.79,-579.89C492.97,-563.98 444.7,-545.62 405.91,-530.86"/>
+<polygon fill="#496b78" stroke="#496b78" points="407.08,-528.87 400.19,-528.69 405.46,-533.12 407.08,-528.87"/>
+<text xml:space="preserve" text-anchor="middle" x="487.52" y="-547.22" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">有</text>
+</g>
+<!-- i -->
+<g id="s5-node9" class="node">
+<title>i</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M794.78,-301.04C794.78,-301.04 731.22,-321.51 731.22,-321.51 725.51,-323.35 713.8,-325.18 707.8,-325.18 707.8,-325.18 559,-325.18 559,-325.18 553,-325.18 541.29,-323.35 535.58,-321.51 535.58,-321.51 472.02,-301.04 472.02,-301.04 466.31,-299.2 466.31,-295.52 472.02,-293.68 472.02,-293.68 535.58,-273.21 535.58,-273.21 541.29,-271.37 553,-269.53 559,-269.53 559,-269.53 707.8,-269.53 707.8,-269.53 713.8,-269.53 725.51,-271.37 731.22,-273.21 731.22,-273.21 794.78,-293.68 794.78,-293.68 800.49,-295.52 800.49,-299.2 794.78,-301.04"/>
+<text xml:space="preserve" text-anchor="middle" x="633.4" y="-293.16" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">准备推入的通道情况？</text>
+</g>
+<!-- e&#45;&gt;i -->
+<g id="s5-edge8" class="edge">
+<title>e&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M630.79,-575.35C631.38,-512.41 632.51,-392.89 633.07,-333.57"/>
+<polygon fill="#496b78" stroke="#496b78" points="635.34,-333.65 633.13,-327.13 630.79,-333.6 635.34,-333.65"/>
+<text xml:space="preserve" text-anchor="middle" x="643.25" y="-448.34" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">没有</text>
+</g>
+<!-- g -->
+<g id="s5-node7" class="node">
+<title>g</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M470.78,-404.69C470.78,-404.69 407.22,-425.16 407.22,-425.16 401.51,-427 389.8,-428.84 383.8,-428.84 383.8,-428.84 235,-428.84 235,-428.84 229,-428.84 217.29,-427 211.58,-425.16 211.58,-425.16 148.02,-404.69 148.02,-404.69 142.31,-402.85 142.31,-399.17 148.02,-397.33 148.02,-397.33 211.58,-376.86 211.58,-376.86 217.29,-375.02 229,-373.18 235,-373.18 235,-373.18 383.8,-373.18 383.8,-373.18 389.8,-373.18 401.51,-375.02 407.22,-376.86 407.22,-376.86 470.78,-397.33 470.78,-397.33 476.49,-399.17 476.49,-402.85 470.78,-404.69"/>
+<text xml:space="preserve" text-anchor="middle" x="309.4" y="-396.81" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">真实载荷合法？</text>
+</g>
+<!-- f&#45;&gt;g -->
+<g id="s5-edge9" class="edge">
+<title>f&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M327.41,-476.48C324.5,-464.48 320.97,-449.87 317.81,-436.78"/>
+<polygon fill="#496b78" stroke="#496b78" points="320.09,-436.53 316.35,-430.75 315.66,-437.6 320.09,-436.53"/>
+</g>
+<!-- h -->
+<g id="s5-node8" class="node">
+<title>h</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M268.8,-315.36C268.8,-315.36 12,-315.36 12,-315.36 6,-315.36 0,-309.36 0,-303.36 0,-303.36 0,-291.36 0,-291.36 0,-285.36 6,-279.36 12,-279.36 12,-279.36 268.8,-279.36 268.8,-279.36 274.8,-279.36 280.8,-285.36 280.8,-291.36 280.8,-291.36 280.8,-303.36 280.8,-303.36 280.8,-309.36 274.8,-315.36 268.8,-315.36"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-293.16" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">D　按新审核普通分离或弃批</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s5-edge10" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M264.11,-372.77C236.47,-356.14 201.63,-335.19 175.97,-319.76"/>
+<polygon fill="#496b78" stroke="#496b78" points="177.37,-317.94 170.62,-316.54 175.02,-321.84 177.37,-317.94"/>
+<text xml:space="preserve" text-anchor="middle" x="240.64" y="-344.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">否</text>
+</g>
+<!-- g&#45;&gt;i -->
+<g id="s5-edge11" class="edge">
+<title>g&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M395.8,-372.9C440.02,-359.03 493.92,-342.12 539.2,-327.91"/>
+<polygon fill="#496b78" stroke="#496b78" points="539.71,-330.14 545.23,-326.02 538.35,-325.8 539.71,-330.14"/>
+<text xml:space="preserve" text-anchor="middle" x="496.42" y="-344.68" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- j -->
+<g id="s5-node10" class="node">
+<title>j</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M598.8,-221.53C598.8,-221.53 342,-221.53 342,-221.53 336,-221.53 330,-215.53 330,-209.53 330,-209.53 330,-197.53 330,-197.53 330,-191.53 336,-185.53 342,-185.53 342,-185.53 598.8,-185.53 598.8,-185.53 604.8,-185.53 610.8,-191.53 610.8,-197.53 610.8,-197.53 610.8,-209.53 610.8,-209.53 610.8,-215.53 604.8,-221.53 598.8,-221.53"/>
+<text xml:space="preserve" text-anchor="middle" x="470.4" y="-199.33" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">可侧挤：执行侧挤，保存实际前进轮程</text>
+</g>
+<!-- i&#45;&gt;j -->
+<g id="s5-edge13" class="edge">
+<title>i&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M584.94,-269.06C560.27,-255.16 530.75,-238.53 507.86,-225.63"/>
+<polygon fill="#496b78" stroke="#496b78" points="509.08,-223.71 502.3,-222.5 506.84,-227.67 509.08,-223.71"/>
+<text xml:space="preserve" text-anchor="middle" x="573.66" y="-241.03" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">可侧挤</text>
+</g>
+<!-- l -->
+<g id="s5-node12" class="node">
+<title>l</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1225.8,-221.53C1225.8,-221.53 969,-221.53 969,-221.53 963,-221.53 957,-215.53 957,-209.53 957,-209.53 957,-197.53 957,-197.53 957,-191.53 963,-185.53 969,-185.53 969,-185.53 1225.8,-185.53 1225.8,-185.53 1231.8,-185.53 1237.8,-191.53 1237.8,-197.53 1237.8,-197.53 1237.8,-209.53 1237.8,-209.53 1237.8,-215.53 1231.8,-221.53 1225.8,-221.53"/>
+<text xml:space="preserve" text-anchor="middle" x="1097.4" y="-199.33" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">需要扫障：按路线暂放原物、清走障碍</text>
+</g>
+<!-- i&#45;&gt;l -->
+<g id="s5-edge16" class="edge">
+<title>i&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M739.27,-275.41C818.14,-259.8 924.95,-238.66 1001.36,-223.54"/>
+<polygon fill="#496b78" stroke="#496b78" points="1001.7,-225.79 1007.64,-222.3 1000.82,-221.33 1001.7,-225.79"/>
+<text xml:space="preserve" text-anchor="middle" x="950.95" y="-241.03" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">需扫障</text>
+</g>
+<!-- p -->
+<g id="s5-node16" class="node">
+<title>p</title>
+<path fill="#e0f0fb" stroke="#6d8990" d="M928.8,-221.53C928.8,-221.53 672,-221.53 672,-221.53 666,-221.53 660,-215.53 660,-209.53 660,-209.53 660,-197.53 660,-197.53 660,-191.53 666,-185.53 672,-185.53 672,-185.53 928.8,-185.53 928.8,-185.53 934.8,-185.53 940.8,-191.53 940.8,-197.53 940.8,-197.53 940.8,-209.53 940.8,-209.53 940.8,-215.53 934.8,-221.53 928.8,-221.53"/>
+<text xml:space="preserve" text-anchor="middle" x="800.4" y="-199.33" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">F　通道就绪，进入安全区</text>
+</g>
+<!-- i&#45;&gt;p -->
+<g id="s5-edge12" class="edge">
+<title>i&#45;&gt;p</title>
+<path fill="none" stroke="#496b78" d="M683.05,-269.06C708.43,-255.1 738.83,-238.39 762.33,-225.47"/>
+<polygon fill="#496b78" stroke="#496b78" points="763.15,-227.61 767.75,-222.49 760.95,-223.63 763.15,-227.61"/>
+<text xml:space="preserve" text-anchor="middle" x="752.87" y="-241.03" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">可推</text>
+</g>
+<!-- k -->
+<g id="s5-node11" class="node">
+<title>k</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M680.8,-144.71C680.8,-144.71 424,-144.71 424,-144.71 418,-144.71 412,-138.71 412,-132.71 412,-132.71 412,-120.71 412,-120.71 412,-114.71 418,-108.71 424,-108.71 424,-108.71 680.8,-108.71 680.8,-108.71 686.8,-108.71 692.8,-114.71 692.8,-120.71 692.8,-120.71 692.8,-132.71 692.8,-132.71 692.8,-138.71 686.8,-144.71 680.8,-144.71"/>
+<text xml:space="preserve" text-anchor="middle" x="552.4" y="-122.51" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">重新对准和检查通道；抵扣量仅用一次</text>
+</g>
+<!-- j&#45;&gt;k -->
+<g id="s5-edge14" class="edge">
+<title>j&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M489.42,-185.18C500.8,-174.79 515.4,-161.47 527.67,-150.27"/>
+<polygon fill="#496b78" stroke="#496b78" points="529.1,-152.05 532.37,-145.99 526.03,-148.69 529.1,-152.05"/>
+</g>
+<!-- k&#45;&gt;i -->
+<g id="s5-edge15" class="edge">
+<title>k&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M580.49,-145.19C594.2,-155.26 609.61,-169.16 618.4,-185.53 630.89,-208.79 634.35,-238.61 634.84,-261.45"/>
+<polygon fill="#496b78" stroke="#496b78" points="632.56,-261.22 634.89,-267.71 637.11,-261.19 632.56,-261.22"/>
+</g>
+<!-- m -->
+<g id="s5-node13" class="node">
+<title>m</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M1150.78,-130.38C1150.78,-130.38 1087.22,-150.85 1087.22,-150.85 1081.51,-152.69 1069.8,-154.53 1063.8,-154.53 1063.8,-154.53 915,-154.53 915,-154.53 909,-154.53 897.29,-152.69 891.58,-150.85 891.58,-150.85 828.02,-130.38 828.02,-130.38 822.31,-128.55 822.31,-124.87 828.02,-123.03 828.02,-123.03 891.58,-102.56 891.58,-102.56 897.29,-100.72 909,-98.88 915,-98.88 915,-98.88 1063.8,-98.88 1063.8,-98.88 1069.8,-98.88 1081.51,-100.72 1087.22,-102.56 1087.22,-102.56 1150.78,-123.03 1150.78,-123.03 1156.49,-124.87 1156.49,-128.55 1150.78,-130.38"/>
+<text xml:space="preserve" text-anchor="middle" x="989.4" y="-122.51" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">原物在找回行程预算内被找回？</text>
+</g>
+<!-- l&#45;&gt;m -->
+<g id="s5-edge17" class="edge">
+<title>l&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M1072.35,-185.18C1061.31,-177.53 1047.99,-168.3 1035.27,-159.49"/>
+<polygon fill="#496b78" stroke="#496b78" points="1036.58,-157.63 1029.94,-155.79 1033.99,-161.37 1036.58,-157.63"/>
+</g>
+<!-- n -->
+<g id="s5-node14" class="node">
+<title>n</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M722.8,-50.88C722.8,-50.88 466,-50.88 466,-50.88 460,-50.88 454,-44.88 454,-38.88 454,-38.88 454,-12 454,-12 454,-6 460,0 466,0 466,0 722.8,0 722.8,0 728.8,0 734.8,-6 734.8,-12 734.8,-12 734.8,-38.88 734.8,-38.88 734.8,-44.88 728.8,-50.88 722.8,-50.88"/>
+<text xml:space="preserve" text-anchor="middle" x="594.4" y="-29.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">找回后真实复审，重新确认目的地及通</text>
+<text xml:space="preserve" text-anchor="middle" x="594.4" y="-12.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">道</text>
+</g>
+<!-- m&#45;&gt;n -->
+<g id="s5-edge18" class="edge">
+<title>m&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M893.28,-101.55C835.13,-86.94 760.91,-68.28 700.97,-53.22"/>
+<polygon fill="#496b78" stroke="#496b78" points="701.69,-51.06 694.83,-51.68 700.58,-55.47 701.69,-51.06"/>
+<text xml:space="preserve" text-anchor="middle" x="826.8" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">找到</text>
+</g>
+<!-- o -->
+<g id="s5-node15" class="node">
+<title>o</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M1117.8,-50.88C1117.8,-50.88 861,-50.88 861,-50.88 855,-50.88 849,-44.88 849,-38.88 849,-38.88 849,-12 849,-12 849,-6 855,0 861,0 861,0 1117.8,0 1117.8,0 1123.8,0 1129.8,-6 1129.8,-12 1129.8,-12 1129.8,-38.88 1129.8,-38.88 1129.8,-44.88 1123.8,-50.88 1117.8,-50.88"/>
+<text xml:space="preserve" text-anchor="middle" x="989.4" y="-29.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">找回失败走脱离／恢复，不能登记原物</text>
+<text xml:space="preserve" text-anchor="middle" x="989.4" y="-12.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">送达</text>
+</g>
+<!-- m&#45;&gt;o -->
+<g id="s5-edge20" class="edge">
+<title>m&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M989.4,-98.58C989.4,-86.32 989.4,-71.73 989.4,-58.89"/>
+<polygon fill="#496b78" stroke="#496b78" points="991.68,-59.17 989.4,-52.67 987.13,-59.17 991.68,-59.17"/>
+<text xml:space="preserve" text-anchor="middle" x="1023.15" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">达到失败条件</text>
+</g>
+<!-- n&#45;&gt;g -->
+<g id="s5-edge19" class="edge">
+<title>n&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M453.71,-49.76C380.21,-66.07 305.4,-91.16 305.4,-125.71 305.4,-298.36 305.4,-298.36 305.4,-298.36 305.4,-320.56 306.36,-345.46 307.35,-365.06"/>
+<polygon fill="#496b78" stroke="#496b78" points="305.06,-364.96 307.67,-371.33 309.61,-364.72 305.06,-364.96"/>
+</g>
+</g>
+</svg>
+</div></section><section id="s6"><header><h2>F · 推入、重推、确认送达和返站</h2><p>累计轮程包含可用的侧挤抵扣。是否计入送达，由视觉结果和本动作开爪退出回包共同决定。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="推入、重推、确认送达和返站" width="688pt" height="1136pt"
+ viewBox="0.00 0.00 688.00 1136.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s6-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 1121.38)">
+<title>flow</title>
+<!-- a -->
+<g id="s6-node1" class="node">
+<title>a</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M374.8,-1106.98C374.8,-1106.98 118,-1106.98 118,-1106.98 112,-1106.98 106,-1100.98 106,-1094.98 106,-1094.98 106,-1082.98 106,-1082.98 106,-1076.98 112,-1070.98 118,-1070.98 118,-1070.98 374.8,-1070.98 374.8,-1070.98 380.8,-1070.98 386.8,-1076.98 386.8,-1082.98 386.8,-1082.98 386.8,-1094.98 386.8,-1094.98 386.8,-1100.98 380.8,-1106.98 374.8,-1106.98"/>
+<text xml:space="preserve" text-anchor="middle" x="246.4" y="-1084.78" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">接原 ENTER；锁推进航向和轮程起点</text>
+</g>
+<!-- b -->
+<g id="s6-node2" class="node">
+<title>b</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M407.78,-1015.83C407.78,-1015.83 344.22,-1036.3 344.22,-1036.3 338.51,-1038.14 326.8,-1039.98 320.8,-1039.98 320.8,-1039.98 172,-1039.98 172,-1039.98 166,-1039.98 154.29,-1038.14 148.58,-1036.3 148.58,-1036.3 85.02,-1015.83 85.02,-1015.83 79.31,-1013.99 79.31,-1010.31 85.02,-1008.47 85.02,-1008.47 148.58,-988 148.58,-988 154.29,-986.16 166,-984.32 172,-984.32 172,-984.32 320.8,-984.32 320.8,-984.32 326.8,-984.32 338.51,-986.16 344.22,-988 344.22,-988 407.78,-1008.47 407.78,-1008.47 413.49,-1010.31 413.49,-1013.99 407.78,-1015.83"/>
+<text xml:space="preserve" text-anchor="middle" x="246.4" y="-1007.95" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">前段累计达到 400 mm？</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s6-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M246.4,-1070.62C246.4,-1063.89 246.4,-1055.92 246.4,-1048.1"/>
+<polygon fill="#496b78" stroke="#496b78" points="248.68,-1048.39 246.4,-1041.89 244.13,-1048.39 248.68,-1048.39"/>
+</g>
+<!-- c -->
+<g id="s6-node3" class="node">
+<title>c</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M330.8,-936.32C330.8,-936.32 74,-936.32 74,-936.32 68,-936.32 62,-930.32 62,-924.32 62,-924.32 62,-897.44 62,-897.44 62,-891.44 68,-885.44 74,-885.44 74,-885.44 330.8,-885.44 330.8,-885.44 336.8,-885.44 342.8,-891.44 342.8,-897.44 342.8,-897.44 342.8,-924.32 342.8,-924.32 342.8,-930.32 336.8,-936.32 330.8,-936.32"/>
+<text xml:space="preserve" text-anchor="middle" x="202.4" y="-915.08" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">按剩余距离推进；前段超时走本地开爪</text>
+<text xml:space="preserve" text-anchor="middle" x="202.4" y="-898.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">出口</text>
+</g>
+<!-- b&#45;&gt;c -->
+<g id="s6-edge2" class="edge">
+<title>b&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M213.34,-984.19C209.54,-979.63 206.21,-974.64 203.9,-969.32 200.59,-961.7 199.27,-952.95 199.01,-944.61"/>
+<polygon fill="#496b78" stroke="#496b78" points="201.28,-944.82 199.03,-938.31 196.73,-944.8 201.28,-944.82"/>
+<text xml:space="preserve" text-anchor="middle" x="215.15" y="-955.82" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">未到</text>
+</g>
+<!-- d -->
+<g id="s6-node4" class="node">
+<title>d</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M627.8,-936.32C627.8,-936.32 371,-936.32 371,-936.32 365,-936.32 359,-930.32 359,-924.32 359,-924.32 359,-897.44 359,-897.44 359,-891.44 365,-885.44 371,-885.44 371,-885.44 627.8,-885.44 627.8,-885.44 633.8,-885.44 639.8,-891.44 639.8,-897.44 639.8,-897.44 639.8,-924.32 639.8,-924.32 639.8,-930.32 633.8,-936.32 627.8,-936.32"/>
+<text xml:space="preserve" text-anchor="middle" x="499.4" y="-915.08" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">停车调大舵机到 83°，等待脉宽差估</text>
+<text xml:space="preserve" text-anchor="middle" x="499.4" y="-898.28" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">时</text>
+</g>
+<!-- b&#45;&gt;d -->
+<g id="s6-edge5" class="edge">
+<title>b&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M315.87,-983.89C350.97,-970.12 393.47,-953.44 428.74,-939.61"/>
+<polygon fill="#496b78" stroke="#496b78" points="429.52,-941.75 434.74,-937.25 427.86,-937.51 429.52,-941.75"/>
+<text xml:space="preserve" text-anchor="middle" x="406.81" y="-955.82" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">达到</text>
+</g>
+<!-- c&#45;&gt;b -->
+<g id="s6-edge3" class="edge">
+<title>c&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M218.51,-936.46C221.34,-941.28 224.1,-946.38 226.4,-951.32 230.07,-959.23 233.39,-968.01 236.23,-976.35"/>
+<polygon fill="#496b78" stroke="#496b78" points="234.03,-976.94 238.22,-982.41 238.35,-975.53 234.03,-976.94"/>
+<text xml:space="preserve" text-anchor="middle" x="250.49" y="-955.82" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">推进中</text>
+</g>
+<!-- h -->
+<g id="s6-node8" class="node">
+<title>h</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M438.39,-615.57C438.39,-615.57 373.61,-646.71 373.61,-646.71 368.21,-649.31 356.8,-651.91 350.8,-651.91 350.8,-651.91 202,-651.91 202,-651.91 196,-651.91 184.59,-649.31 179.19,-646.71 179.19,-646.71 114.41,-615.57 114.41,-615.57 109.01,-612.97 109.01,-607.77 114.41,-605.17 114.41,-605.17 179.19,-574.02 179.19,-574.02 184.59,-571.42 196,-568.82 202,-568.82 202,-568.82 350.8,-568.82 350.8,-568.82 356.8,-568.82 368.21,-571.42 373.61,-574.02 373.61,-574.02 438.39,-605.17 438.39,-605.17 443.79,-607.77 443.79,-612.97 438.39,-615.57"/>
+<text xml:space="preserve" text-anchor="middle" x="276.4" y="-614.57" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">首件后且本次为两件／三件合法材料，</text>
+<text xml:space="preserve" text-anchor="middle" x="276.4" y="-597.77" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">需重推？</text>
+</g>
+<!-- c&#45;&gt;h -->
+<g id="s6-edge4" class="edge">
+<title>c&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M208.58,-884.95C220.83,-835.53 248.38,-724.39 264.34,-660.01"/>
+<polygon fill="#496b78" stroke="#496b78" points="266.51,-660.72 265.87,-653.86 262.09,-659.62 266.51,-660.72"/>
+<text xml:space="preserve" text-anchor="middle" x="259.34" y="-775.06" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">前段超时</text>
+</g>
+<!-- e -->
+<g id="s6-node5" class="node">
+<title>e</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M622.8,-854.44C622.8,-854.44 366,-854.44 366,-854.44 360,-854.44 354,-848.44 354,-842.44 354,-842.44 354,-815.56 354,-815.56 354,-809.56 360,-803.56 366,-803.56 366,-803.56 622.8,-803.56 622.8,-803.56 628.8,-803.56 634.8,-809.56 634.8,-815.56 634.8,-815.56 634.8,-842.44 634.8,-842.44 634.8,-848.44 628.8,-854.44 622.8,-854.44"/>
+<text xml:space="preserve" text-anchor="middle" x="494.4" y="-833.2" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">开始末段计时；保向盲推 330 mm/s</text>
+<text xml:space="preserve" text-anchor="middle" x="494.4" y="-816.4" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">，总目标 670 mm</text>
+</g>
+<!-- d&#45;&gt;e -->
+<g id="s6-edge6" class="edge">
+<title>d&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M497.85,-885.05C497.4,-877.98 496.91,-870.18 496.45,-862.73"/>
+<polygon fill="#496b78" stroke="#496b78" points="498.72,-862.68 496.05,-856.34 494.18,-862.97 498.72,-862.68"/>
+</g>
+<!-- f -->
+<g id="s6-node6" class="node">
+<title>f</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M647.78,-731.42C647.78,-731.42 584.22,-751.89 584.22,-751.89 578.51,-753.72 566.8,-755.56 560.8,-755.56 560.8,-755.56 412,-755.56 412,-755.56 406,-755.56 394.29,-753.72 388.58,-751.89 388.58,-751.89 325.02,-731.42 325.02,-731.42 319.31,-729.58 319.31,-725.9 325.02,-724.06 325.02,-724.06 388.58,-703.59 388.58,-703.59 394.29,-701.75 406,-699.91 412,-699.91 412,-699.91 560.8,-699.91 560.8,-699.91 566.8,-699.91 578.51,-701.75 584.22,-703.59 584.22,-703.59 647.78,-724.06 647.78,-724.06 653.49,-725.9 653.49,-729.58 647.78,-731.42"/>
+<text xml:space="preserve" text-anchor="middle" x="486.4" y="-723.54" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">是否已确认本批全部进区？</text>
+</g>
+<!-- e&#45;&gt;f -->
+<g id="s6-edge7" class="edge">
+<title>e&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M492.4,-803.21C491.44,-791.32 490.28,-776.87 489.23,-763.87"/>
+<polygon fill="#496b78" stroke="#496b78" points="491.51,-763.81 488.72,-757.51 486.97,-764.18 491.51,-763.81"/>
+</g>
+<!-- g -->
+<g id="s6-node7" class="node">
+<title>g</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M565.8,-310.85C565.8,-310.85 309,-310.85 309,-310.85 303,-310.85 297,-304.85 297,-298.85 297,-298.85 297,-286.85 297,-286.85 297,-280.85 303,-274.85 309,-274.85 309,-274.85 565.8,-274.85 565.8,-274.85 571.8,-274.85 577.8,-280.85 577.8,-286.85 577.8,-286.85 577.8,-298.85 577.8,-298.85 577.8,-304.85 571.8,-310.85 565.8,-310.85"/>
+<text xml:space="preserve" text-anchor="middle" x="437.4" y="-288.65" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">视觉确认，TASK_COMPLETE 的 U=0</text>
+</g>
+<!-- f&#45;&gt;g -->
+<g id="s6-edge8" class="edge">
+<title>f&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M486.4,-699.7C486.4,-676.32 486.4,-641.61 486.4,-611.37 486.4,-611.37 486.4,-611.37 486.4,-393.12 486.4,-365.1 470.5,-336.79 456.82,-317.62"/>
+<polygon fill="#496b78" stroke="#496b78" points="458.69,-316.33 453,-312.45 455.03,-319.03 458.69,-316.33"/>
+<text xml:space="preserve" text-anchor="middle" x="492.02" y="-490.88" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- f&#45;&gt;h -->
+<g id="s6-edge9" class="edge">
+<title>f&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M436.9,-699.54C413.31,-686.58 384.48,-670.75 357.8,-656.09"/>
+<polygon fill="#496b78" stroke="#496b78" points="359.18,-654.25 352.39,-653.11 356.99,-658.24 359.18,-654.25"/>
+<text xml:space="preserve" text-anchor="middle" x="428.88" y="-671.41" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">尚未确认</text>
+</g>
+<!-- l -->
+<g id="s6-node12" class="node">
+<title>l</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M449.78,-212.26C449.78,-212.26 386.22,-232.73 386.22,-232.73 380.51,-234.57 368.8,-236.41 362.8,-236.41 362.8,-236.41 214,-236.41 214,-236.41 208,-236.41 196.29,-234.57 190.58,-232.73 190.58,-232.73 127.02,-212.26 127.02,-212.26 121.31,-210.43 121.31,-206.75 127.02,-204.91 127.02,-204.91 190.58,-184.44 190.58,-184.44 196.29,-182.6 208,-180.76 214,-180.76 214,-180.76 362.8,-180.76 362.8,-180.76 368.8,-180.76 380.51,-182.6 386.22,-184.44 386.22,-184.44 449.78,-204.91 449.78,-204.91 455.49,-206.75 455.49,-210.43 449.78,-212.26"/>
+<text xml:space="preserve" text-anchor="middle" x="288.4" y="-204.39" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">收到本次动作开爪退出的匹配回包？</text>
+</g>
+<!-- g&#45;&gt;l -->
+<g id="s6-edge15" class="edge">
+<title>g&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M405.8,-274.41C388.07,-264.62 365.43,-252.11 344.76,-240.7"/>
+<polygon fill="#496b78" stroke="#496b78" points="345.96,-238.76 339.17,-237.61 343.76,-242.75 345.96,-238.76"/>
+</g>
+<!-- i -->
+<g id="s6-node9" class="node">
+<title>i</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M410.8,-520.82C410.8,-520.82 154,-520.82 154,-520.82 148,-520.82 142,-514.82 142,-508.82 142,-508.82 142,-481.94 142,-481.94 142,-475.94 148,-469.94 154,-469.94 154,-469.94 410.8,-469.94 410.8,-469.94 416.8,-469.94 422.8,-475.94 422.8,-481.94 422.8,-481.94 422.8,-508.82 422.8,-508.82 422.8,-514.82 416.8,-520.82 410.8,-520.82"/>
+<text xml:space="preserve" text-anchor="middle" x="282.4" y="-499.58" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">已放下后抬起、退 100 mm、降至 </text>
+<text xml:space="preserve" text-anchor="middle" x="282.4" y="-482.78" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">86°、前推 150 mm</text>
+</g>
+<!-- h&#45;&gt;i -->
+<g id="s6-edge10" class="edge">
+<title>h&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M278.57,-568.58C279.26,-555.51 280.02,-541.23 280.68,-528.84"/>
+<polygon fill="#496b78" stroke="#496b78" points="282.94,-529.13 281.01,-522.52 278.4,-528.89 282.94,-529.13"/>
+<text xml:space="preserve" text-anchor="middle" x="319.66" y="-540.32" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">符合且尚未重推</text>
+</g>
+<!-- k -->
+<g id="s6-node11" class="node">
+<title>k</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M268.8,-318.29C268.8,-318.29 12,-318.29 12,-318.29 6,-318.29 0,-312.29 0,-306.29 0,-306.29 0,-279.41 0,-279.41 0,-273.41 6,-267.41 12,-267.41 12,-267.41 268.8,-267.41 268.8,-267.41 274.8,-267.41 280.8,-273.41 280.8,-279.41 280.8,-279.41 280.8,-306.29 280.8,-306.29 280.8,-312.29 274.8,-318.29 268.8,-318.29"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-297.05" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">上位观察超时发 U=1；下位自主超时</text>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-280.25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">由 ENTER 回报</text>
+</g>
+<!-- h&#45;&gt;k -->
+<g id="s6-edge14" class="edge">
+<title>h&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M188.86,-568.98C168.55,-556.08 148.71,-540.05 134.4,-520.82 92.77,-464.9 92.61,-434.43 107.4,-366.29 110.41,-352.41 116.33,-337.99 122.33,-325.71"/>
+<polygon fill="#496b78" stroke="#496b78" points="124.27,-326.92 125.17,-320.09 120.21,-324.87 124.27,-326.92"/>
+<text xml:space="preserve" text-anchor="middle" x="134.62" y="-441.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">无重推且超时</text>
+</g>
+<!-- j -->
+<g id="s6-node10" class="node">
+<title>j</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M449.78,-397.8C449.78,-397.8 386.22,-418.27 386.22,-418.27 380.51,-420.11 368.8,-421.94 362.8,-421.94 362.8,-421.94 214,-421.94 214,-421.94 208,-421.94 196.29,-420.11 190.58,-418.27 190.58,-418.27 127.02,-397.8 127.02,-397.8 121.31,-395.96 121.31,-392.28 127.02,-390.44 127.02,-390.44 190.58,-369.97 190.58,-369.97 196.29,-368.13 208,-366.29 214,-366.29 214,-366.29 362.8,-366.29 362.8,-366.29 368.8,-366.29 380.51,-368.13 386.22,-369.97 386.22,-369.97 449.78,-390.44 449.78,-390.44 455.49,-392.28 455.49,-395.96 449.78,-397.8"/>
+<text xml:space="preserve" text-anchor="middle" x="288.4" y="-389.92" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">重推中或刚完成时有有效视觉确认？</text>
+</g>
+<!-- i&#45;&gt;j -->
+<g id="s6-edge11" class="edge">
+<title>i&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M283.9,-469.59C284.62,-457.7 285.49,-443.25 286.28,-430.25"/>
+<polygon fill="#496b78" stroke="#496b78" points="288.54,-430.52 286.66,-423.9 284,-430.25 288.54,-430.52"/>
+</g>
+<!-- j&#45;&gt;g -->
+<g id="s6-edge12" class="edge">
+<title>j&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M329.11,-365.99C352.85,-350.18 382.4,-330.5 404.63,-315.69"/>
+<polygon fill="#496b78" stroke="#496b78" points="405.87,-317.59 410.02,-312.1 403.35,-313.81 405.87,-317.59"/>
+<text xml:space="preserve" text-anchor="middle" x="381.87" y="-337.79" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- j&#45;&gt;k -->
+<g id="s6-edge13" class="edge">
+<title>j&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M247.96,-365.99C228.03,-352.63 203.99,-336.5 183.69,-322.89"/>
+<polygon fill="#496b78" stroke="#496b78" points="185.17,-321.14 178.5,-319.41 182.63,-324.92 185.17,-321.14"/>
+<text xml:space="preserve" text-anchor="middle" x="251.39" y="-337.79" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">无确认完成</text>
+</g>
+<!-- k&#45;&gt;l -->
+<g id="s6-edge16" class="edge">
+<title>k&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M185.21,-266.95C200.17,-258.63 217.03,-249.26 232.72,-240.54"/>
+<polygon fill="#496b78" stroke="#496b78" points="233.46,-242.73 238.04,-237.58 231.25,-238.75 233.46,-242.73"/>
+</g>
+<!-- l&#45;&gt;l -->
+<g id="s6-edge17" class="edge">
+<title>l&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M439.87,-215.94C462.16,-214.78 477.2,-212.33 477.2,-208.59 477.2,-205.28 465.48,-202.98 447.4,-201.7"/>
+<polygon fill="#496b78" stroke="#496b78" points="448.01,-199.45 441.38,-201.33 447.73,-204 448.01,-199.45"/>
+<text xml:space="preserve" text-anchor="middle" x="533.45" y="-204.09" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">仍在开爪或回包不匹配</text>
+</g>
+<!-- m -->
+<g id="s6-node13" class="node">
+<title>m</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M268.8,-132.76C268.8,-132.76 12,-132.76 12,-132.76 6,-132.76 0,-126.76 0,-120.76 0,-120.76 0,-93.88 0,-93.88 0,-87.88 6,-81.88 12,-81.88 12,-81.88 268.8,-81.88 268.8,-81.88 274.8,-81.88 280.8,-87.88 280.8,-93.88 280.8,-93.88 280.8,-120.76 280.8,-120.76 280.8,-126.76 274.8,-132.76 268.8,-132.76"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-111.52" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">确认退出登记一次；合法单绿才推进首</text>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-94.72" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">件</text>
+</g>
+<!-- l&#45;&gt;m -->
+<g id="s6-edge18" class="edge">
+<title>l&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M247.96,-180.46C228.03,-167.1 203.99,-150.97 183.69,-137.36"/>
+<polygon fill="#496b78" stroke="#496b78" points="185.17,-135.61 178.5,-133.88 182.63,-139.39 185.17,-135.61"/>
+<text xml:space="preserve" text-anchor="middle" x="255.41" y="-152.26" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">本动作 U=0</text>
+</g>
+<!-- n -->
+<g id="s6-node14" class="node">
+<title>n</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M565.8,-132.76C565.8,-132.76 309,-132.76 309,-132.76 303,-132.76 297,-126.76 297,-120.76 297,-120.76 297,-93.88 297,-93.88 297,-87.88 303,-81.88 309,-81.88 309,-81.88 565.8,-81.88 565.8,-81.88 571.8,-81.88 577.8,-87.88 577.8,-93.88 577.8,-93.88 577.8,-120.76 577.8,-120.76 577.8,-126.76 571.8,-132.76 565.8,-132.76"/>
+<text xml:space="preserve" text-anchor="middle" x="437.4" y="-111.52" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">未确认退出保留原进度；不新增首件和</text>
+<text xml:space="preserve" text-anchor="middle" x="437.4" y="-94.72" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">送达</text>
+</g>
+<!-- l&#45;&gt;n -->
+<g id="s6-edge19" class="edge">
+<title>l&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M329.11,-180.46C349.1,-167.15 373.19,-151.1 393.58,-137.52"/>
+<polygon fill="#496b78" stroke="#496b78" points="394.65,-139.54 398.79,-134.04 392.12,-135.75 394.65,-139.54"/>
+<text xml:space="preserve" text-anchor="middle" x="436.3" y="-152.26" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">U=1 或 ENTER 退出</text>
+</g>
+<!-- o -->
+<g id="s6-node15" class="node">
+<title>o</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M416.8,-50.88C416.8,-50.88 160,-50.88 160,-50.88 154,-50.88 148,-44.88 148,-38.88 148,-38.88 148,-12 148,-12 148,-6 154,0 160,0 160,0 416.8,0 416.8,0 422.8,0 428.8,-6 428.8,-12 428.8,-12 428.8,-38.88 428.8,-38.88 428.8,-44.88 422.8,-50.88 416.8,-50.88"/>
+<text xml:space="preserve" text-anchor="middle" x="288.4" y="-29.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">退离安全区，返回记住的搜索点，继续</text>
+<text xml:space="preserve" text-anchor="middle" x="288.4" y="-12.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646"> B</text>
+</g>
+<!-- m&#45;&gt;o -->
+<g id="s6-edge20" class="edge">
+<title>m&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M186.42,-81.48C202.01,-73.07 219.54,-63.6 235.62,-54.93"/>
+<polygon fill="#496b78" stroke="#496b78" points="236.44,-57.07 241.08,-51.98 234.28,-53.07 236.44,-57.07"/>
+</g>
+<!-- n&#45;&gt;o -->
+<g id="s6-edge21" class="edge">
+<title>n&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M391.07,-81.48C375.37,-73.07 357.72,-63.6 341.54,-54.93"/>
+<polygon fill="#496b78" stroke="#496b78" points="342.84,-53.04 336.03,-51.98 340.69,-57.05 342.84,-53.04"/>
+</g>
+</g>
+</svg>
+</div></section><section id="s7"><header><h2>G · 暂停、通信、定位与恢复</h2><p>同一个动作的重发只确认已有进度。故障和人工终止走原控制出口；新动作不能借用旧 DONE。</p></header><div class="scroller" tabindex="0"><svg role="img" aria-label="暂停、通信、定位与恢复" width="2453pt" height="490pt"
+ viewBox="0.00 0.00 2453.00 490.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="s7-graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 475.12)">
+<title>flow</title>
+<!-- a -->
+<g id="s7-node1" class="node">
+<title>a</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M1397.78,-436.57C1397.78,-436.57 1334.22,-457.04 1334.22,-457.04 1328.51,-458.88 1316.8,-460.72 1310.8,-460.72 1310.8,-460.72 1162,-460.72 1162,-460.72 1156,-460.72 1144.29,-458.88 1138.58,-457.04 1138.58,-457.04 1075.02,-436.57 1075.02,-436.57 1069.31,-434.73 1069.31,-431.05 1075.02,-429.21 1075.02,-429.21 1138.58,-408.74 1138.58,-408.74 1144.29,-406.9 1156,-405.06 1162,-405.06 1162,-405.06 1310.8,-405.06 1310.8,-405.06 1316.8,-405.06 1328.51,-406.9 1334.22,-408.74 1334.22,-408.74 1397.78,-429.21 1397.78,-429.21 1403.49,-431.05 1403.49,-434.73 1397.78,-436.57"/>
+<text xml:space="preserve" text-anchor="middle" x="1236.4" y="-428.69" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">哪个环节不满足继续条件？</text>
+</g>
+<!-- b -->
+<g id="s7-node2" class="node">
+<title>b</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M268.8,-354.68C268.8,-354.68 12,-354.68 12,-354.68 6,-354.68 0,-348.68 0,-342.68 0,-342.68 0,-315.8 0,-315.8 0,-309.8 6,-303.8 12,-303.8 12,-303.8 268.8,-303.8 268.8,-303.8 274.8,-303.8 280.8,-309.8 280.8,-315.8 280.8,-315.8 280.8,-342.68 280.8,-342.68 280.8,-348.68 274.8,-354.68 268.8,-354.68"/>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-333.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">目标失框、图过期：暂停新选物，走当</text>
+<text xml:space="preserve" text-anchor="middle" x="140.4" y="-316.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">前搜索／复看恢复</text>
+</g>
+<!-- a&#45;&gt;b -->
+<g id="s7-edge1" class="edge">
+<title>a&#45;&gt;b</title>
+<path fill="none" stroke="#496b78" d="M1087.05,-424.89C900.01,-415.03 570.03,-393.98 289.4,-357.06 287.4,-356.8 285.4,-356.53 283.38,-356.25"/>
+<polygon fill="#496b78" stroke="#496b78" points="283.78,-354.01 277.03,-355.36 283.15,-358.52 283.78,-354.01"/>
+<text xml:space="preserve" text-anchor="middle" x="586.07" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">视觉</text>
+</g>
+<!-- c -->
+<g id="s7-node3" class="node">
+<title>c</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M565.8,-354.68C565.8,-354.68 309,-354.68 309,-354.68 303,-354.68 297,-348.68 297,-342.68 297,-342.68 297,-315.8 297,-315.8 297,-309.8 303,-303.8 309,-303.8 309,-303.8 565.8,-303.8 565.8,-303.8 571.8,-303.8 577.8,-309.8 577.8,-315.8 577.8,-315.8 577.8,-342.68 577.8,-342.68 577.8,-348.68 571.8,-354.68 565.8,-354.68"/>
+<text xml:space="preserve" text-anchor="middle" x="437.4" y="-333.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">导航位置无效：等待有效位置再计算剩</text>
+<text xml:space="preserve" text-anchor="middle" x="437.4" y="-316.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">余路程及方向</text>
+</g>
+<!-- a&#45;&gt;c -->
+<g id="s7-edge2" class="edge">
+<title>a&#45;&gt;c</title>
+<path fill="none" stroke="#496b78" d="M1104.74,-419.21C973.2,-405.96 765.36,-383.45 586.4,-357.06 584.71,-356.82 583.01,-356.56 581.3,-356.3"/>
+<polygon fill="#496b78" stroke="#496b78" points="582.02,-354.11 575.25,-355.38 581.33,-358.61 582.02,-354.11"/>
+<text xml:space="preserve" text-anchor="middle" x="847.27" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">定位</text>
+</g>
+<!-- d -->
+<g id="s7-node4" class="node">
+<title>d</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M862.8,-354.68C862.8,-354.68 606,-354.68 606,-354.68 600,-354.68 594,-348.68 594,-342.68 594,-342.68 594,-315.8 594,-315.8 594,-309.8 600,-303.8 606,-303.8 606,-303.8 862.8,-303.8 862.8,-303.8 868.8,-303.8 874.8,-309.8 874.8,-315.8 874.8,-315.8 874.8,-342.68 874.8,-342.68 874.8,-348.68 868.8,-354.68 862.8,-354.68"/>
+<text xml:space="preserve" text-anchor="middle" x="734.4" y="-333.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">任务号、动作号或回包不匹配：不推进</text>
+<text xml:space="preserve" text-anchor="middle" x="734.4" y="-316.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">交接</text>
+</g>
+<!-- a&#45;&gt;d -->
+<g id="s7-edge3" class="edge">
+<title>a&#45;&gt;d</title>
+<path fill="none" stroke="#496b78" d="M1131.47,-410.64C1053.98,-394.95 948.01,-373.49 865.04,-356.69"/>
+<polygon fill="#496b78" stroke="#496b78" points="865.64,-354.49 858.82,-355.43 864.74,-358.95 865.64,-354.49"/>
+<text xml:space="preserve" text-anchor="middle" x="1026.71" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">回包</text>
+</g>
+<!-- e -->
+<g id="s7-node5" class="node">
+<title>e</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1159.8,-347.24C1159.8,-347.24 903,-347.24 903,-347.24 897,-347.24 891,-341.24 891,-335.24 891,-335.24 891,-323.24 891,-323.24 891,-317.24 897,-311.24 903,-311.24 903,-311.24 1159.8,-311.24 1159.8,-311.24 1165.8,-311.24 1171.8,-317.24 1171.8,-323.24 1171.8,-323.24 1171.8,-335.24 1171.8,-335.24 1171.8,-341.24 1165.8,-347.24 1159.8,-347.24"/>
+<text xml:space="preserve" text-anchor="middle" x="1031.4" y="-325.04" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">人工暂停：暂停动作并保留可恢复状态</text>
+</g>
+<!-- a&#45;&gt;e -->
+<g id="s7-edge4" class="edge">
+<title>a&#45;&gt;e</title>
+<path fill="none" stroke="#496b78" d="M1181.46,-404.65C1147.5,-387.81 1104.59,-366.53 1073.36,-351.05"/>
+<polygon fill="#496b78" stroke="#496b78" points="1074.68,-349.16 1067.84,-348.31 1072.66,-353.24 1074.68,-349.16"/>
+<text xml:space="preserve" text-anchor="middle" x="1168.67" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">手动暂停</text>
+</g>
+<!-- f -->
+<g id="s7-node6" class="node">
+<title>f</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M1521.78,-332.92C1521.78,-332.92 1458.22,-353.39 1458.22,-353.39 1452.51,-355.23 1440.8,-357.06 1434.8,-357.06 1434.8,-357.06 1286,-357.06 1286,-357.06 1280,-357.06 1268.29,-355.23 1262.58,-353.39 1262.58,-353.39 1199.02,-332.92 1199.02,-332.92 1193.31,-331.08 1193.31,-327.4 1199.02,-325.56 1199.02,-325.56 1262.58,-305.09 1262.58,-305.09 1268.29,-303.25 1280,-301.41 1286,-301.41 1286,-301.41 1434.8,-301.41 1434.8,-301.41 1440.8,-301.41 1452.51,-303.25 1458.22,-305.09 1458.22,-305.09 1521.78,-325.56 1521.78,-325.56 1527.49,-327.4 1527.49,-331.08 1521.78,-332.92"/>
+<text xml:space="preserve" text-anchor="middle" x="1360.4" y="-325.04" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">下位进入恢复等待？</text>
+</g>
+<!-- a&#45;&gt;f -->
+<g id="s7-edge5" class="edge">
+<title>a&#45;&gt;f</title>
+<path fill="none" stroke="#496b78" d="M1269.63,-404.65C1285.48,-391.66 1304.54,-376.03 1321.1,-362.45"/>
+<polygon fill="#496b78" stroke="#496b78" points="1322.32,-364.39 1325.91,-358.51 1319.44,-360.88 1322.32,-364.39"/>
+<text xml:space="preserve" text-anchor="middle" x="1328.32" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">恢复等待</text>
+</g>
+<!-- l -->
+<g id="s7-node12" class="node">
+<title>l</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M1817.8,-354.68C1817.8,-354.68 1561,-354.68 1561,-354.68 1555,-354.68 1549,-348.68 1549,-342.68 1549,-342.68 1549,-315.8 1549,-315.8 1549,-309.8 1555,-303.8 1561,-303.8 1561,-303.8 1817.8,-303.8 1817.8,-303.8 1823.8,-303.8 1829.8,-309.8 1829.8,-315.8 1829.8,-315.8 1829.8,-342.68 1829.8,-342.68 1829.8,-348.68 1823.8,-354.68 1817.8,-354.68"/>
+<text xml:space="preserve" text-anchor="middle" x="1689.4" y="-333.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">在受监管审核模式持续 17 s：上位 </text>
+<text xml:space="preserve" text-anchor="middle" x="1689.4" y="-316.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">FAULT 并发 ABORT</text>
+</g>
+<!-- a&#45;&gt;l -->
+<g id="s7-edge6" class="edge">
+<title>a&#45;&gt;l</title>
+<path fill="none" stroke="#496b78" d="M1337.22,-409.27C1406.41,-393.74 1498.49,-373.08 1571.14,-356.77"/>
+<polygon fill="#496b78" stroke="#496b78" points="1571.24,-359.09 1577.08,-355.44 1570.24,-354.65 1571.24,-359.09"/>
+<text xml:space="preserve" text-anchor="middle" x="1512.52" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">审核超时</text>
+</g>
+<!-- m -->
+<g id="s7-node13" class="node">
+<title>m</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M2114.8,-354.68C2114.8,-354.68 1858,-354.68 1858,-354.68 1852,-354.68 1846,-348.68 1846,-342.68 1846,-342.68 1846,-315.8 1846,-315.8 1846,-309.8 1852,-303.8 1858,-303.8 1858,-303.8 2114.8,-303.8 2114.8,-303.8 2120.8,-303.8 2126.8,-309.8 2126.8,-315.8 2126.8,-315.8 2126.8,-342.68 2126.8,-342.68 2126.8,-348.68 2120.8,-354.68 2114.8,-354.68"/>
+<text xml:space="preserve" text-anchor="middle" x="1986.4" y="-333.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">下位报故障：保持故障等待，按操作手</text>
+<text xml:space="preserve" text-anchor="middle" x="1986.4" y="-316.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">处理</text>
+</g>
+<!-- a&#45;&gt;m -->
+<g id="s7-edge7" class="edge">
+<title>a&#45;&gt;m</title>
+<path fill="none" stroke="#496b78" d="M1364.47,-417.98C1486.33,-404.27 1674.72,-381.82 1837.4,-357.06 1838.91,-356.83 1840.43,-356.6 1841.95,-356.37"/>
+<polygon fill="#496b78" stroke="#496b78" points="1842.07,-358.65 1848.14,-355.39 1841.37,-354.15 1842.07,-358.65"/>
+<text xml:space="preserve" text-anchor="middle" x="1745.2" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">设备故障</text>
+</g>
+<!-- o -->
+<g id="s7-node15" class="node">
+<title>o</title>
+<path fill="#ffe4de" stroke="#6d8990" d="M2411.8,-354.68C2411.8,-354.68 2155,-354.68 2155,-354.68 2149,-354.68 2143,-348.68 2143,-342.68 2143,-342.68 2143,-315.8 2143,-315.8 2143,-309.8 2149,-303.8 2155,-303.8 2155,-303.8 2411.8,-303.8 2411.8,-303.8 2417.8,-303.8 2423.8,-309.8 2423.8,-315.8 2423.8,-315.8 2423.8,-342.68 2423.8,-342.68 2423.8,-348.68 2417.8,-354.68 2411.8,-354.68"/>
+<text xml:space="preserve" text-anchor="middle" x="2283.4" y="-333.44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">人工终止或已完成：停车／冻结，等待</text>
+<text xml:space="preserve" text-anchor="middle" x="2283.4" y="-316.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">操作</text>
+</g>
+<!-- a&#45;&gt;o -->
+<g id="s7-edge8" class="edge">
+<title>a&#45;&gt;o</title>
+<path fill="none" stroke="#496b78" d="M1383.9,-424.25C1562.24,-413.94 1871.23,-392.65 2134.4,-357.06 2136.34,-356.8 2138.29,-356.53 2140.25,-356.26"/>
+<polygon fill="#496b78" stroke="#496b78" points="2140.26,-358.56 2146.36,-355.38 2139.61,-354.05 2140.26,-358.56"/>
+<text xml:space="preserve" text-anchor="middle" x="2040.94" y="-376.56" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">终止或结束</text>
+</g>
+<!-- n -->
+<g id="s7-node14" class="node">
+<title>n</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M640.8,-253.41C640.8,-253.41 384,-253.41 384,-253.41 378,-253.41 372,-247.41 372,-241.41 372,-241.41 372,-214.53 372,-214.53 372,-208.53 378,-202.53 384,-202.53 384,-202.53 640.8,-202.53 640.8,-202.53 646.8,-202.53 652.8,-208.53 652.8,-214.53 652.8,-214.53 652.8,-241.41 652.8,-241.41 652.8,-247.41 646.8,-253.41 640.8,-253.41"/>
+<text xml:space="preserve" text-anchor="middle" x="512.4" y="-232.17" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">继续／保局重发：按可恢复进度和新回</text>
+<text xml:space="preserve" text-anchor="middle" x="512.4" y="-215.37" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">包接续</text>
+</g>
+<!-- b&#45;&gt;n -->
+<g id="s7-edge9" class="edge">
+<title>b&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M233.79,-303.32C287.85,-288.89 355.93,-270.73 411.25,-255.96"/>
+<polygon fill="#496b78" stroke="#496b78" points="411.81,-258.17 417.51,-254.29 410.64,-253.77 411.81,-258.17"/>
+<text xml:space="preserve" text-anchor="middle" x="387.84" y="-272.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">取得新证据</text>
+</g>
+<!-- c&#45;&gt;n -->
+<g id="s7-edge10" class="edge">
+<title>c&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M456.13,-303.45C466.07,-290.3 478.37,-274.02 488.93,-260.04"/>
+<polygon fill="#496b78" stroke="#496b78" points="490.63,-261.56 492.73,-255 487,-258.82 490.63,-261.56"/>
+<text xml:space="preserve" text-anchor="middle" x="504.12" y="-272.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">定位恢复</text>
+</g>
+<!-- d&#45;&gt;n -->
+<g id="s7-edge11" class="edge">
+<title>d&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M678.67,-303.32C647.26,-289.28 607.93,-271.69 575.41,-257.15"/>
+<polygon fill="#496b78" stroke="#496b78" points="576.4,-255.1 569.54,-254.52 574.54,-259.25 576.4,-255.1"/>
+<text xml:space="preserve" text-anchor="middle" x="659.19" y="-272.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">配对完成</text>
+</g>
+<!-- e&#45;&gt;n -->
+<g id="s7-edge12" class="edge">
+<title>e&#45;&gt;n</title>
+<path fill="none" stroke="#496b78" d="M940.11,-310.78C859.9,-295.44 742.03,-272.89 650.33,-255.35"/>
+<polygon fill="#496b78" stroke="#496b78" points="650.95,-253.16 644.14,-254.17 650.1,-257.63 650.95,-253.16"/>
+<text xml:space="preserve" text-anchor="middle" x="825.47" y="-272.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">收到继续</text>
+</g>
+<!-- g -->
+<g id="s7-node7" class="node">
+<title>g</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1488.8,-253.41C1488.8,-253.41 1232,-253.41 1232,-253.41 1226,-253.41 1220,-247.41 1220,-241.41 1220,-241.41 1220,-214.53 1220,-214.53 1220,-208.53 1226,-202.53 1232,-202.53 1232,-202.53 1488.8,-202.53 1488.8,-202.53 1494.8,-202.53 1500.8,-208.53 1500.8,-214.53 1500.8,-214.53 1500.8,-241.41 1500.8,-241.41 1500.8,-247.41 1494.8,-253.41 1488.8,-253.41"/>
+<text xml:space="preserve" text-anchor="middle" x="1360.4" y="-232.17" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">等下位确定爪区参考和 140°，等本次</text>
+<text xml:space="preserve" text-anchor="middle" x="1360.4" y="-215.37" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">新图重新审核</text>
+</g>
+<!-- f&#45;&gt;g -->
+<g id="s7-edge13" class="edge">
+<title>f&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M1360.4,-301.11C1360.4,-288.85 1360.4,-274.26 1360.4,-261.42"/>
+<polygon fill="#496b78" stroke="#496b78" points="1362.68,-261.7 1360.4,-255.2 1358.13,-261.7 1362.68,-261.7"/>
+<text xml:space="preserve" text-anchor="middle" x="1366.03" y="-272.91" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">是</text>
+</g>
+<!-- h -->
+<g id="s7-node8" class="node">
+<title>h</title>
+<path fill="#fff1ce" stroke="#6d8990" d="M1521.78,-130.38C1521.78,-130.38 1458.22,-150.85 1458.22,-150.85 1452.51,-152.69 1440.8,-154.53 1434.8,-154.53 1434.8,-154.53 1286,-154.53 1286,-154.53 1280,-154.53 1268.29,-152.69 1262.58,-150.85 1262.58,-150.85 1199.02,-130.38 1199.02,-130.38 1193.31,-128.55 1193.31,-124.87 1199.02,-123.03 1199.02,-123.03 1262.58,-102.56 1262.58,-102.56 1268.29,-100.72 1280,-98.88 1286,-98.88 1286,-98.88 1434.8,-98.88 1434.8,-98.88 1440.8,-98.88 1452.51,-100.72 1458.22,-102.56 1458.22,-102.56 1521.78,-123.03 1521.78,-123.03 1527.49,-124.87 1527.49,-128.55 1521.78,-130.38"/>
+<text xml:space="preserve" text-anchor="middle" x="1360.4" y="-122.51" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">恢复审核结果？</text>
+</g>
+<!-- g&#45;&gt;h -->
+<g id="s7-edge14" class="edge">
+<title>g&#45;&gt;h</title>
+<path fill="none" stroke="#496b78" d="M1358.96,-202.36C1358.73,-197.45 1358.52,-192.33 1358.4,-187.53 1358.2,-179.51 1358.3,-170.88 1358.54,-162.74"/>
+<polygon fill="#496b78" stroke="#496b78" points="1360.81,-162.89 1358.77,-156.32 1356.26,-162.73 1360.81,-162.89"/>
+</g>
+<!-- h&#45;&gt;g -->
+<g id="s7-edge18" class="edge">
+<title>h&#45;&gt;g</title>
+<path fill="none" stroke="#496b78" d="M1360.4,-154.97C1360.4,-167.19 1360.4,-181.7 1360.4,-194.48"/>
+<polygon fill="#496b78" stroke="#496b78" points="1358.13,-194.17 1360.4,-200.67 1362.68,-194.17 1358.13,-194.17"/>
+<text xml:space="preserve" text-anchor="middle" x="1405.4" y="-174.03" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">图像或回包仍不足</text>
+</g>
+<!-- i -->
+<g id="s7-node9" class="node">
+<title>i</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1191.8,-43.44C1191.8,-43.44 935,-43.44 935,-43.44 929,-43.44 923,-37.44 923,-31.44 923,-31.44 923,-19.44 923,-19.44 923,-13.44 929,-7.44 935,-7.44 935,-7.44 1191.8,-7.44 1191.8,-7.44 1197.8,-7.44 1203.8,-13.44 1203.8,-19.44 1203.8,-19.44 1203.8,-31.44 1203.8,-31.44 1203.8,-37.44 1197.8,-43.44 1191.8,-43.44"/>
+<text xml:space="preserve" text-anchor="middle" x="1063.4" y="-21.24" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">合法且开爪：重新合爪，再走闭爪复审</text>
+</g>
+<!-- h&#45;&gt;i -->
+<g id="s7-edge15" class="edge">
+<title>h&#45;&gt;i</title>
+<path fill="none" stroke="#496b78" d="M1278.85,-98.45C1229.5,-81.96 1167.67,-61.29 1122.92,-46.33"/>
+<polygon fill="#496b78" stroke="#496b78" points="1123.66,-44.18 1116.77,-44.28 1122.21,-48.5 1123.66,-44.18"/>
+<text xml:space="preserve" text-anchor="middle" x="1252.18" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">合法开爪</text>
+</g>
+<!-- j -->
+<g id="s7-node10" class="node">
+<title>j</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1488.8,-43.44C1488.8,-43.44 1232,-43.44 1232,-43.44 1226,-43.44 1220,-37.44 1220,-31.44 1220,-31.44 1220,-19.44 1220,-19.44 1220,-13.44 1226,-7.44 1232,-7.44 1232,-7.44 1488.8,-7.44 1488.8,-7.44 1494.8,-7.44 1500.8,-13.44 1500.8,-19.44 1500.8,-19.44 1500.8,-31.44 1500.8,-31.44 1500.8,-37.44 1494.8,-43.44 1488.8,-43.44"/>
+<text xml:space="preserve" text-anchor="middle" x="1360.4" y="-21.24" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">确认空爪：清旧批，走返回搜索</text>
+</g>
+<!-- h&#45;&gt;j -->
+<g id="s7-edge16" class="edge">
+<title>h&#45;&gt;j</title>
+<path fill="none" stroke="#496b78" d="M1360.4,-98.58C1360.4,-83.99 1360.4,-66.11 1360.4,-51.81"/>
+<polygon fill="#496b78" stroke="#496b78" points="1362.68,-51.86 1360.4,-45.36 1358.13,-51.86 1362.68,-51.86"/>
+<text xml:space="preserve" text-anchor="middle" x="1382.9" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">确认为空</text>
+</g>
+<!-- k -->
+<g id="s7-node11" class="node">
+<title>k</title>
+<path fill="#f4f8f8" stroke="#6d8990" d="M1785.8,-50.88C1785.8,-50.88 1529,-50.88 1529,-50.88 1523,-50.88 1517,-44.88 1517,-38.88 1517,-38.88 1517,-12 1517,-12 1517,-6 1523,0 1529,0 1529,0 1785.8,0 1785.8,0 1791.8,0 1797.8,-6 1797.8,-12 1797.8,-12 1797.8,-38.88 1797.8,-38.88 1797.8,-44.88 1791.8,-50.88 1785.8,-50.88"/>
+<text xml:space="preserve" text-anchor="middle" x="1657.4" y="-29.64" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">非法：等待继续复审；明确请求放弃才</text>
+<text xml:space="preserve" text-anchor="middle" x="1657.4" y="-12.84" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14.00" fill="#153646">双开</text>
+</g>
+<!-- h&#45;&gt;k -->
+<g id="s7-edge17" class="edge">
+<title>h&#45;&gt;k</title>
+<path fill="none" stroke="#496b78" d="M1441.95,-98.45C1483.5,-84.56 1533.9,-67.72 1575.5,-53.81"/>
+<polygon fill="#496b78" stroke="#496b78" points="1576.02,-56.04 1581.46,-51.82 1574.58,-51.72 1576.02,-56.04"/>
+<text xml:space="preserve" text-anchor="middle" x="1546.75" y="-70.38" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.00" fill="#345565">非法</text>
+</g>
+</g>
+</svg>
+</div></section></main><script>let k=1;const svgs=[...document.querySelectorAll(".scroller svg")];function zoom(v){k=Math.max(.4,Math.min(3,k+v));for(const s of svgs)s.style.width=s.viewBox.baseVal.width*k+"px"}function fit(){k=1;for(const s of svgs)s.style.width="100%"}zoom(0)</script></html>
