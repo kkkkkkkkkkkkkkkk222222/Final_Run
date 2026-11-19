@@ -36,9 +36,10 @@ class VisionProtocolTests(unittest.TestCase):
                 row["action_id"], row["source_frame"]), bytes.fromhex(row["context_hex"]))
         for flags, a, b, u in ((0x51, 1, 10500, 3), (0x51, 0, 12000, 3),
                                 (0x71, 0, 10500, 3), (0x41, 0, 10500, 3),
-                                (0x51, 0, 10500, 4)):
+                                (0x51, 0, 12000, 4)):
             with self.assertRaises(ValueError):
                 protocol.mission_frame(1, 9, flags, a, b, u)
+        self.assertEqual(len(protocol.mission_frame(1, 9, 0x51, 0, 10500, 4)), 15)
 
     def test_three_material_composition_contract(self) -> None:
         import json

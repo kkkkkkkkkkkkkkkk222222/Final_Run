@@ -2,6 +2,12 @@
 
 更新日期为 2026-11-19，时区 Asia/Shanghai。
 
+## FINALS-PRELIM-FLOW-20261119
+
+已对照[决赛上位 ec841c9](https://github.com/danmo-teng/shijue_fangan-finals/blob/ec841c901ec394eaf7cb84b2f2cbb35655ba6208/docs/CROSS_REPO_REQUESTS.md)合入基于初赛下位 `c3e1ae5` 的配套修改。FinalRun 在闭爪审核通过后跳过自动滤除，拒绝滤除命令 0x16、0x18 及分离抬爪 U=8200；普通分离、0x17 侧挤及实际轮程抵扣、三件放货重推和超时放货登记按初赛执行。此项取代旧决赛问卷流程。
+
+本地 FinalRun 编译链接通过，协议工具 29 项测试通过。生产 Task 配合模拟硬件验证首绿与单橙闭爪审核通过后均进入 mode22，未执行过滤或倒退。未烧录，未取得板端身份或整车实测结果。
+
 ## 固定入口与协作方式
 
 - F405 决赛仓库为 `kkkkkkkkkkkkkkkk222222/Final_Run`，分支为 `Final_task`，预设为 `FinalRun`。[本端固定入口](https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/blob/Final_task/docs/CROSS_REPO_REQUESTS.md)

@@ -246,25 +246,25 @@ static void test_quantity_grip_and_retry_budget(void)
   for (uint8_t single = 0U; single <= 1U; ++single) {
     prepare(); separation_audit(single, false);
     for (uint8_t attempt = 0U; attempt < 2U; ++attempt) {
-      assert(task_prepare_separation(1, 400U + attempt));
-      assert(separation_extra_close_deg == (single && attempt == 0U ? 20U : 5U));
+      assert(task_prepare_separation(1, false, 400U + attempt));
+      assert(separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - (single && attempt == 0U ? 20U : 5U));
       assert(separation_turn_deg == 10.0f);
     }
-    assert(task_prepare_separation(-1, 410U) && separation_total_attempts == 3U);
-    assert(separation_extra_close_deg == 5U && !capture_escape_active);
+    assert(task_prepare_separation(-1, false, 410U) && separation_total_attempts == 3U);
+    assert(separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 5U && !capture_escape_active);
   }
   prepare(); separation_audit(false, false);
-  assert(task_prepare_separation(1, 400U) && separation_extra_close_deg == 5U);
+  assert(task_prepare_separation(1, false, 400U) && separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 5U);
   separation_audit_at(true, false, 400U);
-  assert(task_prepare_separation(-1, 800U) && separation_extra_close_deg == 5U);
+  assert(task_prepare_separation(-1, false, 800U) && separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 5U);
   assert(separation_total_attempts == 2U && separation_keep_side == -1);
   prepare(); separation_audit(true, true);
   assert(audit_single_side_mask == 0U);
-  assert(task_prepare_separation(1, 400U) && separation_extra_close_deg == 5U);
+  assert(task_prepare_separation(1, false, 400U) && separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 5U);
   prepare(); separation_audit(true, false);
   audit_last_counts = 1U | (3U << 2U);
   audit_last_total_count = 4U;
-  assert(task_prepare_separation(1, 400U) && separation_extra_close_deg == 10U);
+  assert(task_prepare_separation(1, false, 400U) && separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 10U);
   assert(separation_turn_deg == 15.0f);
   prepare();
   task_enter(TASK_GRAB_OBSERVE, 0U);
@@ -277,7 +277,7 @@ static void test_quantity_grip_and_retry_budget(void)
   }
   (void)task_capture_observe(400U);
   assert(state == TASK_GRAB_OBSERVE && !capture_escape_active);
-  assert(task_prepare_separation(1, 410U) && separation_extra_close_deg == 5U);
+  assert(task_prepare_separation(1, false, 410U) && separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 5U);
   assert(separation_turn_deg == 10.0f);
   VisionMissionCommand c = injury_audit(1U);
   assert(task_single_side_mask(&c) == 1U);
@@ -304,7 +304,7 @@ static void test_ready_mode_reaudit_and_stale_grip_rejection(void)
   }
   assert(state == TASK_DISPERSE_READY && task_status.claw_visible && task_audit_state());
   assert(audit_received && !audit_valid && audit_single_side_mask == 1U);
-  assert(!task_prepare_separation(1, 900U));
+  assert(!task_prepare_separation(1, false, 900U));
   assert(task_status.command_reject_reason == TASK_COMMAND_REJECT_AUDIT && separation_total_attempts == 0U);
 }
 
@@ -383,7 +383,7 @@ static void test_separation_retransmission_is_one_round(void)
             440U, 3U);
   assert(mission_paused && separation_total_attempts == 1U);
   wire_send(c, 460U, 4U);
-  assert(!mission_paused && separation_total_attempts == 1U && separation_extra_close_deg == 20U);
+  assert(!mission_paused && separation_total_attempts == 1U && separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 20U);
 }
 
 static void test_third_failure_recloses_and_reopens_at_center(void)
@@ -1001,237 +1001,8 @@ static void test_filter_recovery_restores_transport_lift(void)
   assert(state == TASK_NAVIGATE && Servo_GetAngle(1U) == APP_LIFT_MATERIAL_TRAVEL_ANGLE);
 }
 
-#ifdef FINALRUN_DELIVERY_CHECK
-#if !APP_FINALS_DELIVERY_CONFIRMATION
-#error "The finals delivery checks require APP_FINALS_DELIVERY_CONFIRMATION=1"
-#endif
-static void test_finals_delivery_confirmation(void)
-{
-  const VisionMissionCommand enter = {
-      .command = VISION_CMD_ENTER_SAFE_ZONE,
-      .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE |
-          VISION_CMD_DRIVE_STRAIGHT | VISION_CMD_USE_FINAL_HEADING,
-      .heading_cdeg = 9000U};
-  for (unsigned previous_first = 0U; previous_first < 2U; ++previous_first) {
-    for (unsigned reason = 0U; reason < 3U; ++reason) {
-      wire_prepare(TASK_ALIGN_SAFE_ZONE, 0U);
-      configured_color = VISION_COLOR_RED;
-      initial_claw_ready = true;
-      first_delivery_done = previous_first != 0U;
-      search_yaw_direction = -1;
-      search_direction_latched = false;
-      safe_align_done = true;
-      safe_align_visual_confirmed = false;
-      wire_send(enter, 100U, 1U);
-      assert(command_accepted && state == TASK_NAVIGATE && delivery_enter_active);
-
-      VisionMissionCommand complete = {
-          .command = VISION_CMD_TASK_COMPLETE,
-          .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE,
-          .heading_cdeg = reason == 1U ? VISION_TASK_COMPLETE_UNCONFIRMED : 0U};
-      uint32_t now = 200U;
-      if (reason == 2U) {
-        now = 100U + APP_SAFE_ENTER_FRONT_TIMEOUT_MS;
-        task_delivery_account_front_time(now);
-        task_delivery_check_front_budget(now);
-        assert(state == TASK_OPEN_FOR_RAM &&
-               delivery.finish == DELIVERY_FINISH_FRONT_TIMEOUT);
-        wire_send_action(complete, 12U, now + 1U, 2U);
-        assert(!command_accepted && accepted_context.opcode == VISION_CMD_ENTER_SAFE_ZONE);
-      } else {
-        if (reason == 1U) {
-          task_enter(TASK_RAM_VERIFY, now);
-          task_status.gripper_closed = false;
-        }
-        wire_send_action(complete, 12U, now, 2U);
-        assert(command_accepted);
-        wire_send_action(complete, 12U, now + 1U, 3U);
-        assert(command_accepted);
-        VisionMissionCommand changed_reason = complete;
-        changed_reason.heading_cdeg ^= VISION_TASK_COMPLETE_UNCONFIRMED;
-        wire_send_action(changed_reason, 12U, now + 2U, 4U);
-        assert(!command_accepted);
-        wire_send_action(changed_reason, 13U, now + 3U, 5U);
-        assert(!command_accepted && accepted_context.action_id == 12U);
-      }
-      if (state == TASK_OPEN_FOR_RAM) {
-        task_process_delivery_open(&active_mission, now + 20U);
-        assert(state == TASK_OPEN_FOR_RAM && !task_context_complete());
-        task_process_delivery_open(&active_mission, now + 2000U);
-      }
-      assert(state == TASK_EXIT_SAFE_ZONE && !task_status.gripper_closed);
-      assert(task_context_complete());
-      assert(first_delivery_done == (previous_first != 0U || reason == 0U));
-      assert(search_yaw_direction == (reason == 0U ? 1 : -1));
-      if (reason == 2U) {
-        assert(accepted_context.opcode == VISION_CMD_ENTER_SAFE_ZONE &&
-               accepted_context.action_id == 11U);
-      } else {
-        wire_send_action(complete, 12U, now + 2020U, 6U);
-        assert(command_accepted && task_context_complete());
-        assert(delivery.finish == (reason == 1U ?
-            DELIVERY_FINISH_UNCONFIRMED : DELIVERY_FINISH_COMPLETE));
-      }
-    }
-  }
-}
-#endif
-
-#ifdef FINALRUN_POLICY_CHECK
-#if !APP_FINALS_AUDITED_FLOW
-#error "The questionnaire checks require APP_FINALS_AUDITED_FLOW=1"
-#endif
-static void finals_prepare(TaskState target, bool first_done)
-{
-  wire_prepare(target, 0U);
-  first_delivery_done = first_done;
-  configured_color = VISION_COLOR_RED;
-  initial_claw_ready = recovery_reference_ready = true;
-  task_status.claw_visible = transport_audit_camera_ready = true;
-  task_clear_audit_result();
-}
-
-static VisionMissionCommand finals_audit(uint8_t left, uint8_t lc, uint8_t right,
-                                        uint8_t rc, uint8_t total, uint8_t role)
-{
-  return (VisionMissionCommand){
-      .command = VISION_CMD_CARGO_AUDIT, .flags = VISION_CMD_VALID,
-      .audit_left_class = left, .audit_right_class = right,
-      .audit_counts = lc | (rc << 2U), .audit_total_count = total,
-      .audit_flags = VISION_AUDIT_STABLE | role, .audit_id = 1U, .vision_frame = 9U};
-}
-
-static void finals_pair(VisionMissionCommand audit)
-{
-  wire_send(audit, 100U, 1U);
-  ++audit.audit_id; ++audit.vision_frame;
-  wire_send(audit, 220U, 2U);
-}
-
-static void test_finals_questionnaire_quantity(void)
-{
-  const VisionMissionCommand grab = {
-      .command = VISION_CMD_GRAB_CONFIRMED, .flags = VISION_CMD_VALID};
-  const uint8_t material_classes[] = {VISION_CARGO_GREEN, VISION_CARGO_CORE,
-      VISION_CARGO_MIXED_MATERIAL, VISION_CARGO_MIXED_TWO_GREEN};
-  for (unsigned i = 0; i < sizeof(material_classes); ++i) {
-    const uint8_t c = material_classes[i];
-    const uint8_t min_count = c == VISION_CARGO_MIXED_TWO_GREEN ? 3U :
-        c == VISION_CARGO_MIXED_MATERIAL ? 2U : 1U;
-    for (uint8_t n = min_count; n <= 3U; ++n) {
-      for (unsigned side = 0; side < 2; ++side) {
-        finals_prepare(TASK_POST_GRAB_AUDIT, true);
-        VisionMissionCommand a = finals_audit(side ? VISION_CARGO_NONE : c,
-            side ? 0U : n, side ? c : VISION_CARGO_NONE, side ? n : 0U, n, 0U);
-        finals_pair(a);
-        assert(audit_valid && task_status.audit_total_count == n);
-        assert(state == TASK_WAIT_NAVIGATION); /* No extra filter/separation. */
-        assert(task_confirmed_load_available());
-      }
-    }
-  }
-  finals_prepare(TASK_GRAB_OBSERVE, true);
-  VisionMissionCommand split = finals_audit(VISION_CARGO_GREEN, 2U,
-      VISION_CARGO_CORE, 1U, 3U, 0U);
-  finals_pair(split);
-  assert(audit_valid);
-  VisionMissionCommand separate = {.command = VISION_CMD_DISPERSE_PILE,
-      .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE | VISION_CMD_SIDE_VALID};
-  wire_send_action(separate, 12U, 240U, 3U);
-  assert(!command_accepted); /* The legal whole batch must not be split. */
-  wire_send_action(grab, 13U, 260U, 4U);
-  assert(command_accepted && state == TASK_CLOSE_CLAW);
-
-  finals_prepare(TASK_GRAB_OBSERVE, false);
-  VisionMissionCommand a = finals_audit(VISION_CARGO_GREEN, 1U, VISION_CARGO_NONE, 0U, 1U, 0U);
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_FIRST_GREEN);
-  a.audit_counts = a.audit_total_count = 2U;
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INVALID);
-  first_delivery_done = true;
-  a = finals_audit(VISION_CARGO_INJURED, 1U, VISION_CARGO_NONE, 0U, 1U,
-                  VISION_AUDIT_DESTINATION_INJURY);
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INJURY_SINGLE);
-  a.audit_counts = a.audit_total_count = 2U;
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INVALID);
-  a = finals_audit(VISION_CARGO_GREEN, 2U, VISION_CARGO_CORE, 2U, 4U, 0U);
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INVALID);
-  a = finals_audit(VISION_CARGO_GREEN, 1U, VISION_CARGO_DANGER, 1U, 2U,
-                  VISION_AUDIT_DANGER_PRESENT);
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INVALID);
-  a = finals_audit(VISION_CARGO_INJURED, 1U, VISION_CARGO_CORE, 1U, 2U,
-                  VISION_AUDIT_INJURY_MIXED);
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INVALID);
-
-  /* The same actual seven-object packet remains legal for relocation only.
-   * Per-side overflow keeps the old count3 + UNKNOWN wire representation. */
-  a = finals_audit(VISION_CARGO_UNKNOWN, 3U, VISION_CARGO_NONE, 0U, 7U,
-                  VISION_AUDIT_INITIAL_STASH | VISION_AUDIT_UNKNOWN_PRESENT);
-  finals_prepare(TASK_GRAB_OBSERVE, false);
-  finals_pair(a);
-  assert(audit_valid && task_status.audit_total_count == 7U && !first_delivery_done);
-  wire_send_action(grab, 12U, 240U, 3U);
-  assert(command_accepted && state == TASK_CLOSE_CLAW);
-  finals_prepare(TASK_SAFE_SWEEP_AUDIT, true);
-  task_reset_sweep_audit(0U);
-  a.audit_flags = VISION_AUDIT_STABLE | VISION_AUDIT_SWEEP_PICKUP | VISION_AUDIT_UNKNOWN_PRESENT;
-  finals_pair(a);
-  assert(sweep_audit_ready && sweep_audit_valid && task_status.audit_total_count == 7U);
-  wire_send_action(grab, 12U, 240U, 3U);
-  assert(command_accepted && state == TASK_SAFE_SWEEP);
-
-  finals_prepare(TASK_SAFE_SWEEP_RETRIEVE_AUDIT, true);
-  a.audit_flags = VISION_AUDIT_STABLE | VISION_AUDIT_UNKNOWN_PRESENT;
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_INVALID);
-  a = finals_audit(VISION_CARGO_MIXED_MATERIAL, 3U, VISION_CARGO_NONE, 0U, 3U, 0U);
-  assert(task_audit_semantic(&a) == AUDIT_SEMANTIC_MATERIAL_LEGAL);
-  finals_prepare(TASK_GRAB_OBSERVE, true);
-  complete_flow_active = false;
-  wire_send_action(grab, 12U, 100U, 1U);
-  assert(!command_accepted); /* Quantity relaxation never skips real audit. */
-}
-
-static void test_finals_questionnaire_attempts_and_exit(void)
-{
-  finals_prepare(TASK_GRAB_OBSERVE, true);
-  VisionMissionCommand a = finals_audit(VISION_CARGO_GREEN, 1U, VISION_CARGO_INJURED, 2U,
-                                      3U, VISION_AUDIT_INJURY_MIXED);
-  finals_pair(a);
-  VisionMissionCommand separate = {.command = VISION_CMD_DISPERSE_PILE,
-      .flags = VISION_CMD_VALID | VISION_CMD_RED_SIDE | VISION_CMD_SIDE_VALID};
-  wire_send_action(separate, 12U, 240U, 3U);
-  assert(command_accepted && separation_total_attempts == 1U);
-  wire_send_action(separate, 12U, 260U, 4U);
-  assert(command_accepted && separation_total_attempts == 1U);
-  audit_received = audit_host_stable = true;
-  audit_consistent_count = APP_AUDIT_REQUIRED_SAMPLES;
-  audit_evidence_ms = 280U;
-  assert(task_prepare_separation(-1, 280U)); /* Switch side, same batch. */
-  assert(separation_total_attempts == 2U);
-  assert(task_prepare_separation(1, 300U));
-  assert(separation_total_attempts == 3U);
-  assert(!task_prepare_separation(-1, 320U));
-  assert(separation_total_attempts == 3U);
-  audit_received = true; audit_valid = false;
-  task_begin_capture_escape(340U);
-  assert(capture_escape_active && !capture_escape_return_center);
-  task_finish_abandoned_batch();
-  assert(separation_total_attempts == 0U && separation_keep_side == 0);
-}
-#endif
-
 int main(void)
 {
-#ifdef FINALRUN_POLICY_CHECK
-  test_finals_questionnaire_quantity();
-  test_finals_questionnaire_attempts_and_exit();
-  puts("FinalRun questionnaire material/stash/sweep/recovery, replay, three-attempt and turn checks PASS");
-  return 0;
-#endif
-#ifdef FINALRUN_DELIVERY_CHECK
-  test_finals_delivery_confirmation();
-  puts("FinalRun confirmed/unconfirmed/local exit ownership and retained progress PASS");
-  return 0;
-#endif
   test_audited_core_closes_without_driving(true, VISION_CARGO_CORE, 1U);
   test_audited_core_closes_without_driving(false, VISION_CARGO_CORE, 1U);
   test_audited_core_closes_without_driving(false, VISION_CARGO_MIXED_MATERIAL, 2U);
@@ -1293,8 +1064,8 @@ int main(void)
   assert(state == TASK_POST_GRAB_AUDIT && !capture_escape_active);
   audit_host_stable = true;
   audit_evidence_ms = 5100U;
-  assert(task_prepare_separation(1, 5100U) && separation_total_attempts == 3U);
-  assert(separation_extra_close_deg == 5U);
+  assert(task_prepare_separation(1, false, 5100U) && separation_total_attempts == 3U);
+  assert(separation_left_hold_angle == APP_CLAW_LEFT_TOUCH_ANGLE - 5U);
   puts("two-frame cadence/STABLE, disabled escape, progressive separation PASS");
   return 0;
 #endif

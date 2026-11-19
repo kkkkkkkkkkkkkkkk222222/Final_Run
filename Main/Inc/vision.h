@@ -141,14 +141,20 @@
 #define VISION_APPROACH_RANGE_ZONE_VIEW 3U
 #define VISION_APPROACH_ORANGE_TOP_VIEW 4U
 #define VISION_SEPARATION_ORANGE_CORE_82 8200U
-#define VISION_TASK_COMPLETE_UNCONFIRMED 1U
 #define VISION_RELEASE_SAME_SIDE_BLUE      1U
 #define VISION_PRE_GRAB_ADVANCE_MM      50U
 #define VISION_MODE_APPROACH_RANGE_WAIT 52U
 #define VISION_MODE_APPROACH_RANGE_MOVE 53U
+#define VISION_MODE_NUDGE_CREDIT_READY 54U
+#define VISION_MODE_REPUSH_OPENED 55U
+#define VISION_MODE_REPUSH_RETREAT 56U
+#define VISION_MODE_REPUSH_FORWARD 57U
+#define VISION_MODE_REPUSH_EXIT 58U
 /* DISPERSE_PILE bit5: first formal green only. Execute the short local
  * backoff/Touch/forward/back/open bump, then return directly to SEARCH. */
 #define VISION_CMD_FIRST_GREEN_BUMP  0x20U
+#define VISION_ORANGE_FILTER_AT_PICKUP 0x10U /* Opcode 0x16 only. */
+#define VISION_CMD_KEEP_ORANGE 0x02U /* Scoped to selective separation opcodes. */
 /* DISPERSE P1 bit4: near-claw keep-side evidence, never a cargo count/VALID. */
 #define VISION_CMD_DISPERSE_NEAR_KEEP 0x10U
 /* Bit 6 is opcode-specific in shijue_fangan's current protocol. */
@@ -187,7 +193,9 @@ typedef enum {
   VISION_CMD_CLEAR_SAFE_ZONE = 19,
   /* P1 high nibble is a step, never the legacy flag meanings. */
   VISION_CMD_BULLDOZER_STEP = 20,
-  VISION_CMD_ORANGE_GATE_FILTER = 22
+  VISION_CMD_ORANGE_GATE_FILTER = 22,
+  VISION_CMD_CORRIDOR_NUDGE = 23,
+  VISION_CMD_ORANGE_CORE_FILTER = 24
 } VisionMissionCode;
 
 typedef enum {

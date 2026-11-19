@@ -53,9 +53,7 @@ set_target_properties(${firmware_target} PROPERTIES
     OUTPUT_NAME "${F405_PROFILE}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 if(F405_PROFILE STREQUAL "FinalRun")
-    target_compile_definitions(${firmware_target} PRIVATE
-        APP_ENABLE_POST_GRAB_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1
-        APP_FINALS_AUDITED_FLOW=1 APP_SEPARATION_MAX_ATTEMPTS=3)
+    target_compile_definitions(${firmware_target} PRIVATE APP_ENABLE_CARGO_LIFT_FILTER=0)
     add_custom_target(FinalRun DEPENDS ${firmware_target})
 endif()
 
@@ -114,7 +112,8 @@ add_custom_target(debug_build_identity
         "-DOUTPUT_FILE=${CMAKE_BINARY_DIR}/generated/DebugBuildIdentity.h"
         "-DIDENTITY_CONFIG=${CMAKE_BUILD_TYPE}|${APP_BOARD}|${F405_PROFILE}|${APP_ACTIVE_MODE_OVERRIDE}|${APP_NORMALDEBUG_MOTION_TEST}|${APP_NORMALDEBUG_UPPER_BAUD}|${CMAKE_C_COMPILER}|${CMAKE_C_FLAGS}|${CMAKE_C_FLAGS_DEBUG}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DebugBuildIdentity.cmake"
-    BYPRODUCTS "${CMAKE_BINARY_DIR}/generated/DebugBuildIdentity.h")
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/generated/DebugBuildIdentity.h"
+    VERBATIM)
 add_dependencies(${firmware_target} debug_build_identity)
 target_include_directories(${firmware_target} PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
