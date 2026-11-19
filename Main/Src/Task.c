@@ -390,6 +390,8 @@ typedef enum {
 static struct {
   bool active;
   bool front_budget_active;
+  bool final_push_lift_requested;
+  uint32_t final_push_lift_ready_ms;
   uint32_t push_elapsed_ms;
   uint32_t push_last_ms;
   DeliveryFinishReason finish;
@@ -4587,6 +4589,19 @@ static RemoteRouteStatus safe_enter_follow(
   if (!nav_final_push_active &&
       (enter_travelled_mm >= contact_start_mm)) {
     delivery.front_budget_active = false;
+    if (APP_ENABLE_FINAL_PUSH_LIFT && enter_travelled_mm < APP_SAFE_ENTER_TOTAL_DISTANCE_MM) {
+      if (!delivery.final_push_lift_requested) {
+        delivery.final_push_lift_ready_ms = now_ms + Lift_PositionWaitMs(APP_LIFT_FINAL_PUSH_ANGLE);
+        Lift_SetFinalPushPosition();
+        delivery.final_push_lift_requested = true;
+      }
+      if ((int32_t)(now_ms - delivery.final_push_lift_ready_ms) < 0) {
+        Motor_Stop();
+        task_status.motors_active = false;
+        nav_stop_output();
+        return REMOTE_ROUTE_WAITING;
+      }
+    }
     nav_final_push_active = true;
     nav_final_push_paused = false;
     nav_final_push_started_ms = now_ms - safe_enter_resume_push_ms;
@@ -7653,6 +7668,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
     delivery.repush = task_delivery_has_three_materials() ? REPUSH_ARMED : REPUSH_NONE;
     delivery.active = true;
     delivery.front_budget_active = true;
+    delivery.final_push_lift_requested = false;
     delivery.push_elapsed_ms = 0U;
     delivery.push_last_ms = now_ms;
     delivery.finish = DELIVERY_FINISH_NONE;

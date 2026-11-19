@@ -2,6 +2,12 @@
 
 更新日期为 2026-11-19，时区 Asia/Shanghai。
 
+## FINALS-PUSH-LIFT-83-20261119
+
+已配套[上位交接 5da28d4](https://github.com/danmo-teng/shijue_fangan-finals/blob/5da28d4ebf93ec9be62721c343bc21481986a569/docs/CROSS_REPO_REQUESTS.md)。仅 FinalRun 首次末段推进启用 83° 姿态，沿用原 ENTER、编码器轮程和锁定航向。累计到 400 mm 结束前段计时，舵机脉宽差估时结束后发起末段推进并开始末段计时，目标总轮程 670 mm。三件放货后的复推沿用原流程。
+
+生产 Task 和机构代码配合硬件替身通过普通 ENTER 与 228 mm 侧挤抵扣检查：累计 399、400、669、670 mm 的阶段切换正确；等待期间重发 ENTER 不重置舵机等待；普通配置沿用原运输角。未烧录，板端身份、实际推板高度和入区效果待实车核对。
+
 ## FINALS-CORE-PRIORITY-20261119
 
 已配套[决赛上位 978984f](https://github.com/danmo-teng/shijue_fangan-finals/blob/978984fb0693791be349111cdfb5c0669fce3412/docs/CROSS_REPO_REQUESTS.md)。上位负责首件前只选普通、之后按核心／普通／伤员排序及分离选侧。FinalRun 使用配对 TASK_COMPLETE（A=B=0）：U=0 视觉确认，完成开爪后登记；U=1 视觉超时，或由 ENTER 自主超时退出，均保留原首件状态。重发不能更换退出原因。三件重推期间或刚退出时收到有效视觉确认，只登记一次。抓后抬爪滤除仍关闭。
