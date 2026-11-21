@@ -1,5 +1,7 @@
 # RDK X5 智能救援决赛
 
+**FinalRun2-upper 接手入口：[可复制的上位机交接提示词](docs/FINALRUN2_UPPER_HANDOFF_PROMPT.md)。** 本分支根目录是FinalRun2配套的完整上位工程；提示词列出最新材料投送／200+270mm要求、两端版本、核对文件与修改边界。本次新增文档，路线无变化。
+
 决赛入口、标定路径和基线见 [决赛移植说明](docs/FINALS_PORT.md)。以下保留初赛基线说明。
 
 # RDK X5 救援机器人视觉、UART与T265调试方案
