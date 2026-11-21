@@ -567,7 +567,9 @@
 #define APP_NAV_STAGE_COARSE_RESERVE_MM  150.0f
 #define APP_NAV_STAGE_FINE_ENTRY_MM      180.0f
 /* STAGE FINE tuning for low-speed closed-loop translation. */
+#ifndef APP_NAV_FINE_MIN_SPEED_MM_S
 #define APP_NAV_FINE_MIN_SPEED_MM_S      250.0f
+#endif
 #ifndef APP_NAV_FINE_MAX_SPEED_MM_S
 #define APP_NAV_FINE_MAX_SPEED_MM_S      360.0f
 #endif

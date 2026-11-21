@@ -66,6 +66,12 @@ if(F405_PROFILE STREQUAL "FinalRun" OR F405_PROFILE STREQUAL "FinalRun1")
     endif()
 endif()
 
+if(F405_PROFILE STREQUAL "FinalRun1")
+    target_sources(${firmware_target} PRIVATE Main/Src/final1_route.c)
+    target_compile_definitions(${firmware_target} PRIVATE
+        APP_ENABLE_FINAL1_ROUTE=1 APP_NAV_FINE_MIN_SPEED_MM_S=400.0f)
+endif()
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 

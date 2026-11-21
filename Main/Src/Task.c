@@ -4,6 +4,9 @@
 #include <math.h>
 
 #include "app_config.h"
+#if APP_ENABLE_FINAL1_ROUTE
+#include "final1_route.h"
+#endif
 #include "encoder.h"
 #include "imu.h"
 #include "Location.h"
@@ -504,6 +507,20 @@ static bool remote_target_sequence_valid;
 static RemoteActionState remote_action;
 static NavProgress nav_progress;
 static NavCoarse nav_coarse;
+#if APP_ENABLE_FINAL1_ROUTE
+static Final1Route final_route;
+static Final1Relief final_relief;
+static FieldPoint route_offset;
+static bool staging_repair, return_pending, station_return;
+
+static void final1_reset(void)
+{
+  final_route = (Final1Route){0};
+  final_relief = (Final1Relief){0};
+  route_offset = (FieldPoint){0};
+  staging_repair = return_pending = station_return = false;
+}
+#endif
 
 static void task_enter(TaskState next, uint32_t now_ms);
 static bool distance_failed(MotorDistanceStatus result);
@@ -675,6 +692,9 @@ static bool task_get_location_pose(LocationPose *pose, uint32_t now_ms)
 
   Motor_Stop();
   task_status.motors_active = false;
+#if APP_ENABLE_FINAL1_ROUTE
+  Final1_Interrupt(&final_relief);
+#endif
   if (!pose_invalid_pending) {
     pose_invalid_pending = true;
     pose_invalid_started_ms = now_ms;
@@ -1617,6 +1637,19 @@ static void task_update_match_time(uint32_t now_ms)
 
 static void task_enter(TaskState next, uint32_t now_ms)
 {
+#if APP_ENABLE_FINAL1_ROUTE
+  Final1_Interrupt(&final_relief);
+  if (next == TASK_NAVIGATE) {
+    final_route = (Final1Route){0};
+    staging_repair = state == TASK_ALIGN_SAFE_ZONE || state == TASK_TRANSPORT_AUDIT;
+  }
+  if (next == TASK_WAIT_NAVIGATION || next == TASK_APPROACH || next == TASK_STOPPED) {
+    final1_reset();
+  }
+  if (next == TASK_EXIT_SAFE_ZONE) return_pending = true;
+  if (next != TASK_EXIT_SAFE_ZONE && next != TASK_FACE_FIELD_CENTER &&
+      next != TASK_SEARCH) return_pending = false;
+#endif
   const bool separation_review = next == TASK_GRAB_OBSERVE || next == TASK_DISPERSE_READY ||
       next == TASK_POST_GRAB_AUDIT || next == TASK_TRANSPORT_AUDIT;
   if (remote_action.orange_core_82 && next != TASK_REMOTE_ACTION && !separation_review) {
@@ -1942,6 +1975,9 @@ static void task_enter(TaskState next, uint32_t now_ms)
 
 static void task_initialize(uint32_t now_ms, bool claws_already_stowed)
 {
+#if APP_ENABLE_FINAL1_ROUTE
+  final1_reset();
+#endif
   held_load = LIFT_LOAD_UNKNOWN;
   orange_gate_attempted = orange_gate_lowered = orange_core_filter_attempted = false;
   task_clear_confirmed_load();
@@ -4284,6 +4320,167 @@ static RemoteRouteStatus nav_follow_coarse(
   return REMOTE_ROUTE_RUNNING;
 }
 
+#if APP_ENABLE_FINAL1_ROUTE
+static FieldPoint final1_position(const LocationPose *pose) {
+  return (FieldPoint){pose->x_mm + route_offset.x, pose->y_mm + route_offset.y};
+}
+
+static void final1_output(float speed, float field_direction, float hold_yaw,
+                          float yaw) {
+  if (speed <= 0) {
+    Motor_Stop();
+    task_status.motors_active = false;
+  } else {
+    task_status.motors_active = Motor_MoveAngleFineHeading(
+        speed, task_wrap_angle(field_direction - yaw), hold_yaw);
+    if (!task_status.motors_active)
+      Final1_Interrupt(&final_relief);
+  }
+}
+
+static void final1_move(const LocationPose *pose,
+                        const VisionMissionCommand *cmd, bool returning,
+                        uint32_t now) {
+  const int side = configured_color == VISION_COLOR_RED ? 1 : -1;
+  const float yaw = pose->heading_mdeg * 0.001f;
+  const float live = (returning ? cmd->target_y_mm : cmd->heading_cdeg) * 0.01f;
+  const float radians = live * 0.01745329252f;
+  const float distance = cmd->target_x_mm;
+  if (!final_route.initialized) {
+    /* In coarse STAGE, and in station moves, the old host sends the true
+     * vector to a known goal. Anchor this leg only; never overwrite Location.
+     * STAGE inside 180 mm suppresses satisfied axes, so do not invert it. */
+    if (returning || distance > APP_NAV_STAGE_FINE_ENTRY_MM) {
+      float dx = distance * cosf(radians), dy = distance * sinf(radians);
+      float target_x = returning
+                           ? copysignf(400, final1_position(pose).x + dx)
+                           : (audit_destination_injury ? 150 : -150) * side;
+      float target_y = returning ? 0 : 540 * side;
+      route_offset =
+          (FieldPoint){target_x - dx - pose->x_mm, target_y - dy - pose->y_mm};
+    }
+    FieldPoint start = final1_position(pose);
+    if (returning)
+      Final1_PlanReturn(&final_route, start,
+                        remote_action.heading_cdeg * 0.01f);
+    else {
+      Final1_PlanStage(&final_route, start, yaw, side,
+                       audit_destination_injury);
+      if (distance <= APP_NAV_STAGE_FINE_ENTRY_MM && !final_route.turn_at_end &&
+          !final_route.no_clear_path)
+        final_route = (Final1Route){.initialized = true, .yaw = yaw};
+    }
+  }
+  FieldPoint pos = final1_position(pose);
+  float direction, remaining;
+  if (final_route.no_clear_path) {
+    /* A different start position (e.g. marshals moved the robot) may free
+     * a corridor. Do not keep driving the obstructed target bearing. */
+    if (hypotf(pos.x - final_route.points[0].x,
+               pos.y - final_route.points[0].y) > 15 ||
+        task_abs(task_wrap_angle(yaw - final_route.yaw)) > 3) {
+      Final1_PlanStage(&final_route, pos, yaw, side, audit_destination_injury);
+    }
+    if (final_route.no_clear_path) {
+      final1_output(0, live, yaw, yaw);
+      return;
+    }
+  }
+  unsigned index = final_route.index;
+  bool local = Final1_NextLeg(&final_route, pos, &direction, &remaining);
+  if (index != final_route.index) {
+    Motor_Stop();
+    task_status.motors_active = false;
+    Final1_Interrupt(&final_relief);
+    return;
+  }
+  if (Motor_IsBraking())
+    return;
+  if (!local && final_route.turn_at_end) {
+    Final1_Interrupt(&final_relief);
+    if (!Final1_CanTurn(pos)) {
+      final_route.no_clear_path = true;
+      final_route.points[0] = pos;
+      final_route.yaw = yaw;
+      final1_output(0, live, yaw, yaw);
+      return;
+    }
+    if (!final_route.turn_stopped) {
+      final1_output(0, live, yaw, yaw);
+      final_route.turn_stopped = true;
+      return;
+    }
+    const float desired = task_safe_zone_heading();
+    const float error = task_wrap_angle(desired - yaw);
+    if (task_abs(error) <= APP_SAFE_ALIGN_TOLERANCE_DEG) {
+      final1_output(0, live, yaw, yaw);
+      Final1_PlanStage(&final_route, pos, yaw, side, audit_destination_injury);
+      return;
+    }
+    MotorTurnStatus turn = Motor_TurnAngleSpeed(
+        error * APP_OMNI_FIELD_YAW_TO_DRIVE_SIGN, APP_RETURN_TURN_SPEED_MM_S);
+    task_status.motors_active = turn == MOTOR_TURN_RUNNING;
+    if (!task_status.motors_active) {
+      final1_output(0, live, yaw, yaw);
+      final_route.no_clear_path = true;
+      final_route.points[0] = pos;
+      final_route.yaw = yaw;
+    }
+    return;
+  }
+  if (!local) {
+    /* Terminal correction and completion always belong to the latest D/H. */
+    bool horizontal = fabsf(cosf(radians)) >= fabsf(sinf(radians));
+    direction = horizontal ? (cosf(radians) > 0 ? 0 : 180)
+                           : (sinf(radians) > 0 ? 90 : -90);
+    remaining = distance * fabsf(horizontal ? cosf(radians) : sinf(radians));
+  }
+  float speed;
+  if (returning) {
+    speed = fminf(APP_EMPTY_STATION_MAX_SPEED_MM_S,
+                  fmaxf(APP_NAV_TERMINAL_MIN_SPEED_MM_S, remaining));
+  } else if (distance <= APP_NAV_STAGE_FINE_ENTRY_MM ||
+             (!local && remaining <= APP_NAV_STAGE_FINE_ENTRY_MM)) {
+    speed = fminf(APP_NAV_FINE_MAX_SPEED_MM_S,
+                  fmaxf(APP_NAV_FINE_MIN_SPEED_MM_S,
+                        APP_NAV_FINE_DISTANCE_GAIN_S_INV * distance));
+  } else {
+    float ratio =
+        fminf(1, fmaxf(0, (remaining - APP_NAV_STAGE_COARSE_RESERVE_MM) /
+                              (APP_NAV_LINEAR_SLOWDOWN_MM -
+                               APP_NAV_STAGE_COARSE_RESERVE_MM)));
+    speed = APP_NAV_MIN_END_SPEED_MM_S +
+            (APP_NAV_STAGE_MAX_SPEED_MM_S - APP_NAV_MIN_END_SPEED_MM_S) * ratio;
+  }
+  /* Slow for internal corners; the final host precision request keeps its
+   * floor. */
+  if (local && final_route.index + 1 < final_route.count)
+    speed = fminf(speed, sqrtf(2 * APP_OMNI_DECEL_MM_S2 * remaining));
+  float angle = direction * 0.01745329252f;
+  float lookahead =
+      fmaxf(remaining, speed * speed / (2 * APP_OMNI_DECEL_MM_S2) +
+                           speed * APP_TASK_PERIOD_MS * 0.001f + 5);
+  float clearance =
+      lookahead * Final1_ClearTravel(pos, lookahead * cosf(angle),
+                                     lookahead * sinf(angle), yaw);
+  if (clearance < lookahead - 0.5f) {
+    speed =
+        clearance <= 3
+            ? 0
+            : fminf(speed, sqrtf(2 * APP_OMNI_DECEL_MM_S2 * (clearance - 3)));
+  }
+  if (!returning && speed > 0 &&
+      task_abs(task_wrap_angle(final_route.yaw - yaw)) <= 6) {
+    (void)Final1_ResolveStall(&final_relief, pos, yaw, side,
+                              audit_destination_injury, false, direction, now,
+                              &direction, &speed);
+  } else {
+    Final1_Interrupt(&final_relief);
+  }
+  final1_output(speed, direction, final_route.yaw, yaw);
+}
+#endif
+
 static RemoteRouteStatus nav_follow(
     const VisionMissionCommand *command, uint8_t expected_command,
     float cruise_speed_mm_s, uint32_t now_ms)
@@ -4299,6 +4496,10 @@ static RemoteRouteStatus nav_follow(
     return REMOTE_ROUTE_WAITING;
   }
   nav_track_progress(command, &pose);
+#if APP_ENABLE_FINAL1_ROUTE
+  if (expected_command == VISION_CMD_RETURN_CENTER && command->target_x_mm > 0)
+    return_pending = false;
+#endif
 
   if (nav_final_push_done) {
     Motor_Stop();
@@ -4313,6 +4514,9 @@ static RemoteRouteStatus nav_follow(
       task_stage_command(command) && !route_to_stash;
   /* RDK sends D=0 once its pose is inside the staging waypoint tolerance. */
   if (stage_route && command->target_x_mm == 0) {
+#if APP_ENABLE_FINAL1_ROUTE
+    Final1_Interrupt(&final_relief);
+#endif
     /* Transport review uses the existing 140-degree view. The accepted ALIGN
      * entry, including post-grab audit reuse, selects 120/115 afterwards. */
     Motor_Stop();
@@ -4359,6 +4563,13 @@ static RemoteRouteStatus nav_follow(
   const float command_heading_deg = (float)command->heading_cdeg * 0.01f;
   const bool return_route =
       expected_command == VISION_CMD_RETURN_CENTER;
+#if APP_ENABLE_FINAL1_ROUTE
+  if (stage_route && !staging_repair && task_status.gripper_closed &&
+      !(command->flags & (VISION_CMD_DRIVE_STRAIGHT | VISION_CMD_USE_FINAL_HEADING))) {
+    final1_move(&pose,command,false,now_ms);
+    return task_status.motors_active ? REMOTE_ROUTE_RUNNING : REMOTE_ROUTE_WAITING;
+  }
+#endif
   if (stage_route || route_to_stash || return_route) {
     return nav_follow_coarse(command, &pose, cruise_speed_mm_s, stage_route, now_ms);
   }
@@ -4512,6 +4723,10 @@ static void task_process_safe_align(uint32_t now_ms)
   const float current_heading_deg = (float)pose.heading_mdeg / 1000.0f;
   const float error_deg = task_wrap_angle(target_heading_deg - current_heading_deg);
 
+#if APP_ENABLE_FINAL1_ROUTE
+  if (!nav_ready || !safe_align_lateral_active || !safe_align_visual_confirmed ||
+      task_abs(error_deg)>APP_SAFE_ALIGN_HOLD_TOLERANCE_DEG) Final1_Interrupt(&final_relief);
+#endif
   /* Translation may hold within 6 degrees, but initial alignment and final
    * completion both need the original 3-degree arrival window. */
   const float tolerance_deg =
@@ -4551,9 +4766,22 @@ static void task_process_safe_align(uint32_t now_ms)
     const float speed_mm_s = fminf(APP_SAFE_ALIGN_LATERAL_MAX_MM_S,
         fmaxf(APP_SAFE_ALIGN_LATERAL_MIN_MM_S,
             task_abs((float)safe_align_pixel_error_px) * APP_SAFE_ALIGN_LATERAL_MM_S_PER_PX));
+#if APP_ENABLE_FINAL1_ROUTE
+    float corrected_speed = speed_mm_s;
+    float direction = target_heading_deg + (safe_align_pixel_error_px > 0 ? -90 : 90);
+    if (Final1_ResolveStall(&final_relief,final1_position(&pose),current_heading_deg,
+        configured_color == VISION_COLOR_RED ? 1 : -1,audit_destination_injury,true,
+        direction,now_ms,&direction,&corrected_speed)) {
+      final1_output(corrected_speed,direction,target_heading_deg,current_heading_deg);
+      return;
+    }
+#endif
     /* MoveAngle's +90 is body-left. A target to the right needs -90. */
     task_status.motors_active = Motor_MoveAngleHeading(speed_mm_s,
         safe_align_pixel_error_px > 0 ? -90.0f : 90.0f, target_heading_deg);
+#if APP_ENABLE_FINAL1_ROUTE
+    if (!task_status.motors_active) Final1_Interrupt(&final_relief);
+#endif
     return;
   }
   if (!safe_align_visual_confirmed) {
@@ -5255,6 +5483,12 @@ static void task_process_bulldozer(const VisionMissionCommand *command,
       task_status.motors_active = false;
       return;
     }
+#if APP_ENABLE_FINAL1_ROUTE
+    if (station_return && remote_action.step == VISION_BULLDOZER_EMPTY_BODY_MOVE) {
+      final1_move(&pose,command,true,now_ms);
+      return;
+    }
+#endif
     float field_direction_deg = (float)command->target_y_mm * 0.01f;
     const float speed = (remote_action.empty_speed_profile != EMPTY_SPEED_DEFAULT) ?
         task_station_move_speed(&pose, (float)command->target_x_mm, &field_direction_deg) :
@@ -5502,6 +5736,11 @@ static bool task_accept_bulldozer(const VisionMissionCommand *command,
       profile = EMPTY_SPEED_STATION;
     }
   }
+#if APP_ENABLE_FINAL1_ROUTE
+  station_return = return_pending && empty_search_entry;
+  return_pending = false;
+  if (station_return) final_route = (Final1Route){0};
+#endif
   task_start_remote_action(REMOTE_ACTION_BULLDOZER, command, now_ms);
   remote_action.empty_speed_profile = profile;
   if (profile != EMPTY_SPEED_DEFAULT) { nav_reset_coarse(); }
@@ -5541,6 +5780,9 @@ static void task_pause_action(uint32_t now_ms, bool cancel_disperse)
 
 static void task_pause_runtime(uint32_t now_ms)
 {
+#if APP_ENABLE_FINAL1_ROUTE
+  Final1_Interrupt(&final_relief);
+#endif
   if (mission_paused && !pause_clock_active) {
     pause_clock_active = true;
     pause_clock_ms = now_ms;
@@ -7170,6 +7412,9 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
       task_pause_runtime(now_ms);
     }
   } else if (command->command == VISION_CMD_HOLD) {
+#if APP_ENABLE_FINAL1_ROUTE
+    Final1_Interrupt(&final_relief);
+#endif
     task_status.acknowledged_sequence = command->sequence;
     command_accepted = true;
     if (zone_view.active && zone_view.done && !zone_view.orange_top && state == TASK_APPROACH) {
@@ -8196,6 +8441,9 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
     TaskDiag_Event("SESSION", context_session_generation, vision->session_generation,
                    state, accepted_context.task_id, accepted_context.action_id, 0);
     context_session_generation = vision->session_generation;
+#if APP_ENABLE_FINAL1_ROUTE
+    final1_reset();
+#endif
     remote_action.empty_speed_profile = EMPTY_SPEED_DEFAULT;
     remote_action.nudge_forward_mm = 0U;
     safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
@@ -8768,6 +9016,10 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
     if (!reuse_nav_toggle && (incoming.command == VISION_CMD_NAVIGATE_WAYPOINT ||
         incoming.command == VISION_CMD_RETURN_CENTER)) {
       nav_reset_coarse();
+#if APP_ENABLE_FINAL1_ROUTE
+      final_route = (Final1Route){0};
+      Final1_Interrupt(&final_relief);
+#endif
     }
     accepted_context.task_id = incoming.task_id;
     accepted_context.action_id = incoming.action_id;

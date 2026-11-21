@@ -107,7 +107,16 @@ MotorDistanceStatus Motor_MoveDistanceConstant(float distance, float speed)
 { (void)distance; (void)speed; return MOTOR_DISTANCE_DONE; }
 MotorTurnStatus Motor_TurnAngle(float angle) { (void)angle; return MOTOR_TURN_DONE; }
 MotorTurnStatus Motor_TurnAngleSpeed(float angle, float speed)
-{ (void)angle; (void)speed; return MOTOR_TURN_DONE; }
+{
+#ifdef TEST_FINAL1_TURN
+  reverse_output=lateral_output=0;
+  yaw_output=copysignf(fminf(fabsf(angle)*50,speed*180/(130*3.14159265f)),angle)
+      *APP_OMNI_FIELD_YAW_TO_DRIVE_SIGN;
+  return MOTOR_TURN_RUNNING;
+#else
+  (void)angle; (void)speed; return MOTOR_TURN_DONE;
+#endif
+}
 bool Motor_MoveAngle(float speed, float angle) { (void)speed; (void)angle; return true; }
 bool Motor_MoveAngleFine(float speed, float angle)
 {
