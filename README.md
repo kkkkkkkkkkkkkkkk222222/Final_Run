@@ -1,4 +1,8 @@
-# Final_task · F405 决赛工程
+# FinalRun1 · F405 决赛备份工程
+
+基线为 `Final_task@24c7dab`。在本目录或相邻 WWW 目录执行
+`cmake --preset FinalRun1` 和 `cmake --build --preset FinalRun1`。
+使用 `DAPLink FinalRun1` 下载，核对产物 `build/F405/FinalRun1/FinalRun1.elf`。以下为原工程说明。
 
 决赛换物块前的源码快照保存在本地 Git 标签 `www-before-final`。在本目录使用 CLion 或下列 CMake 预设开发；当前分支为 `Final_task`，预设默认在本机构建。
 
