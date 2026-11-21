@@ -1,6 +1,6 @@
-# FinalRun1 · F405 决赛备份工程
+# FinalRun1 · F405 决赛修改版
 
-基线为 `Final_task@24c7dab`。在本目录或相邻 WWW 目录执行
+`FinalRun` 是备份版，固定标签为 `FinalRun-backup-24c7dab`；后续改动在本目录的 `FinalRun1` 分支进行，不改备份。可在本目录或相邻 WWW 目录执行
 `cmake --preset FinalRun1` 和 `cmake --build --preset FinalRun1`。
 使用 `DAPLink FinalRun1` 下载，核对产物 `build/F405/FinalRun1/FinalRun1.elf`。以下为原工程说明。
 
