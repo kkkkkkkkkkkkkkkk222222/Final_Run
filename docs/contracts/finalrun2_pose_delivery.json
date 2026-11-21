@@ -1,16 +1,13 @@
 {
   "scope": "offline pairing; not board actual or runtime interlock",
   "date": "2026-11-22 Asia/Shanghai",
-  "upper_repository": "https://github.com/danmo-teng/shijue_fangan-finals",
-  "upper_branch": "finals-material-push200",
-  "upper_commit": "2fd77f918278b2e3814c1873b7fedb199a791cbd",
-  "upper_push_status": "User requested delivery to the public lower repository; complete changed files in upper_changes and full patch included",
-  "upper_patch": "rdk_material_push200_2fd77f9.patch",
-  "upper_patch_sha256": "9ea30760758f5396364f43e880d93eb17ab24c8c33241b46ac4e57ef4c519030",
+  "upper_repository": "https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run",
+  "upper_branch": "FinalRun2-upper",
+  "upper_commit": "02b8a812e8ab471ec8c54b8bfa3a2383d7e0ac91",
   "lower_repository": "https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run",
   "lower_branch": "FinalRun2-material-push200",
   "lower_base": "24c7dab93368bf9e46cf7366f0a9a9ca466b611b",
-  "lower_commit": "use the containing commit; final firmware identity is recorded in WWW field-20261121/FINALRUN2.md",
+  "lower_commit": "use the containing commit",
   "actual_lower": null,
   "actual_upper": null,
   "examples": {
@@ -28,13 +25,12 @@
     }
   },
   "source_sha256": {
-    "competition_rescue/protocol.py": "e8d9d1106ac6f7e69d4cfd05c5b259c8d7933675472bbbbaa625519575d091a0",
-    "competition_rescue/state_machine.py": "9b54d5046912ca7fc91674bd95e296b9a6e8a4cfa841b6fe8ac28ab7548c9b46",
+    "competition_rescue/protocol.py": "fa91d83bec67717b34b27a8000557fa6858c89c4137cedbda399c3f665fb6c07",
+    "competition_rescue/state_machine.py": "9f1071e528bbce7ef6347488a7551897f221eb3abc112bf99e453eb35cf35336",
     "competition_rescue/delivery_route.py": "71b72fd1caf156eacdf944e33d548d98116e721bbb8cab2b5107c2d27780b89d",
-    "competition_rescue/obstacle_route.py": "38cf5de43dc6fa92f59dd2d8cabf437b1741234b443663028bfea904740f076a",
-    "competition_rescue/run_competition_rescue.py": "8eeffa69dc922d1810d7fd0f2511e970bdd812de5d48a7c16773ef3ace06f5c9"
+    "competition_rescue/obstacle_route.py": "56d2e3de1ab0ce4118514665d0491e3ed48c68f6a90df32ebdd79d67262a1f04",
+    "competition_rescue/run_competition_rescue.py": "9fddb67129fddf3a08842e3c23862a002d096082421c173f33b401caf76893fd"
   },
-  "upper_readable_source": "upper_changes/",
   "policy": "Formal delivery accepts materials only; retain casualty recognition/separation/clearance; single casualty uses existing release and 300mm retreat",
   "push_reference_mm": {
     "departure_nominal": 770,
@@ -43,5 +39,19 @@
     "front_nominal": 200,
     "tail": 270
   },
-  "hash_basis": "Git blob bytes; checkout newline conversion may differ"
+  "hash_basis": "Git blob bytes; checkout newline conversion may differ",
+  "archived_upper_snapshot": {
+    "upper_patch": "rdk_material_push200_2fd77f9.patch",
+    "upper_patch_sha256": "9ea30760758f5396364f43e880d93eb17ab24c8c33241b46ac4e57ef4c519030",
+    "upper_readable_source": "upper_changes/",
+    "upper_commit": "2fd77f918278b2e3814c1873b7fedb199a791cbd"
+  },
+  "upper_readable_source": "https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/tree/02b8a812e8ab471ec8c54b8bfa3a2383d7e0ac91",
+  "opening_relook": {
+    "opcode": "APPROACH_TARGET",
+    "arg_a": 0,
+    "arg_b": 12000,
+    "aux": 5,
+    "source": "stable open-claw pure-casualty INITIAL_STASH audit; same task, new action"
+  }
 }

@@ -2,9 +2,7 @@
 
 **本次公开分支：FinalRun2-material-push200。前段200mm＋末段270mm；单伤员不正式投送，仍识别、分离和扫障。**
 
-直接查看：[完整上位修改文件](upper_changes/README.md) · [上位决策代码](upper_changes/competition_rescue/state_machine.py) · [下位任务代码](Main/Src/Task.c) · [验证与配套](docs/FINALRUN2_PAIR_VALIDATION.md)。
-
-从封存 Final_task@24c7dab 独立建立。原 FinalRun 不改，当前工程与新上位 finals-material-push200 配套。修改点、接口与检查见 [验证记录](docs/FINALRUN2_PAIR_VALIDATION.md)。**未烧录、未发车。**
+当前上位源码为 [FinalRun2-upper · 02b8a81](https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/tree/02b8a812e8ab471ec8c54b8bfa3a2383d7e0ac91)。开局只见伤员时保持开爪，沿现有 U=5 回搜索。原货找回等相机到 120° 后的新画面。参数与实际离线检查见[配套验证](docs/FINALRUN2_PAIR_VALIDATION.md)和[机器可读版本锁](docs/contracts/finalrun2_pose_delivery.json)。
 
 | 入口 | CMake预设 | 下载配置 | ELF |
 | --- | --- | --- | --- |

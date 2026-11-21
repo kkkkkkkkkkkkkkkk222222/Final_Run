@@ -104,6 +104,24 @@ print("Casualty/material mixed audits retain the real material side; opening rel
 def req(code,flags=RED,a=0,b=0,u=0):
     return lambda seq:p.mission_frame(seq,code,flags,a,b,u)
 
+relook = req(p.CMD_APPROACH_TARGET, RED | p.CMD_DISTANCE_VALID | p.CMD_APPROACH_RANGE, 0, 12000, 5)
+for left, right in [((ORANGE, 1), none), (none, (ORANGE, 1)), ((ORANGE, 1), (ORANGE, 2))]:
+    audited = audit_frames(stash, cargo(left, right))
+    rejected = run("grab", False, audited + [(12, 0, req(p.CMD_GRAB_CONFIRMED))])[-1]
+    assert rejected[3] & 4 and rejected[5] == 21 and not rejected[4] & 2, rejected
+    for frame in (11, 12):
+        resumed = run("relook", False, audited + [(12, frame, relook)] * 2)[-2:]
+        assert all(r[:3] == (7, 12, p.CMD_APPROACH_TARGET) and r[5] == 3 for r in resumed), resumed
+    stale = run("relook", False, audited + [(12, 10, relook)])[-1]
+    assert stale[3] & 4 and stale[5] == 21, stale
+for other in (cargo((GREEN, 1), none), cargo((ORANGE, 1), (CORE, 1))):
+    audited = audit_frames(stash, other)
+    denied = run("relook", False, audited + [(12, 12, relook)])[-1]
+    assert denied[3] & 4 and denied[5] == 21, denied
+    grabbed = run("grab", False, audited + [(12, 0, req(p.CMD_GRAB_CONFIRMED))])[-1]
+    assert grabbed[2] == p.CMD_GRAB_CONFIRMED and grabbed[5] == 23, grabbed
+print("Opening pure casualties stay open; owned relook/replay accepted; materials and mixed piles retain capture")
+
 for opcode in (p.CMD_RELEASE_LEFT,p.CMD_RELEASE_RIGHT,p.CMD_RELEASE_BOTH):
     m=planner(False,GREEN)
     actual=run("split",False,audit_frames(m,cargo((GREEN,1),(BLUE,1)))+

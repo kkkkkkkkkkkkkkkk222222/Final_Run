@@ -3110,6 +3110,24 @@ static bool task_pre_grab_entry(void)
        (state == TASK_APPROACH && approach_phase == APPROACH_CLUSTER_CAPTURE));
 }
 
+/* STASH_NONEMPTY describes the observation. A pure casualty view while
+ * the claws are open permits a return to SEARCH, never a close command. */
+static bool task_opening_casualties_only(void)
+{
+  if (task_status.gripper_closed || !audit_initial_stash || !audit_received ||
+      !audit_valid || !audit_host_stable || audit_last_total_count == 0U ||
+      audit_last_semantic != AUDIT_SEMANTIC_STASH_NONEMPTY ||
+      (audit_last_flags & (VISION_AUDIT_DANGER_PRESENT | VISION_AUDIT_UNKNOWN_PRESENT |
+                           VISION_AUDIT_INJURY_MIXED)) != 0U) {
+    return false;
+  }
+  const bool left = (audit_last_counts & 3U) != 0U;
+  const bool right = ((audit_last_counts >> 2) & 3U) != 0U;
+  return (left || right) &&
+      audit_last_left_class == (left ? VISION_CARGO_INJURED : VISION_CARGO_NONE) &&
+      audit_last_right_class == (right ? VISION_CARGO_INJURED : VISION_CARGO_NONE);
+}
+
 static void task_begin_pre_grab(const VisionMissionCommand *command, uint32_t now_ms)
 {
   task_capture_budget_sample();
@@ -7150,6 +7168,11 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
   task_status.command_received = true;
   task_status.command_reject_reason = TASK_COMMAND_REJECT_NONE;
 
+  if (command->command == VISION_CMD_GRAB_CONFIRMED && task_opening_casualties_only()) {
+    task_status.command_reject_reason = TASK_COMMAND_REJECT_AUDIT;
+    return;
+  }
+
   if (command->command == VISION_CMD_ABORT) {
     task_status.acknowledged_sequence = command->sequence;
     command_accepted = true;
@@ -8612,11 +8635,20 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
                (approach_measure_pitch != APP_SEARCH_HIGH_CAMERA_ANGLE &&
                 approach_measure_pitch != APP_SEARCH_LOW_CAMERA_ANGLE)) goto rejected;
   } else if (pickup_relook) {
-    if (new_target || !task_side_flag_valid(incoming.flags) || incoming.vision_frame == 0U ||
-        (new_action ? (!task_pre_grab_entry() || pre_grab.moving || !command_visual_new ||
-                       (audit_received && audit_last_total_count != 0U)) :
-                      (state != TASK_SEARCH || !accepted_context.pickup_relook)))
+    if (new_target || !task_side_flag_valid(incoming.flags) || incoming.vision_frame == 0U)
       goto rejected;
+    if (new_action) {
+      const bool empty_relook = task_pre_grab_entry() && command_visual_new &&
+          (!audit_received || audit_last_total_count == 0U);
+      const bool opening_relook = (state == TASK_GRAB_OBSERVE || state == TASK_DISPERSE_READY ||
+          (state == TASK_APPROACH && approach_phase == APPROACH_CLUSTER_CAPTURE)) &&
+          accepted_context.opcode == VISION_CMD_CARGO_AUDIT && task_opening_casualties_only() &&
+          (command_visual_new || (accepted_context.visual_valid &&
+                                 incoming.vision_frame == accepted_context.vision_frame));
+      if (pre_grab.moving || !(empty_relook || opening_relook)) goto rejected;
+    } else if (state != TASK_SEARCH || !accepted_context.pickup_relook) {
+      goto rejected;
+    }
   } else if (pre_grab_request) {
     const uint8_t permitted = VISION_CMD_VALID | VISION_CMD_RED_SIDE |
         VISION_CMD_CLUSTER_TARGET | VISION_CMD_APPROACH_RANGE | VISION_CMD_DISTANCE_VALID;

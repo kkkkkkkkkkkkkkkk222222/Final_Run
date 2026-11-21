@@ -2,7 +2,14 @@
 
 2026-11-22（上海时间）。独立源码从封存 `Final_task@24c7dab93368bf9e46cf7366f0a9a9ca466b611b` 建立，本次公开交付分支为 **`FinalRun2-material-push200`**；原FinalRun和先前配套分支保留。
 
-上位本地分支 `finals-material-push200`、提交 `2fd77f918278b2e3814c1873b7fedb199a791cbd`。按用户要求，完整修改文件直接放在下位仓库 [upper_changes](../upper_changes/README.md)，可在GitHub逐文件阅读；另附[从冻结基线起的完整补丁](contracts/rdk_material_push200_2fd77f9.patch)。[配套锁](contracts/finalrun2_pose_delivery.json)保存精确版本、报文和源码哈希，不覆盖第一场冻结锁。
+当前配套为 [FinalRun2-upper · 02b8a81](https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/tree/02b8a812e8ab471ec8c54b8bfa3a2383d7e0ac91)。[版本锁](contracts/finalrun2_pose_delivery.json)保存上位提交、源码哈希和报文样例。下位仓库中的 upper_changes 为上次交付的 2fd77f9 快照。
+
+## 开局保持开爪与原货复看
+
+- 稳定开局暂存审核如实回报非空。开爪时两侧合计只有伤员，拒绝 GRAB；匹配的 U=5（A=0、B=12000、同 task 的新 action，带审核源帧）直接进入 SEARCH。相同动作重发复用结果。原空爪 U=5、材料合爪和混抓识别/分离仍按各自入口执行。
+- 红蓝从实际审核请求开始，经 Python 比赛规划器、C 解析、Task 和 CRC 回包验证。纯伤员回 SEARCH，继续看纯伤员时保持开爪，随后看到混合堆才向材料发接近命令；单普通材料仍能合爪。另测较旧帧、相同帧、重复 U=5、双侧纯伤员，以及对普通或混合堆误发 U=5 的拒绝。
+- 红蓝 W1 扫障后，实报文推进到找回观察位，模拟相机角度、漏检和延迟画面。错误视角、重复或过期图不作接近依据；新图重新看到目标时进入 APPROACH，连续三张有效新图无目标时返回 SEARCH。上位定向检查 10 项，另复跑下方距离、投送、扫障、弃批、暂停和重发回归。
+- 联测使用模拟传感器、相机和执行器。现场实际软件版本、机械动作和碰撞情况待实车验证。本轮未部署、未烧录。
 
 ## 修改点
 
@@ -34,8 +41,8 @@
 gcc -std=c11 -O2 -ffunction-sections -fdata-sections -DAPP_FINALS_SIDE_ONLY_SEPARATION=1 -DAPP_ENABLE_FINALS_CLAW_TIGHTEN=1 -DAPP_ENABLE_FINAL_PUSH_LIFT=1 -DAPP_FINALS_DELIVERY_CONFIRMATION=1 -DAPP_ENABLE_CARGO_LIFT_FILTER=0 -Itools/test_support -IMain/Inc tools/test_finalrun2_pose.c Main/Src/pid.c '-Wl,--gc-sections' -lm -o build/host/pose_test.exe
 build/host/pose_test.exe
 gcc -std=c11 -O2 -ffunction-sections -fdata-sections -DAPP_FINALS_SIDE_ONLY_SEPARATION=1 -DAPP_ENABLE_FINALS_CLAW_TIGHTEN=1 -DAPP_ENABLE_FINAL_PUSH_LIFT=1 -DAPP_FINALS_DELIVERY_CONFIRMATION=1 -DAPP_ENABLE_CARGO_LIFT_FILTER=0 -Itools/test_support -IMain/Inc tools/test_finals_wire.c Main/Src/vision.c Main/Src/pid.c '-Wl,--gc-sections' -lm -o build/host/paired_wire.exe
-python tools/check_finalrun2_pose_pair.py ../Finals_RDK build/host/paired_wire.exe
-python tools/check_finals_rdk_pair.py ../Finals_RDK build/host/paired_wire.exe
+python tools/check_finalrun2_pose_pair.py ../tmp/FinalRun2_upper_handoff build/host/paired_wire.exe
+python tools/check_finals_rdk_pair.py ../tmp/FinalRun2_upper_handoff build/host/paired_wire.exe
 ```
 
 轮程、机械角和画面输入是模拟的。未覆盖真实定位漂移、制动、轮滑、相机失联恢复、全部物料排列和碰撞；失败回包不等于完成，编译与这些检查不保证现场永不卡住。
