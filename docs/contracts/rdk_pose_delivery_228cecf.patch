@@ -1,7 +1,7 @@
 From 46d9b0323105178071b2afc3a9bb93d94b14d856 Mon Sep 17 00:00:00 2001
 From: WW <2945944173@qq.com>
 Date: Sun, 22 Nov 2026 00:39:55 +0800
-Subject: [PATCH] Pair pose-only delivery legs and W1 obstacle routes with
+Subject: [PATCH 1/2] Pair pose-only delivery legs and W1 obstacle routes with
  FinalRun2
 
 ---
@@ -1280,3 +1280,58 @@ index 7a48c9a..fb52dab 100755
          self.selecting = not (options.zone and options.side)
          self.corner_offset_m = options.corner_offset_mm / 1000.0
          requested_encoder_weight = float(options.encoder_weight)
+
+From 228cecf37e6ad348679c5fcb5fd47fe37f256019 Mon Sep 17 00:00:00 2001
+From: WW <2945944173@qq.com>
+Date: Sun, 22 Nov 2026 00:50:26 +0800
+Subject: [PATCH 2/2] Keep clipped-zone empty-claw selection within material
+ targets
+
+---
+ competition_rescue/state_machine.py            |  5 ++++-
+ competition_rescue/tests/test_pose_delivery.py | 16 ++++++++++++++++
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/competition_rescue/state_machine.py b/competition_rescue/state_machine.py
+index d03e14b..cb62e14 100755
+--- a/competition_rescue/state_machine.py
++++ b/competition_rescue/state_machine.py
+@@ -3728,7 +3728,10 @@ class CompetitionMission:
+     def _choose_delivery_target(
+         self, vision: VisionSnapshot, candidates: Iterable[TrackedCargo]
+     ) -> TrackedCargo | None:
+-        available = tuple(candidates)
++        # All ordinary empty-claw selection entrances, including a clipped
++        # safe-zone re-observation, select materials. Cargo audits and obstacle
++        # recovery keep their separate, real casualty handling rules.
++        available = tuple(item for item in candidates if item.class_name in MATERIAL_CLASSES)
+         order = POST_FIRST_CARGO_ORDER if self.first_common_delivered else ("green_supply",)
+         for kind in order:
+             same_class = [item for item in available if item.class_name == kind]
+diff --git a/competition_rescue/tests/test_pose_delivery.py b/competition_rescue/tests/test_pose_delivery.py
+index b85e387..996b289 100644
+--- a/competition_rescue/tests/test_pose_delivery.py
++++ b/competition_rescue/tests/test_pose_delivery.py
+@@ -209,6 +209,22 @@ def test_return_waypoints_and_original_recovery():
+             assert m.state==(sm.CompetitionState.OBSTACLE_ROUTE if recover else sm.CompetitionState.SEARCH_TRANSFER)
+ 
+ 
++def test_material_selection_includes_clipped_zone_entry():
++    for side in ("red","blue"):
++        m=mission(side)
++        orange=sm.TrackedCargo(1,"injured_orange",.9,(300,300,40,40),hits=3,inside_safe_zone=True)
++        vision=sm.VisionSnapshot(cargo=(orange,),frame_sequence=1,range_pitch_cdeg=12000,
++                                 clipped_zone_candidates=((1,"fixture_zone"),))
++        assert m._choose_delivery_target(vision,(orange,)) is None
++        assert m._choose_search_target(vision) is None
++        assert m._start_zone_observation(vision,sm.StmSnapshot(mode=3,flags=0,
++            age_ms=0,camera_pitch_cdeg=12000),1.) is None
++        # An actual already-grabbed single casualty still passes its real audit.
++        m.confirmed_delivery_destination="injury"
++        assert m._audit_valid(sm.CargoAudit(left_class="injured_orange",left_count=1,
++                                           total_count=1,class_counts=(("injured_orange",1),)))
++
++
+ if __name__ == "__main__":
+     for name, test in list(globals().items()):
+         if name.startswith("test_"):

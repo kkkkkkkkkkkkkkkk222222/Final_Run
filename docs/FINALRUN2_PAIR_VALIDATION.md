@@ -1,6 +1,6 @@
 # FinalRun2 配套与离线验证
 
-2026-11-22（上海时间）。独立源码从封存 `Final_task@24c7dab93368bf9e46cf7366f0a9a9ca466b611b` 建立，分支 `FinalRun2-pose-delivery`；原 Final_task 和封存镜像未改。新上位本地分支 `finals-pose-delivery`、提交 `46d9b0323105178071b2afc3a9bb93d94b14d856`，正式上位仓库推送因当前账号无写权限返回403。完整单提交补丁已随本仓库交付：[上位补丁](contracts/rdk_pose_delivery_46d9b03.patch)。精确版本与报文见 [配套锁](contracts/finalrun2_pose_delivery.json)。这份新锁不覆盖第一场冻结锁。
+2026-11-22（上海时间）。独立源码从封存 `Final_task@24c7dab93368bf9e46cf7366f0a9a9ca466b611b` 建立，分支 `FinalRun2-pose-delivery`；原 Final_task 和封存镜像未改。新上位本地分支 `finals-pose-delivery`、提交 `228cecf37e6ad348679c5fcb5fd47fe37f256019`，正式上位仓库推送因当前账号无写权限返回403。完整两提交补丁已随本仓库交付：[上位补丁](contracts/rdk_pose_delivery_228cecf.patch)。精确版本与报文见 [配套锁](contracts/finalrun2_pose_delivery.json)。这份新锁不覆盖第一场冻结锁。
 
 ## 修改点
 
