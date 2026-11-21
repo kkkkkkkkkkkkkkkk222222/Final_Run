@@ -4243,7 +4243,8 @@ static RemoteRouteStatus nav_follow_coarse(
     const float ratio = fminf(1.0f,
         (remaining_mm - reserve_mm) /
         (APP_NAV_LINEAR_SLOWDOWN_MM - reserve_mm));
-    const float maximum_mm_s = fminf(cruise_speed_mm_s, APP_NAV_FAST_SPEED_MM_S);
+    const float maximum_mm_s = stage_route ? APP_NAV_STAGE_MAX_SPEED_MM_S :
+        fminf(cruise_speed_mm_s, APP_NAV_FAST_SPEED_MM_S);
     const float requested_mm_s = APP_NAV_MIN_END_SPEED_MM_S +
         (maximum_mm_s - APP_NAV_MIN_END_SPEED_MM_S) * ratio;
     const float rate_mm_s2 = requested_mm_s >= remote_speed_mm_s ?

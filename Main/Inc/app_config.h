@@ -552,6 +552,9 @@
 #define APP_GRAB_RAISE_OBSERVE_MS       1000U
 #define APP_GRAB_SCAN_ROTATE_MM_S        100.0f
 #define APP_NAV_FAST_SPEED_MM_S          600.0f
+#ifndef APP_NAV_STAGE_MAX_SPEED_MM_S
+#define APP_NAV_STAGE_MAX_SPEED_MM_S     APP_NAV_FAST_SPEED_MM_S
+#endif
 #define APP_NAV_FINAL_APPROACH_DISTANCE_MM 300U
 #define APP_NAV_FINAL_APPROACH_SPEED_MM_S 400.0f
 /* Terminal XY correction only; keep the coarse-leg120mm/s base separate. */
