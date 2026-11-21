@@ -1,0 +1,1282 @@
+From 46d9b0323105178071b2afc3a9bb93d94b14d856 Mon Sep 17 00:00:00 2001
+From: WW <2945944173@qq.com>
+Date: Sun, 22 Nov 2026 00:39:55 +0800
+Subject: [PATCH] Pair pose-only delivery legs and W1 obstacle routes with
+ FinalRun2
+
+---
+ competition_rescue/delivery_route.py          |  28 ++
+ competition_rescue/obstacle_route.py          |  42 +-
+ competition_rescue/protocol.py                |  14 +-
+ competition_rescue/run_competition_rescue.py  |  22 +-
+ competition_rescue/state_machine.py           | 422 +++++++++---------
+ .../tests/test_pose_delivery.py               | 216 +++++++++
+ docs/CROSS_REPO_REQUESTS.md                   |   5 +
+ docs/FINALS_PORT.md                           |   2 +
+ docs/POSE_DELIVERY_20261122.md                |  40 ++
+ rescue_map/field_model.py                     |   2 +-
+ rescue_map/map_app.py                         |   4 +-
+ 11 files changed, 572 insertions(+), 225 deletions(-)
+ create mode 100644 competition_rescue/delivery_route.py
+ create mode 100644 competition_rescue/tests/test_pose_delivery.py
+ create mode 100644 docs/POSE_DELIVERY_20261122.md
+
+diff --git a/competition_rescue/delivery_route.py b/competition_rescue/delivery_route.py
+new file mode 100644
+index 0000000..0ac17ee
+--- /dev/null
++++ b/competition_rescue/delivery_route.py
+@@ -0,0 +1,28 @@
++"""Upper-owned staging legs. Each D=0 handoff belongs to one navigation action."""
++from dataclasses import dataclass
++
++
++@dataclass
++class DeliveryRoute:
++    points: tuple[tuple[float, float], ...]
++    destination: str
++    precise: bool = False
++    index: int = 0
++    zero_sent: bool = False
++
++    @property
++    def target(self):
++        return self.points[self.index]
++
++    @property
++    def last(self):
++        return self.index == len(self.points) - 1
++
++    def arrived(self, x, y):
++        return (abs(x - self.target[0]) <= (0.010 if self.precise else 0.050) + 1e-9
++                and abs(y - self.target[1]) <= 0.050 + 1e-9)
++
++    def advance(self):
++        assert not self.last
++        self.index += 1
++        self.zero_sent = False
+diff --git a/competition_rescue/obstacle_route.py b/competition_rescue/obstacle_route.py
+index 96f370c..f3895b2 100644
+--- a/competition_rescue/obstacle_route.py
++++ b/competition_rescue/obstacle_route.py
+@@ -64,13 +64,17 @@ class ObstacleRoute:
+     recover_after_delivery: bool = False
+     replaced_stash_ids: tuple[int, ...] = ()
+     sweep_left_offset_m: float = 0.0
++    zero_sent: bool = False
++    original_recovery: bool = False
+ 
+     def __post_init__(self) -> None:
+-        common = (RouteStep.TURN_RIGHT, RouteStep.FORWARD_PARK, RouteStep.RELEASE_LOAD)
+-        self.steps = common + (
+-            (RouteStep.BACK_200, RouteStep.TURN_LEFT, RouteStep.PICKUP_READY)
++        self.steps = (
++            (RouteStep.TURN_RIGHT, RouteStep.FORWARD_PARK, RouteStep.RELEASE_LOAD,
++             RouteStep.BACK_200, RouteStep.TURN_LEFT, RouteStep.PICKUP_READY)
+             if self.kind == "pickup" else
+-            (RouteStep.BACK_TO_SWEEP, RouteStep.LEFT_TO_SWEEP, RouteStep.FULL_OPEN,
++            (RouteStep.LEFT_TO_SWEEP, RouteStep.TURN_RIGHT, RouteStep.RELEASE_LOAD,
++             RouteStep.BACK_200, RouteStep.LEFT_TO_SWEEP, RouteStep.BACK_TO_SWEEP,
++             RouteStep.LEFT_TO_SWEEP, RouteStep.FULL_OPEN,
+              RouteStep.SWEEP_1000, RouteStep.RAISE_RETURN,
+              RouteStep.BACK_TO_STAGE, RouteStep.RIGHT_TO_STAGE, RouteStep.PICKUP_READY)
+         )
+@@ -83,7 +87,7 @@ class ObstacleRoute:
+     @property
+     def sweep_point(self) -> tuple[float, float]:
+         # Right-turn frame: behind wall 94cm, left wall 59cm, robot CENTRE.
+-        return -.56 * self.side_sign, (.91 - self.sweep_left_offset_m) * self.side_sign
++        return -.56 * self.side_sign, .91 * self.side_sign
+ 
+     @property
+     def sweep_heading_cdeg(self) -> int:
+@@ -96,11 +100,16 @@ class ObstacleRoute:
+     def advance(self) -> None:
+         self.index += 1
+         self.arrival_latched = False
++        self.zero_sent = False
+ 
+     def begin_original_recovery(self) -> None:
+-        self.steps = (RouteStep.TURN_RIGHT, RouteStep.PICKUP_READY)
++        # Delivery first returns to A; continue to the original observation
++        # point used when parking this load, then reacquire it from real images.
++        self.steps = (RouteStep.TURN_RIGHT, RouteStep.RIGHT_TO_STAGE, RouteStep.PICKUP_READY)
+         self.index = 0
+         self.arrival_latched = False
++        self.zero_sent = False
++        self.original_recovery = True
+         self.pickup_role = "original"
+         self.awaiting_obstacle_delivery = False
+         self.recover_after_delivery = False
+@@ -117,12 +126,33 @@ class ObstacleRoute:
+             return 0, 0, (heading if step == RouteStep.TURN_RIGHT
+                            else (heading + 9000) % 36000)
+         if step in LOCAL_DISTANCES:
++            if step == RouteStep.BACK_200 and self.kind == "sweep":
++                return -160, 0, heading
+             return LOCAL_DISTANCES[step], 0, ((heading + 27000) % 36000
+                 if step == RouteStep.ATTACK_BACK_150 else heading)
+         if step in ACTUATOR_STEPS:
+             return 0, 0, 0
+         if not pose_valid:
+             return None
++        if self.kind == "sweep" and not self.original_recovery:
++            # Confirmed red route; rotate all coordinates 180 degrees for blue.
++            targets = {0: (0., .77), 4: (-.16, .87), 5: (-.56, .87),
++                       6: (-.56, .91), 10: (0., .91), 11: (0., .77)}
++            tx, ty = targets[self.index]
++            dx, dy = tx*self.side_sign-x_m, ty*self.side_sign-y_m
++            if self.index in {0, 5, 10}:
++                dy = 0.  # Horizontal leg only; do not add a diagonal correction.
++            else:
++                dx = 0.  # Body-left/right leg in the fixed sweep heading.
++            tolerance = .05 if self.index in {0, 11} else self.sweep_tolerance_m
++            if abs(dx) <= tolerance+1e-9:
++                dx = 0.
++            if abs(dy) <= tolerance+1e-9:
++                dy = 0.
++            self.arrival_latched = self.arrival_latched or dx == dy == 0.
++            return (0 if self.arrival_latched else round(math.hypot(dx, dy)*1000),
++                    round(math.degrees(math.atan2(dy, dx))*100),
++                    (heading+9000) % 36000 if self.index == 0 else heading)
+         target = self.sweep_point if step in {
+             RouteStep.BACK_TO_SWEEP, RouteStep.LEFT_TO_SWEEP} else self.return_point
+         dx, dy = target[0] - x_m, target[1] - y_m
+diff --git a/competition_rescue/protocol.py b/competition_rescue/protocol.py
+index 28fc7fe..6e611cc 100755
+--- a/competition_rescue/protocol.py
++++ b/competition_rescue/protocol.py
+@@ -200,13 +200,16 @@ def mission_frame(
+                         if step == RouteStep.ATTACK_BACK_150 else
+                         (0 if flags & CMD_RED_SIDE else 18000))
+             valid = ((arg_a in {-100, -150} if step == RouteStep.ATTACK_BACK_150
++                      else arg_a in {-160, -200} if step == RouteStep.BACK_200
+                       else arg_a == LOCAL_DISTANCES[step]) and arg_b == 0 and
+                      aux_cdeg == expected)
+         elif step == RouteStep.EMPTY_BODY_MOVE:
+             valid = 0 <= arg_a <= 5000 and -18000 <= arg_b <= 18000 and 0 <= aux_cdeg < 36000
+         elif step in LIVE_STEPS:
+             valid = (0 <= arg_a <= 5000 and -18000 <= arg_b <= 18000 and
+-                     aux_cdeg == (0 if flags & CMD_RED_SIDE else 18000))
++                     (aux_cdeg == (0 if flags & CMD_RED_SIDE else 18000) or
++                      (step == RouteStep.LEFT_TO_SWEEP and
++                       aux_cdeg == (9000 if flags & CMD_RED_SIDE else 27000))))
+         else:
+             valid = step in ACTUATOR_STEPS and arg_a == arg_b == aux_cdeg == 0
+         if not valid:
+@@ -285,9 +288,14 @@ def mission_frame(
+     if command == CMD_ENTER_SAFE_ZONE:
+         visual = bool(flags & CMD_VISUAL_CORRECTION_VALID)
+         fallback_heading = 9000 if flags & CMD_RED_SIDE else 27000
+-        if (
++        if flags & CMD_DISTANCE_VALID:
++            required = CMD_VALID | CMD_DRIVE_STRAIGHT | CMD_USE_FINAL_HEADING | CMD_DISTANCE_VALID
++            if (flags & ~(required | CMD_RED_SIDE) or flags & required != required or
++                    not 0 <= arg_a <= 5000 or not 0 <= arg_b <= 270 or
++                    aux_cdeg != fallback_heading):
++                raise ValueError("pose ENTER needs front/tail distances and the side heading")
++        elif (
+             not flags & CMD_DRIVE_STRAIGHT or
+-            flags & CMD_DISTANCE_VALID or
+             arg_a not in (0, -1) or (arg_a == -1 and not visual) or
+             arg_b != 0
+         ):
+diff --git a/competition_rescue/run_competition_rescue.py b/competition_rescue/run_competition_rescue.py
+index e705308..a978206 100755
+--- a/competition_rescue/run_competition_rescue.py
++++ b/competition_rescue/run_competition_rescue.py
+@@ -2079,6 +2079,21 @@ class CompetitionPlanner:
+                            self.mission.search_transfer_route.index)
+         if command.opcode == CMD_CLOSED_DEFLECT:
+             range_epoch = ("closed_deflect", self.mission.deflect_epoch)
++        if command.opcode == CMD_NAVIGATE_WAYPOINT and self.mission.delivery_route is not None:
++            range_epoch = ("delivery_route", self.mission.delivery_route_epoch,
++                           self.mission.delivery_route.index)
++        if command.opcode == CMD_ALIGN_SAFE_ZONE:
++            range_epoch = ("pose_align", self.mission.pose_align_epoch)
++        if (command.opcode == CMD_BULLDOZER_STEP and
++                self.mission.state == CompetitionState.RETURN_CENTER and
++                self.mission.delivery_return_route is not None):
++            range_epoch = ("delivery_return", self.mission.delivery_return_epoch,
++                           self.mission.delivery_return_route.index)
++        if (command.opcode == CMD_BULLDOZER_STEP and
++                self.mission.state == CompetitionState.OBSTACLE_ROUTE and
++                self.mission.obstacle_route is not None):
++            range_epoch = ("obstacle_route", self.mission.obstacle_route_epoch,
++                           self.mission.obstacle_route.index)
+         key = (command.opcode, command.flags, audit_role, separation_epoch, range_epoch)
+         if not overlay or (self.protocol_accepted is None and self.protocol_action_key is None):
+             if key != self.protocol_action_key:
+@@ -2339,7 +2354,9 @@ class CompetitionPlanner:
+         self._adopt_recovery_context()
+         # _adopt keeps the allocation high-water mark. Restore this exact key
+         # so publishing does not allocate a new action or restart the MCU.
+-        self.protocol_action_key = (command.opcode, command.flags, None, None, None)
++        align_epoch = (("pose_align", self.mission.pose_align_epoch)
++                       if command.opcode == CMD_ALIGN_SAFE_ZONE else None)
++        self.protocol_action_key = (command.opcode, command.flags, None, None, align_epoch)
+         self.protocol_vision_frame = command.source_vision_frame or 0
+         if pending.opcode == CMD_ENTER_SAFE_ZONE and pending.arg_a == -1 and command.opcode == CMD_ALIGN_SAFE_ZONE:
+             self.mission.nudge_forward_position = False  # Credit rejected; stage before an uncredited ENTER.
+@@ -2349,6 +2366,7 @@ class CompetitionPlanner:
+             self.mission._set_state(restored_state, now)
+             self.mission.enter_command_published = True
+             self.mission.enter_command_accepted = True
++            self.mission.enter_pose_command = command
+             self.mission.nudge_forward_position = command.arg_a == -1
+             self.mission.safe_zone_visual_locked = bool(command.flags & CMD_VISUAL_CORRECTION_VALID)
+         else:
+@@ -3605,7 +3623,7 @@ def main() -> int:
+         raise RuntimeError(f"请先在完整比赛地图窗口选择出发区和红蓝方：{args.session}")
+     side = str(session["side"])
+     start_zone = int(session.get("start_zone", 1))
+-    opening_strategy = str(session.get("opening_strategy", "attack"))
++    opening_strategy = str(session.get("opening_strategy", "defense"))
+     diagnostic_writer = AsyncDiagnosticWriter(args.events_log.with_name("competition_logging_status.json")) if MATCH_RECORDING else None
+     events = JsonlLog(args.events_log, diagnostic_writer)
+     detection_log = JsonlLog(args.detections_log, diagnostic_writer)
+diff --git a/competition_rescue/state_machine.py b/competition_rescue/state_machine.py
+index 22714d5..d03e14b 100755
+--- a/competition_rescue/state_machine.py
++++ b/competition_rescue/state_machine.py
+@@ -16,6 +16,7 @@ from typing import Iterable
+ from sweep_boundaries import obstacle_reference_point
+ from search_zone_view import ZoneObservation, clearly_outside
+ from attack_return import AttackReturnRoute, opponent_heading_deg, centre_turn_direction
++from delivery_route import DeliveryRoute
+ from search_transfer import FailedSearchTarget, SearchTransferRoute
+ from obstacle_route import LIVE_STEPS, ObstacleRoute, RouteStep, handling_kind
+ from closed_deflect import VIEW, PULL, STAGE, CARRYING, END_AT_ORIGINAL, choose_plan, nearest_blocker
+@@ -601,11 +602,11 @@ class CompetitionSettings:
+     boundary_margin_m: float = 0.08
+     fence_axial_tolerance_m: float = 0.035
+     fence_lateral_tolerance_m: float = 0.060
+-    safe_zone_center_x_m: float = 0.15
++    safe_zone_center_x_m: float = 0.16
+     safe_zone_inner_edge_m: float = 1.20
+     safe_fence_face_m: float = 1.14
+-    safe_zone_staging_distance_m: float = 0.60
+-    safe_zone_staging_lateral_tolerance_m: float = 0.100
++    safe_zone_staging_distance_m: float = 0.37  # 400 mm before the divider tip at |y|=1.17.
++    safe_zone_staging_lateral_tolerance_m: float = 0.050
+     safe_zone_staging_axial_tolerance_m: float = 0.050
+     safe_zone_staging_fine_entry_m: float = 0.180  # F405 APP_NAV_STAGE_FINE_ENTRY_MM.
+     safe_zone_freeze_frames: int = 3
+@@ -628,7 +629,7 @@ class CompetitionSettings:
+     delivery_inside_required: int = 5
+     delivery_max_misses: int = 2
+     delivery_max_observations: int = 1
+-    opening_strategy: str = "attack"
++    opening_strategy: str = "defense"
+     bulldozer_enabled: bool = False  # Deploy only with the new F405 step contract.
+     closed_deflect_enabled: bool = False  # Requires the paired F405 opcode 0x15.
+     bulldozer_position_tolerance_m: float = 0.030
+@@ -867,6 +868,18 @@ class CompetitionMission:
+         self.staging_zero_initial_ack: int | None = None
+         self.staging_zero_tx_baseline: int | None = None
+         self.staging_zero_accepted = False
++        self.delivery_route: DeliveryRoute | None = None
++        self.delivery_route_epoch = 0
++        self.pose_align_epoch = 0
++        self.pose_align_confirmed = False
++        self.safe_zone_box_ready = False
++        self.enter_pose_command: CommandRequest | None = None
++        self.delivery_departure_point: tuple[float, float] | None = None
++        self.delivery_return_route: DeliveryRoute | None = None
++        self.delivery_return_started = False
++        self.delivery_return_heading = 0
++        self.delivery_return_epoch = 0
++        self.obstacle_route_epoch = 0
+         self.deflect_command: CommandRequest | None = None
+         self.deflect_phase = PULL
+         self.deflect_epoch = 0
+@@ -1480,6 +1493,10 @@ class CompetitionMission:
+             self.last_selected_track_ids = (candidate.track_id,)
+ 
+     def _select_batch(self, batch: CargoBatch) -> None:
++        self.delivery_route = None
++        self.enter_pose_command = None
++        self.pose_align_confirmed = False
++        self.safe_zone_box_ready = False
+         self.pickup_distance_published = False
+         self.nudge_forward_position = False
+         self._clear_orange_top_view()
+@@ -3722,7 +3739,7 @@ class CompetitionMission:
+     def _choose_search_target(self, vision: VisionSnapshot) -> TrackedCargo | None:
+         return self._choose_delivery_target(vision, (
+             item for item in self._visible_cargo(vision)
+-            if item.class_name in MATERIAL_CLASSES | {"injured_orange"} and item.hits >= 2
++            if item.class_name in MATERIAL_CLASSES and item.hits >= 2
+         ))
+ 
+     def _choose_next_batch(self, vision: VisionSnapshot) -> CargoBatch | None:
+@@ -4813,6 +4830,9 @@ class CompetitionMission:
+         return max(0.0, now - self.delivery_observation_started_s)
+ 
+     def _reset_safe_zone_alignment(self) -> None:
++        self.pose_align_confirmed = False
++        self.safe_zone_box_ready = False
++        self.enter_pose_command = None
+         self.safe_zone_align_initial_ack = None
+         self.safe_zone_align_tx_baseline = None
+         self.safe_zone_align_command_accepted = False
+@@ -4859,19 +4879,10 @@ class CompetitionMission:
+         )
+ 
+     def _safe_zone_visual_align_command(self) -> CommandRequest:
+-        return CommandRequest(
+-            CMD_ALIGN_SAFE_ZONE,
+-            self._side_flags() | CMD_VISUAL_CORRECTION_VALID,
+-            max(-32768, min(32767, self.safe_zone_visual_pixel_error)),
+-            11500 if self.safe_zone_view_pitch_cdeg == 11500 else 0,
+-            source_vision_frame=self.safe_zone_visual_frame,
+-        )
++        # Kept for old recovery callers; no camera-derived motion is permitted.
++        return self._safe_zone_pose_align_command()
+ 
+     def _safe_zone_acquire_command(self) -> CommandRequest:
+-        # Once visual ALIGN is accepted, the MCU no longer accepts its initial
+-        # pose-only form. Keep the same visual action while changing the view.
+-        if self.safe_zone_reobserve_visual:
+-            return self._safe_zone_visual_align_command()
+         return self._safe_zone_pose_align_command()
+ 
+     def _begin_safe_corridor_check(
+@@ -5054,7 +5065,7 @@ class CompetitionMission:
+             return repair
+         self._begin_safe_zone_pose_align(stm, now)
+         return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
+-            "挤障完成，重新对准、横移并检查通道", self.selected_batch, event="corridor_nudge_recheck")
++            "挤障完成，重新定位正对并检查通道", self.selected_batch, event="corridor_nudge_recheck")
+ 
+     def _blocked_corridor_output(
+         self, vision: VisionSnapshot, stm: StmSnapshot, now: float,
+@@ -5097,9 +5108,9 @@ class CompetitionMission:
+                     kind,
+                     self.settings.bulldozer_position_tolerance_m,
+                     replaced_stash_ids=(() if previous_stash is None else previous_stash.original_ids),
+-                    sweep_left_offset_m=(.15 if kind == "sweep" and vision.safe_corridor_b34_obstacle and
+-                        not vision.safe_corridor_edge_obstacle else 0.0),
++                    sweep_left_offset_m=0.0,
+                 )
++                self.obstacle_route_epoch += 1
+                 self._reset_safe_zone_alignment()
+                 self._set_state(CompetitionState.OBSTACLE_ROUTE, now)
+                 return replace(self._obstacle_route_output(vision, pose, stm, now),
+@@ -5132,9 +5143,9 @@ class CompetitionMission:
+             return CompetitionOutput(self.state, self._pause(), "扫障导航等待有效位置",
+                                      reason="bulldozer_pose_unavailable")
+         # Existing paired action status, not another request/ACK exchange.
+-        complete = (stm.context_valid and stm.context_matches and
+-                    stm.accepted_command == CMD_BULLDOZER_STEP and bool(stm.action_status & 2))
+-        if complete and (step not in LIVE_STEPS or payload[0] == 0):
++        complete = (stm.fresh and stm.context_valid and stm.context_matches and
++                    stm.accepted_command == CMD_BULLDOZER_STEP and stm.action_status & 3 == 3)
++        if complete and (step not in LIVE_STEPS or (route.zero_sent and payload[0] == 0)):
+             if step == RouteStep.RELEASE_LOAD:
+                 route.deposit_vehicle_point = (pose.x_m, pose.y_m) if pose.valid else None
+                 self._clear_selected_batch()
+@@ -5149,6 +5160,8 @@ class CompetitionMission:
+                     event="bulldozer_pickup_observe", reason="bulldozer_pickup_observe")
+             return replace(self._obstacle_route_output(vision, pose,
+                 replace(stm, context_matches=False), now), event="bulldozer_step_complete")
++        if step in LIVE_STEPS and payload[0] == 0:
++            route.zero_sent = True
+         command = CommandRequest(CMD_BULLDOZER_STEP,
+             self._side_flags() | (int(step) << 4), *payload)
+         return CompetitionOutput(self.state, command,
+@@ -5470,6 +5483,10 @@ class CompetitionMission:
+         self._set_state(CompetitionState.BOUNDARY_RECOVERY, now)
+ 
+     def _begin_safe_zone_pose_align(self, stm: StmSnapshot, now: float) -> None:
++        self.pose_align_epoch += 1
++        self.pose_align_confirmed = False
++        self.safe_zone_box_ready = False
++        self.enter_pose_command = None
+         self.staging_repair_target = None
+         self.safe_zone_align_initial_ack = (
+             stm.acknowledged_sequence if stm.fresh else None
+@@ -5492,6 +5509,7 @@ class CompetitionMission:
+         self.safe_zone_freeze_last_frame_sequence = None
+         self.safe_zone_freeze_hits = 0
+         self.safe_zone_freeze_boxes.clear()
++        self.safe_zone_box_ready = False
+         self.locked_safe_bbox = None
+         self.locked_safe_target_x_px = None
+         self.safe_zone_visual_pixel_error = 0
+@@ -5547,29 +5565,25 @@ class CompetitionMission:
+             self.locked_safe_target_x_px - CAMERA_IMAGE_CENTER_X_PX
+         )
+         self.safe_zone_visual_frame = frame_sequence
+-        error = abs(self.safe_zone_visual_pixel_error)
+-        if error > self.settings.safe_zone_lateral_start_px:
+-            self.safe_zone_lateral_active = True
+-        elif error <= self.settings.safe_zone_lateral_tolerance_px:
+-            self.safe_zone_lateral_active = False
++        # Pixels remain useful for observation/logging, never for chassis motion.
++        self.safe_zone_lateral_active = False
+ 
+     def _enter_safe_zone_command(self) -> CommandRequest:
+-        flags = self._side_flags() | CMD_DRIVE_STRAIGHT
+-        if self.safe_zone_visual_locked:
+-            flags |= CMD_VISUAL_CORRECTION_VALID
+-        else:
+-            flags |= CMD_USE_FINAL_HEADING
+-        return CommandRequest(
++        # Capture both distances once, before publication; repeats cannot change them.
++        if self.enter_pose_command is None:
++            raise RuntimeError("ENTER needs the accepted departure pose")
++        return self.enter_pose_command
++
++    def _prepare_pose_enter(self, pose: PoseSnapshot) -> None:
++        assert pose.valid
++        depth_mm = round(pose.y_m * self.settings.side_sign * 1000)
++        front = max(0, 940 - depth_mm)
++        tail = max(0, min(270, 1210 - depth_mm))
++        self.delivery_departure_point = (self._target_point()[0], self.settings.safe_staging_y_m)
++        self.enter_pose_command = CommandRequest(
+             CMD_ENTER_SAFE_ZONE,
+-            flags,
+-            -1 if self.nudge_forward_position else 0,
+-            0,
+-            (
+-                0
+-                if self.safe_zone_visual_locked else
+-                round(self.settings.safe_heading_deg * 100.0) % 36000
+-            ),
+-        )
++            self._side_flags() | CMD_DRIVE_STRAIGHT | CMD_USE_FINAL_HEADING | CMD_DISTANCE_VALID,
++            front, tail, round(self.settings.safe_heading_deg * 100) % 36000)
+ 
+     def _finish_delivery(
+         self, stm: StmSnapshot, now: float, *, basis: str, message: str, event: str
+@@ -5630,7 +5644,7 @@ class CompetitionMission:
+         if not repushed:
+             self.delivery_timeout_reason = basis
+         self._clear_selected_batch()
+-        self._begin_return(stm, now, station=self.delivery_search_point_number)
++        self._begin_return(stm, now, station=self.delivery_search_point_number, via_delivery=True)
+         return replace(self._return_center_output(pose, now, message), event=basis+"_exit", reason=basis)
+ 
+     def _delivery_timeout_output(
+@@ -5665,22 +5679,77 @@ class CompetitionMission:
+             return CompetitionOutput(self.state, self._hold(),
+                 "判障前等待当前位置，尚未执行判障或推进", self.selected_batch,
+                 reason="corridor_staging_pose_missing")
+-        if self.nudge_forward_position:
+-            return None
+-        if abs(pose.y_m-self.settings.safe_staging_y_m) <= self.settings.safe_zone_staging_axial_tolerance_m + 1e-9:
++        target_x, target_y = self._target_point()
++        if (abs(pose.x_m-target_x) <= 0.010 + 1e-9 and
++                (self.nudge_forward_position or abs(pose.y_m-target_y) <= 0.050 + 1e-9)):
+             return None
+-        # Keep the visually aligned lateral position; use the existing STAGE
+-        # NAV and its audit/heading/visual-align handoff, not the disabled pull.
+-        self.staging_repair_target = (pose.x_m, self.settings.safe_staging_y_m)
++        # Do not undo a real corridor nudge; only its lateral error is repaired.
++        self.staging_repair_target = (target_x, pose.y_m if self.nudge_forward_position else target_y)
+         self._reset_safe_zone_alignment()
++        self.delivery_route_epoch += 1
++        self.delivery_route = DeliveryRoute((self.staging_repair_target,),
++            self.confirmed_delivery_destination, precise=True)
++        if self.confirmed_load_audit is not None and stm.gripper_closed:
++            self.transport_load_reuse_active = True
+         self.staging_zero_tx_baseline = None
+         self.navigation_initial_ack = stm.acknowledged_sequence
+         self._set_state(CompetitionState.NAVIGATE, now)
+         return CompetitionOutput(self.state,
+             self._navigation_command(pose, self.staging_repair_target, staging_only=True),
+-            "前后位置未到预备点：保留视觉修正的左右位置，补到后重新对准和横移",
++            "按定位补到起推位置：横差10毫米、纵差50毫米，不使用图像横差",
+             self.selected_batch, reason="corridor_return_to_staging")
+ 
++    def _route_for_navigation(self) -> DeliveryRoute:
++        target = self._target_point()
++        destination = self.confirmed_delivery_destination
++        route = self.delivery_route
++        if route is None or route.destination != destination or route.points[-1] != target:
++            local_pickup = self.recovering_original_load or (
++                self.obstacle_route is not None and self.obstacle_route.awaiting_obstacle_delivery)
++            via = ((0.0, self.settings.safe_staging_y_m),)
++            if route is None and not local_pickup and not self.stage_redirect_active:
++                via = ((0.0, 0.30*self.settings.side_sign),) + via
++            self.delivery_route_epoch += 1
++            self.delivery_route = DeliveryRoute(via + (target,), destination)
++        return self.delivery_route
++
++    @staticmethod
++    def _navigation_done(stm: StmSnapshot) -> bool:
++        return (stm.fresh and stm.context_valid and stm.context_matches and
++                stm.accepted_command == CMD_NAVIGATE_WAYPOINT and stm.action_status & 3 == 3
++                and stm.distance_done and stm.gripper_closed)
++
++    def _staging_navigation(self, vision, pose, stm, now) -> CompetitionOutput:
++        if not pose.valid:
++            return CompetitionOutput(self.state, self._pause(), "预备点导航等待定位",
++                                     self.selected_batch, reason="staging_pose_missing")
++        route = self._route_for_navigation()
++        command = self._navigation_command(pose, route.target, staging_only=True)
++        if route.arrived(pose.x_m, pose.y_m) or route.zero_sent:
++            command = replace(command, arg_a=0)
++            # Publish D=0 once before consuming a completion for this leg.
++            if route.zero_sent and self._navigation_done(stm):
++                if not route.last:
++                    route.advance()
++                    return CompetitionOutput(self.state,
++                        self._navigation_command(pose, route.target, staging_only=True),
++                        "本段已完成，切换下一导航动作", self.selected_batch,
++                        reason="staging_next_leg", motion_expected=True)
++                if route.precise or self._can_reuse_recovered_injury_audit() or self.transport_load_reuse_active:
++                    self._begin_safe_zone_pose_align(stm, now)
++                    return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
++                        "定位到位，开始本次正对动作", self.selected_batch, reason="staging_pose_align")
++                return self._begin_transport_audit(vision, pose, stm, now)
++            route.zero_sent = True
++            return CompetitionOutput(self.state, command, "本段到点，等待本动作D=0完成",
++                self.selected_batch, reason="safe_zone_staging_zero_pending", tx_policy="staging_zero")
++        return CompetitionOutput(self.state, command,
++            f"分段导航至({route.target[0]:.2f},{route.target[1]:.2f})",
++            self.selected_batch, reason="safe_zone_staging_navigation", motion_expected=True)
++
++    def _pose_heading_ready(self, pose: PoseSnapshot) -> bool:
++        return pose.valid and abs((pose.yaw_deg-self.settings.safe_heading_deg+180) % 360-180) <= 1.0+1e-9
++
+     def _at_target(
+         self, pose: PoseSnapshot, target: tuple[float, float], *,
+         staging_only: bool = False,
+@@ -5807,13 +5876,16 @@ class CompetitionMission:
+     ) -> CommandRequest:
+         if not pose.valid:
+             return self._pause()
++        if staging_only:
++            target = self._route_for_navigation().target
+         dx, dy = target[0] - pose.x_m, target[1] - pose.y_m
+         distance = math.hypot(dx, dy)
+         if staging_only and distance <= self.settings.safe_zone_staging_fine_entry_m:
+             # Fine approach aims for the arrival region. An acceptable axis
+             # must not keep steering towards the point centre while the other
+             # axis still needs correction. Coarse H/D remains geometric.
+-            if abs(dx) <= self.settings.safe_zone_staging_lateral_tolerance_m:
++            xtol = 0.010 if self.delivery_route and self.delivery_route.precise else 0.050
++            if abs(dx) <= xtol:
+                 dx = 0.0
+             if abs(dy) <= self.settings.safe_zone_staging_axial_tolerance_m:
+                 dy = 0.0
+@@ -6149,7 +6221,7 @@ class CompetitionMission:
+                 reason="return_pose_stale",
+             )
+         target_x, target_y = (pose.x_m, pose.y_m) if self.return_search_station is not None else (0.0, 0.0)
+-        if self.obstacle_route is not None and self.obstacle_route.recover_after_delivery:
++        if self.delivery_return_route is None and self.obstacle_route is not None and self.obstacle_route.recover_after_delivery:
+             target_x, target_y = self.obstacle_route.return_point
+         # D=0 lets the MCU finish its stash backoff or local delivery exit.
+         # The subsequent station move starts at the actual post-retreat pose.
+@@ -6181,7 +6253,16 @@ class CompetitionMission:
+ 
+     def _begin_return(
+         self, stm: StmSnapshot, now: float, *, station: int | None = None,
++        via_delivery: bool = False,
+     ) -> None:
++        self.delivery_return_started = False
++        self.delivery_return_route = None
++        if via_delivery and self.delivery_departure_point is not None:
++            points = (self.delivery_departure_point, (0.0, self.settings.safe_staging_y_m))
++            if self.obstacle_route is None or not self.obstacle_route.recover_after_delivery:
++                points += ((0.0, .30*self.settings.side_sign),)
++            self.delivery_return_route = DeliveryRoute(points, "return")
++            self.delivery_return_epoch += 1
+         self.return_arrival_latched = False
+         self.return_search_station = station
+         self.return_initial_ack = (
+@@ -6193,6 +6274,38 @@ class CompetitionMission:
+         self.return_search_mode_seen = False
+         self._set_state(CompetitionState.RETURN_CENTER, now)
+ 
++    def _delivery_return_output(self, vision, pose, stm, now) -> CompetitionOutput:
++        route = self.delivery_return_route
++        assert route is not None
++        if not pose.valid:
++            return CompetitionOutput(self.state, self._pause(), "退出后分段返程等待定位",
++                                     reason="delivery_return_pose_missing")
++        dx, dy = route.target[0]-pose.x_m, route.target[1]-pose.y_m
++        arrived = route.arrived(pose.x_m, pose.y_m)
++        done = (stm.fresh and stm.context_valid and stm.context_matches and
++                stm.accepted_command == CMD_BULLDOZER_STEP and stm.action_status & 3 == 3)
++        if route.zero_sent and done:
++            if not route.last:
++                route.advance()
++                return self._delivery_return_output(vision, pose, replace(stm, context_matches=False), now)
++            self.delivery_return_route = None
++            self.delivery_return_started = False
++            if self.obstacle_route is not None and self.obstacle_route.recover_after_delivery:
++                self.obstacle_route.begin_original_recovery()
++                self.obstacle_route_epoch += 1
++                self._set_state(CompetitionState.OBSTACLE_ROUTE, now)
++                return self._obstacle_route_output(vision, pose, replace(stm, context_matches=False), now)
++            return self._begin_search_transfer(vision, pose, stm, now,
++                                              target_point=self.return_search_station)
++        route.zero_sent = route.zero_sent or arrived
++        command = CommandRequest(CMD_BULLDOZER_STEP,
++            self._side_flags() | (int(RouteStep.EMPTY_BODY_MOVE) << 4),
++            0 if route.zero_sent else round(math.hypot(dx, dy)*1000),
++            round(math.degrees(math.atan2(dy, dx))*100), self.delivery_return_heading)
++        return CompetitionOutput(self.state, command,
++            f"退出后分段返程至{route.target}，等待本段完成", reason="delivery_return_leg",
++            motion_expected=not route.zero_sent)
++
+     def _latch_return_command_acceptance(self, stm: StmSnapshot) -> None:
+         if stm.context_valid:
+             self.return_command_accepted = self._opcode_acceptance_seen(
+@@ -7059,70 +7172,10 @@ class CompetitionMission:
+             stm, STM_MODE_NAVIGATE, self.navigation_initial_ack
+         )
+         if self.selected_batch.destination != "stash":
+-            deflection = self._navigation_deflect_output(vision,pose,stm,now)
++            deflection = self._navigation_deflect_output(vision, pose, stm, now)
+             if deflection is not None:
+                 return deflection
+-            staging_command = self._navigation_command(
+-                pose, target, staging_only=True
+-            )
+-            if (
+-                self._at_target(pose, target, staging_only=True) or
+-                self.staging_zero_tx_baseline is not None
+-            ):
+-                if self.staging_zero_tx_baseline is None:
+-                    self.staging_zero_tx_baseline = stm.relay_mission_tx_frames
+-                    self.staging_zero_initial_ack = stm.acknowledged_sequence
+-                zero_command = replace(staging_command, arg_a=0)
+-                if (
+-                    not self.staging_zero_accepted and
+-                    stm.fresh and
+-                    stm.mode == STM_MODE_NAVIGATE and
+-                    stm.distance_done and
+-                    stm.gripper_closed
+-                ):
+-                    self.staging_zero_accepted = True
+-                staging_done = (
+-                    stm.fresh and
+-                    stm.mode == STM_MODE_NAVIGATE and
+-                    stm.distance_done and
+-                    stm.gripper_closed and
+-                    self.staging_zero_accepted
+-                )
+-                if not staging_done:
+-                    return CompetitionOutput(
+-                        self.state,
+-                        zero_command,
+-                        "已进入60 cm预备点容差，持续发送STAGE NAV D=0等待F407确认",
+-                        self.selected_batch,
+-                        motion_expected=True,
+-                        tx_policy="staging_zero",
+-                        reason="safe_zone_staging_zero_pending",
+-                        expected_stm_modes=(STM_MODE_NAVIGATE,),
+-                    )
+-                if self._can_reuse_recovered_injury_audit() or self.transport_load_reuse_active:
+-                    paired_nav_done = (stm.context_valid and stm.context_matches and
+-                        stm.accepted_command == CMD_NAVIGATE_WAYPOINT and bool(stm.action_status & 2))
+-                    if not paired_nav_done:
+-                        return CompetitionOutput(self.state, zero_command,
+-                            "回抓伤员已到预备点，沿本次NAV D0完成交接",
+-                            self.selected_batch, reason="recovered_injury_navigation_finish")
+-                    if self.transport_load_reuse_active or (stm.audit_ready and stm.audit_valid):
+-                        self._begin_safe_zone_pose_align(stm, now)
+-                        return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
+-                            "保持闭爪，沿已确认载荷的运输许可开始对准，不记为本帧审核通过",
+-                            self.selected_batch, event="recovered_injury_audit_reused",
+-                            reason="recovered_injury_audit_reused")
+-                return self._begin_transport_audit(vision, pose, stm, now)
+-            return CompetitionOutput(
+-                self.state,
+-                staging_command,
+-                "前往对应安全区半区围栏前600 mm预备点",
+-                self.selected_batch,
+-                motion_expected=True,
+-                tx_policy="normal_command",
+-                reason="safe_zone_staging_navigation",
+-                expected_stm_modes=(STM_MODE_NAVIGATE,),
+-            )
++            return self._staging_navigation(vision, pose, stm, now)
+         else:
+             reached = navigation_accepted and (
+                 self._at_target(pose, target) or
+@@ -7957,6 +8010,9 @@ class CompetitionMission:
+             )
+ 
+         if self.state == CompetitionState.ALIGN_SAFE_ZONE_BY_POSE:
++            repair = self._ensure_delivery_staging(pose, stm, now)
++            if repair is not None:
++                return repair
+             pose_align_command = self._safe_zone_pose_align_command()
+             self.safe_zone_align_command_accepted = self._command_acceptance_seen(
+                 stm,
+@@ -7968,8 +8024,12 @@ class CompetitionMission:
+             if (
+                 stm.fresh and
+                 stm.mode == STM_MODE_ALIGN_SAFE_ZONE and
+-                self.safe_zone_align_command_accepted
++                self.safe_zone_align_command_accepted and
++                stm.context_valid and stm.context_matches and
++                stm.accepted_command == CMD_ALIGN_SAFE_ZONE and
++                stm.action_status & 3 == 3 and self._pose_heading_ready(pose)
+             ):
++                self.pose_align_confirmed = True
+                 self._begin_safe_zone_acquire(vision, now)
+                 return CompetitionOutput(
+                     self.state,
+@@ -7984,7 +8044,7 @@ class CompetitionMission:
+             return CompetitionOutput(
+                 self.state,
+                 pose_align_command,
+-                "在60 cm预备点按定位航向正对安全区",
++                "在M/H按定位正对安全区，等待本次正对完成及航向误差不超过1度",
+                 self.selected_batch,
+                 tx_policy="normal_command",
+                 reason="safe_zone_pose_align_wait",
+@@ -8033,21 +8093,18 @@ class CompetitionMission:
+                 (vision.safe_bbox is None or vision.safe_zone_filter_blocked)
+             )
+             if self._observe_safe_zone_freeze(vision, now):
+-                self.safe_zone_visual_align_initial_ack = stm.acknowledged_sequence
+-                self.safe_zone_visual_align_tx_baseline = stm.relay_mission_tx_frames
+-                self.safe_zone_visual_align_command_accepted = False
+-                self._set_state(CompetitionState.ALIGN_SAFE_ZONE_BY_LOCKED_BOX, now)
++                self.safe_zone_box_ready = True
++                self._begin_safe_corridor_check(vision, now)
+                 return CompetitionOutput(
+                     self.state,
+                     self._safe_zone_visual_align_command(),
+                     (
+-                        "安全区已识别，保持垂直航向并横移对准"
+-                        f"{self.locked_safe_target_x_px}px分区点"
++                        "安全区已识别，保持定位正对，获取新的入口走廊画面"
+                     ),
+                     self.selected_batch,
+                     event="safe_zone_bbox_locked",
+                     tx_policy="normal_command",
+-                    reason="safe_zone_visual_align_start",
++                    reason="safe_zone_corridor_check_start",
+                     expected_stm_modes=(
+                         STM_MODE_NAVIGATE,
+                         STM_MODE_ALIGN_SAFE_ZONE,
+@@ -8107,84 +8164,27 @@ class CompetitionMission:
+                 expected_stm_modes=(STM_MODE_ALIGN_SAFE_ZONE,),
+             )
+ 
+-        if (self.state == CompetitionState.ALIGN_SAFE_ZONE_BY_LOCKED_BOX or
+-                (self.safe_zone_visual_locked and self.state in {
+-                    CompetitionState.SAFE_ZONE_CORRIDOR_CHECK,
+-                    CompetitionState.WAIT_SAFE_ZONE_CLEAR,
+-                })):
+-            if (vision.safe_zone_filter_blocked and vision.safe_bbox is not None and
+-                    self.safe_zone_visual_frame > 0 and
+-                    stm.camera_pitch_cdeg == self.safe_zone_view_pitch_cdeg):
+-                # The runner retains a box for its existing two missed frames.
+-                # Continue the last real ALIGN, with its original frame ID;
+-                # a cached box never updates pixels or authorizes ENTER/sweep.
+-                return CompetitionOutput(
+-                    self.state, self._safe_zone_visual_align_command(),
+-                    "短暂漏框，保留原对准动作；下一真实框直接更新横差",
+-                    self.selected_batch, tx_policy="normal_command",
+-                    reason="safe_zone_visual_short_gap",
+-                    expected_stm_modes=(STM_MODE_NAVIGATE, STM_MODE_ALIGN_SAFE_ZONE),
+-                )
++        # Old saved/recovery state can only re-enter real pose alignment.
++        if self.state == CompetitionState.ALIGN_SAFE_ZONE_BY_LOCKED_BOX:
++            self._begin_safe_zone_pose_align(stm, now)
++            return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
++                "恢复定位正对；图像横差不控制底盘", self.selected_batch,
++                reason="safe_zone_pose_recover")
++
++        if self.state in {CompetitionState.SAFE_ZONE_CORRIDOR_CHECK,
++                          CompetitionState.WAIT_SAFE_ZONE_CLEAR}:
++            if not self.pose_align_confirmed or not self._pose_heading_ready(pose):
++                self._begin_safe_zone_pose_align(stm, now)
++                return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
++                    "起推前重新确认定位航向和本次正对完成", self.selected_batch,
++                    reason="safe_zone_pose_recheck")
+             if (vision.safe_bbox is None or vision.safe_zone_filter_blocked or
+                     stm.camera_pitch_cdeg != self.safe_zone_view_pitch_cdeg):
+                 self._begin_safe_zone_acquire(vision, now)
+                 self.safe_zone_view_pitch_cdeg = 11500
+-                self.safe_zone_reobserve_visual = True
+-                # arg_a=0 requests zero lateral translation; frame=0 means no
+-                # image measurement. ACQUIRE cannot treat a resulting MCU DONE
+-                # as image alignment: it must acquire real boxes again first.
+-                return CompetitionOutput(
+-                    self.state, self._safe_zone_acquire_command(),
+-                    "锁框后安全区失框或视角改变，保留载荷并请求115°复看，重新确认分区方向",
+-                    self.selected_batch, event="safe_zone_visual_reobserve",
+-                    tx_policy="normal_command",
+-                    reason="safe_zone_visual_reobserve",
+-                    expected_stm_modes=(STM_MODE_NAVIGATE, STM_MODE_ALIGN_SAFE_ZONE),
+-                )
+-        if self.state == CompetitionState.ALIGN_SAFE_ZONE_BY_LOCKED_BOX:
+-            if vision.frame_sequence > self.safe_zone_visual_frame:
+-                self._update_safe_zone_visual_target(vision.safe_bbox, vision.frame_sequence)
+-            visual_align_command = self._safe_zone_visual_align_command()
+-            self.safe_zone_visual_align_command_accepted = (
+-                self._command_acceptance_seen(
+-                    stm,
+-                    visual_align_command,
+-                    self.safe_zone_visual_align_tx_baseline,
+-                    self.safe_zone_visual_align_initial_ack,
+-                    self.safe_zone_visual_align_command_accepted,
+-                )
+-            )
+-            if (
+-                stm.fresh and
+-                stm.mode == STM_MODE_ALIGN_SAFE_ZONE and
+-                self.safe_zone_visual_align_command_accepted and
+-                not self.safe_zone_lateral_active and
+-                (not stm.context_valid or bool(stm.action_status & 2))
+-            ):
+-                self.safe_zone_visual_locked = True
+-                self._begin_safe_corridor_check(vision, now)
+-                return CompetitionOutput(
+-                    self.state,
+-                    visual_align_command,
+-                    "视觉横向偏差已在允许范围，建立入口走廊；随后由下位锁航向直推",
+-                    self.selected_batch,
+-                    event="safe_zone_corridor_check_start",
+-                    tx_policy="normal_command",
+-                    reason="safe_zone_corridor_check_start",
+-                    expected_stm_modes=(STM_MODE_ALIGN_SAFE_ZONE,),
+-                )
+-            return CompetitionOutput(
+-                self.state,
+-                visual_align_command,
+-                f"保持垂直航向，按实时偏差{self.safe_zone_visual_pixel_error:+d}px横移对准分区",
+-                self.selected_batch,
+-                tx_policy="normal_command",
+-                reason="safe_zone_visual_align_wait",
+-                expected_stm_modes=(
+-                    STM_MODE_NAVIGATE,
+-                    STM_MODE_ALIGN_SAFE_ZONE,
+-                ),
+-            )
++                return CompetitionOutput(self.state, self._safe_zone_acquire_command(),
++                    "重新获取安全区画面，保持定位正对", self.selected_batch,
++                    reason="safe_zone_reobserve")
+ 
+         if self.state == CompetitionState.SAFE_ZONE_CORRIDOR_CHECK:
+             repair = self._ensure_delivery_staging(pose, stm, now)
+@@ -8194,15 +8194,6 @@ class CompetitionMission:
+                     stm.camera_pitch_cdeg == self.safe_zone_view_pitch_cdeg and
+                     vision.frame_sequence > self.safe_zone_visual_frame):
+                 self._update_safe_zone_visual_target(vision.safe_bbox, vision.frame_sequence)
+-                if self.safe_zone_lateral_active:
+-                    self.safe_zone_visual_locked = False
+-                    self._set_state(CompetitionState.ALIGN_SAFE_ZONE_BY_LOCKED_BOX, now)
+-                    return CompetitionOutput(
+-                        self.state, self._safe_zone_visual_align_command(),
+-                        "入口新画面仍有横向偏差，沿同一视觉动作完成横移",
+-                        self.selected_batch, reason="safe_zone_visual_lateral_continue",
+-                        expected_stm_modes=(STM_MODE_NAVIGATE, STM_MODE_ALIGN_SAFE_ZONE),
+-                    )
+             new_corridor_frame = (
+                 self._vision_fresh(vision, now) and
+                 vision.frame_sequence > 0 and
+@@ -8217,7 +8208,7 @@ class CompetitionMission:
+                 return CompetitionOutput(
+                     self.state,
+                     self._safe_zone_visual_align_command(),
+-                    "SAFE_CORRIDOR_UNAVAILABLE：保持mode11，等待视觉ALIGN完成后的新安全区推进走廊画面",
++                    "SAFE_CORRIDOR_UNAVAILABLE：保持定位正对，等待新的安全区推进走廊画面",
+                     self.selected_batch,
+                     tx_policy="normal_command",
+                     reason="SAFE_CORRIDOR_UNAVAILABLE",
+@@ -8226,6 +8217,7 @@ class CompetitionMission:
+             self.safe_corridor_last_frame_sequence = vision.frame_sequence
+             if vision.safe_corridor_obstacle_class is not None:
+                 return self._blocked_corridor_output(vision, stm, now, pose=pose)
++            self._prepare_pose_enter(pose)
+             self.enter_initial_ack = stm.acknowledged_sequence
+             self.enter_tx_baseline = stm.relay_mission_tx_frames
+             self.enter_command_accepted = False
+@@ -8244,13 +8236,13 @@ class CompetitionMission:
+         if self.state == CompetitionState.WAIT_SAFE_ZONE_CLEAR:
+             self._begin_safe_zone_pose_align(stm, now)
+             return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
+-                "重新对准与视觉横移后再判障", self.selected_batch,
++                "重新定位正对后再判障", self.selected_batch,
+                 reason="corridor_wait_realign")
+ 
+         if self.state == CompetitionState.CLEAR_SAFE_ZONE:
+             self._begin_safe_zone_pose_align(stm, now)
+             return CompetitionOutput(self.state, self._safe_zone_pose_align_command(),
+-                "清障前重新对准和横移", self.selected_batch, reason="clear_realign")
++                "清障前重新定位正对", self.selected_batch, reason="clear_realign")
+ 
+         if self.state == CompetitionState.INVALID_RELEASE:
+             if stm.mode in {STM_MODE_APPROACH_RECOVER, STM_MODE_SEARCH}:
+@@ -8509,7 +8501,7 @@ class CompetitionMission:
+                 return local_exit
+             if self._observe_delivery_completion(stm):
+                 self._clear_selected_batch()
+-                self._begin_return(stm, now, station=self.delivery_search_point_number)
++                self._begin_return(stm, now, station=self.delivery_search_point_number, via_delivery=True)
+                 return self._return_center_output(
+                     pose,
+                     now,
+@@ -8519,7 +8511,7 @@ class CompetitionMission:
+                 stm, STM_MODE_SEARCH, self.task_complete_initial_ack
+             ):
+                 self._clear_selected_batch()
+-                self._begin_return(stm, now, station=self.delivery_search_point_number)
++                self._begin_return(stm, now, station=self.delivery_search_point_number, via_delivery=True)
+                 return self._return_center_output(pose, now, "投送后接回记住的搜索点")
+             if self.delivery_completion_basis == "delivery_visual_early":
+                 return CompetitionOutput(self.state, self._task_complete_command(),
+@@ -8528,6 +8520,8 @@ class CompetitionMission:
+             return CompetitionOutput(self.state, self._task_complete_command(), "等待本次下位机张爪并退出安全区")
+ 
+         if self.state == CompetitionState.RETURN_CENTER:
++            if self.delivery_return_started:
++                return self._delivery_return_output(vision, pose, stm, now)
+             self._latch_return_command_acceptance(stm)
+             if (
+                 stm.fresh and
+@@ -8536,6 +8530,12 @@ class CompetitionMission:
+                 (not stm.context_valid or
+                  (stm.context_matches and stm.accepted_command == CMD_RETURN_CENTER))
+             ):
++                if self.delivery_return_route is not None:
++                    if not pose.valid:
++                        return self._return_center_output(pose, now, "机械退出完成，等待定位开始分段返程")
++                    self.delivery_return_started = True
++                    self.delivery_return_heading = round(pose.yaw_deg*100) % 36000
++                    return self._delivery_return_output(vision, pose, replace(stm, context_matches=False), now)
+                 if self.obstacle_route is not None and self.obstacle_route.recover_after_delivery:
+                     self.obstacle_route.begin_original_recovery()
+                     self._set_state(CompetitionState.OBSTACLE_ROUTE, now)
+diff --git a/competition_rescue/tests/test_pose_delivery.py b/competition_rescue/tests/test_pose_delivery.py
+new file mode 100644
+index 0000000..b85e387
+--- /dev/null
++++ b/competition_rescue/tests/test_pose_delivery.py
+@@ -0,0 +1,216 @@
++"""Focused offline checks for the pose-only delivery and paired action epochs.
++
++Runs with Python alone. The production planner class is loaded without its
++Linux camera imports; file publication and mission/protocol code remain real.
++"""
++import ast
++import json
++import math
++import os
++import secrets
++import sys
++import tempfile
++import threading
++import time
++from dataclasses import replace
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT), str(ROOT.parent / "vision")]
++import protocol as p
++import state_machine as sm
++from delivery_route import DeliveryRoute
++from obstacle_route import ObstacleRoute, RouteStep, LIVE_STEPS
++from rescue_vision.mission_protocol import write_command_frame
++
++
++def load_planner():
++    source = ROOT / "run_competition_rescue.py"
++    tree = ast.parse(source.read_text(encoding="utf-8"))
++    nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
++    nodes += [n for n in tree.body if isinstance(n, ast.ClassDef) and
++              n.name in {"CompetitionPlanner", "CameraViewBoundary", "JsonlLog"}]
++    env = dict(vars(sm), **{k: v for k, v in vars(p).items() if not k.startswith("__")})
++    env.update(globals())
++    env["MATCH_RECORDING"] = False
++    exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(source), "exec"), env)
++    return env["CompetitionPlanner"], env["JsonlLog"]
++
++
++def mission(side="red", destination="material"):
++    m = sm.CompetitionMission(sm.CompetitionSettings(side=side, initial_stash_enabled=False))
++    m.first_common_delivered = True
++    kind = "injured_orange" if destination == "injury" else "core_black"
++    m._select_batch(sm.CargoBatch((7,), (kind,), destination))
++    m._latch_carried_manifest(sm.CargoAudit(left_class=kind, left_count=1, total_count=1,
++                                          class_counts=((kind, 1),)))
++    m.confirmed_delivery_destination = destination
++    m.transport_load_reuse_active = True
++    m.state = sm.CompetitionState.NAVIGATE
++    return m
++
++
++def status(op=p.CMD_NAVIGATE_WAYPOINT, *, done=True, matched=True, mode=10):
++    return sm.StmSnapshot(mode=mode, flags=2 | (32 if done else 0), age_ms=0,
++        context_valid=True, context_matches=matched, accepted_command=op,
++        action_status=3 if done else 1, camera_pitch_cdeg=12000)
++
++
++def test_staging_epochs_and_boundaries():
++    Planner, Log = load_planner()
++    for side in ("red", "blue"):
++        m = mission(side)
++        sign = m.settings.side_sign
++        v = sm.VisionSnapshot()
++        pose = sm.PoseSnapshot(True, -.4, 0, 90)
++        with tempfile.TemporaryDirectory() as d:
++            root = Path(d)
++            planner = Planner(m, root/'pose', root/'stm', root/'cmd', root/'diag', Log(root/'events'), 20)
++            out = m._staging_navigation(v, pose, status(matched=False), 1.)
++            assert tuple(tuple(round(v,3) for v in xy) for xy in m.delivery_route.points) == ((0., .3*sign), (0., .77*sign), (-.16*sign, .77*sign))
++            actions = []
++            for target in m.delivery_route.points:
++                planner._publish(out)
++                action = planner.protocol_action
++                actions.append(action)
++                planner._publish(out)
++                assert planner.protocol_action == action
++                pose = replace(pose, x_m=target[0], y_m=target[1])
++                # Even a matching DONE cannot skip the first D=0 publication.
++                out = m._staging_navigation(v, pose, status(), 1.1)
++                assert out.command.opcode == p.CMD_NAVIGATE_WAYPOINT and out.command.arg_a == 0
++                planner._publish(out)
++                assert planner.protocol_action == action
++                old_index = m.delivery_route.index
++                out = m._staging_navigation(v, pose, status(matched=False), 1.2)
++                assert m.delivery_route.index == old_index
++                out = m._staging_navigation(v, pose, status(done=False), 1.3)
++                assert m.delivery_route.index == old_index
++                out = m._staging_navigation(v, pose, status(), 1.4)
++            assert len(set(actions)) == 3 and out.command.opcode == p.CMD_ALIGN_SAFE_ZONE
++            planner._publish(out)
++            aligned_action = planner.protocol_action
++            m._begin_safe_zone_pose_align(status(), 2.)
++            planner._publish(replace(out, command=m._safe_zone_pose_align_command()))
++            assert planner.protocol_action != aligned_action
++        # Correct x only when outside the separately approved 10 mm window.
++        pose = replace(pose, x_m=pose.x_m+.011, yaw_deg=m.settings.safe_heading_deg)
++        out = m._ensure_delivery_staging(pose, status(), 3.)
++        assert out.command.opcode == p.CMD_NAVIGATE_WAYPOINT and out.command.arg_a > 0
++        assert m.delivery_route.precise
++        assert m._pose_heading_ready(replace(pose, yaw_deg=m.settings.safe_heading_deg+1))
++        assert not m._pose_heading_ready(replace(pose, yaw_deg=m.settings.safe_heading_deg+1.01))
++
++
++def test_pose_box_corridor_enter_and_reobserve():
++    for side in ("red", "blue"):
++        m = mission(side)
++        x, y = m._target_point()
++        pose = sm.PoseSnapshot(True, x, y, m.settings.safe_heading_deg)
++        st = status(p.CMD_ALIGN_SAFE_ZONE, mode=11)
++        v = sm.VisionSnapshot(frame_sequence=1, observed_monotonic_s=1., safe_bbox=(10, 20, 500, 200),
++                              safe_corridor_polygon=((1,1),(2,1),(2,2)))
++        m._begin_safe_zone_pose_align(st, 1.)
++        out = m.step(v, pose, replace(st, action_status=1), 1.01)
++        assert out.state == sm.CompetitionState.ALIGN_SAFE_ZONE_BY_POSE
++        out = m.step(v, pose, replace(st, context_matches=False), 1.02)
++        assert out.state == sm.CompetitionState.ALIGN_SAFE_ZONE_BY_POSE
++        out = m.step(v, pose, st, 1.03)
++        assert out.state == sm.CompetitionState.ACQUIRE_SAFE_ZONE, out
++        for frame in range(2,5):
++            v = replace(v, frame_sequence=frame, observed_monotonic_s=1.+frame/10)
++            out = m.step(v, pose, st, 1.+frame/10)
++            assert not out.command.flags & p.CMD_VISUAL_CORRECTION_VALID
++        assert out.state == sm.CompetitionState.SAFE_ZONE_CORRIDOR_CHECK
++        out = m.step(v, pose, st, 1.5)
++        assert out.reason == "SAFE_CORRIDOR_UNAVAILABLE"
++        out = m.step(replace(v,frame_sequence=5), pose, st, 1.6)
++        assert out.command.opcode == p.CMD_ENTER_SAFE_ZONE, out
++        assert (out.command.arg_a,out.command.arg_b) == (170,270)
++        out.command.to_frame(7)
++        captured = out.command
++        m.enter_command_published = True
++        out = m.step(replace(v,frame_sequence=6,safe_corridor_obstacle_class="danger_cyan"),
++                     replace(pose,y_m=pose.y_m+.1), st, 1.7)
++        assert out.command == captured  # Later pose/image cannot change an in-flight stroke.
++        m._begin_safe_zone_pose_align(st, 2.)
++        m.step(v, pose, st, 2.1)
++        m.safe_zone_box_ready = m.pose_align_confirmed = True
++        m.state = sm.CompetitionState.SAFE_ZONE_CORRIDOR_CHECK
++        out = m.step(replace(v,safe_bbox=None),pose,st,2.2)
++        assert out.state == sm.CompetitionState.ACQUIRE_SAFE_ZONE
++        assert out.command.arg_b == 11500 and not out.command.flags & p.CMD_VISUAL_CORRECTION_VALID
++        # Actual post-nudge position sets remaining distance once, without double credit.
++        m._prepare_pose_enter(replace(pose, y_m=.90*m.settings.side_sign))
++        assert (m.enter_pose_command.arg_a,m.enter_pose_command.arg_b) == (40,270)
++        m._prepare_pose_enter(replace(pose, y_m=1.00*m.settings.side_sign))
++        assert (m.enter_pose_command.arg_a,m.enter_pose_command.arg_b) == (0,210)
++
++
++def test_sweep_mirrors_and_live_completion():
++    for side, sign in (("red",1),("blue",-1)):
++        for x in (-.16,.16):
++            route = ObstacleRoute(side,(1,),("core_black",),"material",
++                (x*sign,.77*sign),(x*sign,.77*sign),("danger_cyan",),"sweep")
++            assert RouteStep.FORWARD_PARK not in route.steps
++            assert route.sweep_point == (-.56*sign,.91*sign)
++            # Tolerance offsets on the other axis never turn an axial leg diagonal.
++            assert route.payload(x*sign,.74*sign,pose_valid=True)[1] in {0,18000,-18000}
++            route.index=4;route.arrival_latched=False
++            assert abs(route.payload(-.11*sign,.77*sign,pose_valid=True)[1])==9000
++            route.index=5;route.arrival_latched=False
++            assert abs(route.payload(-.16*sign,.84*sign,pose_valid=True)[1]) in {0,18000}
++            positions = {0:(0.,.77),4:(-.16,.87),5:(-.56,.87),6:(-.56,.91),10:(0.,.91),11:(0.,.77)}
++            for index, step in enumerate(route.steps):
++                route.index=index; route.arrival_latched=False
++                target = positions.get(index,(0.,.77))
++                payload = route.payload(target[0]*sign,target[1]*sign,pose_valid=True)
++                sm.CommandRequest(p.CMD_BULLDOZER_STEP,1|(8 if side=="red" else 0)|(int(step)<<4),*payload).to_frame(index)
++                if step in LIVE_STEPS:
++                    assert payload[0] == 0
++                if step == RouteStep.BACK_200:
++                    assert payload[0] == -160
++            m = mission(side)
++            m.obstacle_route = ObstacleRoute(side,(1,),("core_black",),"material",
++                (x*sign,.77*sign),(x*sign,.77*sign),("danger_cyan",),"sweep")
++            m.state = sm.CompetitionState.OBSTACLE_ROUTE
++            st=status(p.CMD_BULLDOZER_STEP)
++            at=sm.PoseSnapshot(True,0,.77*sign,90 if sign==1 else 270)
++            out=m._obstacle_route_output(sm.VisionSnapshot(),at,st,1.)
++            assert m.obstacle_route.index==0 and out.command.arg_a==0
++            m._obstacle_route_output(sm.VisionSnapshot(),at,replace(st,context_matches=False),1.1)
++            assert m.obstacle_route.index==0
++            m._obstacle_route_output(sm.VisionSnapshot(),at,st,1.2)
++            assert m.obstacle_route.index==1
++
++
++def test_return_waypoints_and_original_recovery():
++    for recover in (False,True):
++        for side in ("red","blue"):
++            m=mission(side);sign=m.settings.side_sign
++            pose=sm.PoseSnapshot(True,-.16*sign,.77*sign,m.settings.safe_heading_deg)
++            m._prepare_pose_enter(pose)
++            if recover:
++                m.obstacle_route=ObstacleRoute(side,(1,),("core_black",),"material",
++                    (.16*sign,.77*sign),(.16*sign,.77*sign),("core_black",),"pickup",
++                    recover_after_delivery=True)
++            m._clear_selected_batch()
++            m._begin_return(status(),1.,station=1,via_delivery=True)
++            assert tuple(tuple(round(v,3) for v in xy) for xy in m.delivery_return_route.points[:2])==((-.16*sign,.77*sign),(0.,.77*sign))
++            assert len(m.delivery_return_route.points)==(2 if recover else 3)
++            m.delivery_return_started=True
++            m.delivery_return_heading=round(pose.yaw_deg*100)
++            points=m.delivery_return_route.points
++            for xy in points:
++                pose=replace(pose,x_m=xy[0],y_m=xy[1])
++                out=m._delivery_return_output(sm.VisionSnapshot(),pose,status(p.CMD_BULLDOZER_STEP),1.2)
++                assert out.command.arg_a==0
++                out=m._delivery_return_output(sm.VisionSnapshot(),pose,status(p.CMD_BULLDOZER_STEP),1.3)
++            assert m.state==(sm.CompetitionState.OBSTACLE_ROUTE if recover else sm.CompetitionState.SEARCH_TRANSFER)
++
++
++if __name__ == "__main__":
++    for name, test in list(globals().items()):
++        if name.startswith("test_"):
++            test()
++            print("PASS", name)
+diff --git a/docs/CROSS_REPO_REQUESTS.md b/docs/CROSS_REPO_REQUESTS.md
+index 4a7c7d6..e5bbab3 100644
+--- a/docs/CROSS_REPO_REQUESTS.md
++++ b/docs/CROSS_REPO_REQUESTS.md
+@@ -1,5 +1,10 @@
+ # 两端最新修改要求
+ 
++## FINALRUN2-POSE-DELIVERY-20261122
++
++已按用户确认方案完成上位实现，并对照独立FinalRun2生产解析与Task做真实报文离线联测。新距离ENTER、1°正对、分段action和持载到A扩展见[当前配套说明](POSE_DELIVERY_20261122.md)。新固件与新上位必须配套；冻结FinalRun不支持新ENTER。未部署、未烧录、actual未知。以下旧记录不是本次新接口的回执。
++
++
+ ## 决赛分离与投送（当前）
+ 
+ 核对的决赛下位是 [Final_task@0236947](https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run/tree/0236947516394b5302dab606e196248c4edf11f8)。该版本已包含首件确认与未确认退出、分离额外慢夹和首次盲推前的 83°。下方早期补丁保留作来源记录。板端版本本轮未读取。
+diff --git a/docs/FINALS_PORT.md b/docs/FINALS_PORT.md
+index f562349..64f2fd4 100644
+--- a/docs/FINALS_PORT.md
++++ b/docs/FINALS_PORT.md
+@@ -1,5 +1,7 @@
+ # 决赛基线
+ 
++2026-11-22 当前开发配套为 **finals-pose-delivery / FinalRun2**：已按确认方案实现分段运输、定位正对和无视觉横移投送，默认防守，主动搜索仅选材料。[修改、接口与验证](POSE_DELIVERY_20261122.md)。未部署RDK、未烧录。以下是冻结28deaa6的既有规则，动作接口以新说明为准。
++
+ 已对照定稿初赛 `2e336f8` 和决赛下位 `Final_Run/Final_task@0236947`。决赛使用自己的模型、标定和比赛入口。
+ 
+ - **首件记分**。第一次正式投送只接受一个普通物资。分离时优先保明确只有一个普通物资的一侧。每次按分离后新的 140° 夹内画面复审；仍看得见普通物资且有可保留侧时继续，每批最多五次已受理的分离。第五次分出合法单件仍可送。投送得到视觉确认且下位完成退出后登记首件，未确认退出继续按首件处理。开局移堆单独记账。
+diff --git a/docs/POSE_DELIVERY_20261122.md b/docs/POSE_DELIVERY_20261122.md
+new file mode 100644
+index 0000000..0602421
+--- /dev/null
++++ b/docs/POSE_DELIVERY_20261122.md
+@@ -0,0 +1,40 @@
++# FinalRun2 定位投送配套：修改与验证
++
++2026-11-22，上海时间。基于冻结上位 `28deaa6861c0208adf4b00c125d213c687bd2a95`，开发分支 `finals-pose-delivery`。配套下位为 `Final_Run/FinalRun2`，不是封存 FinalRun。未部署 RDK、未更新模型、未烧录或发车。
++
++## 已实现的修改
++
++- 普通运输按已确认的 C→A→M/H 分段。红 C=(0,300)、A=(0,770)、M=(-160,770)、H=(160,770) mm；蓝旋转180°镜像。每段先发 D=0，再消费本动作 ACCEPT|DONE；切段、补位、重新正对均分配独立动作号。H/D 的正常更新不重启动作。
++- M/H 起推前单独检查定位横差≤10 mm、纵向±50 mm和航向误差≤1°，等待真实正对动作完成。图像横差不再生成底盘横移；安全区识别、115°复看、入口判障和视觉送达继续保留。丢框、侧挤返回、拒绝恢复不会恢复视觉横移。
++- ENTER 在发布前锁存实际出发位置对应的前段和末段距离：前段 `max(0,940-depth)`，末段 `max(0,min(270,1210-depth))`，单位mm。名义170+270；前段结束由下位等83°机构行程，再推末段。同动作重发不改距离，侧挤后的实际位置不重复扣轮程。
++- 退出后普通返程经对应 M/H→A→C，再接原搜索点。送走挡路同类、仍有原货暂存时只回M/H→A，再接原货观察位置，不走普通返搜。抓到挡路材料后的投送经A→M，不从A直接推入。
++- 横扫固定只用W1：M/H保持围栏朝向先横移A；右转、放货，不先前进200；倒退160到M，左移100，倒退400，左移40到W1，再扫1000。蓝方镜像。保留原同类抓送的暂存动作；本次取消前进200仅指横扫分支。
++- 默认防守。普通主动搜索只选材料；伤员识别、混装分离、合法单伤员运输及门口判障仍保留。
++
++不把模型示意当实车外廓或轨迹。已确认的A点窗口角接触风险仍存在；本次没有为它额外收位、改道或加停车条件。
++
++## 两端接口
++
++沿用15字节帧、任务号/动作号和完成回包，不增加握手或计时资格。
++
++| 命令 | 新配套内容 | 完成语义 |
++| --- | --- | --- |
++| 0x03 STAGE NAV | 每段独立action；D=0结束本段；同action的迟到正距离不重开已完成段 | 本段D=0实际处理后，原mode10/DONE |
++| 0x04 ALIGN | 非视觉、A=0、B=0或11500，U红9000/蓝27000 | 下位真实航向≤1°并完成原相机等待后mode11/DONE；不伪装visual完成 |
++| 0x05 ENTER | VALID/DRIVE_STRAIGHT/USE_FINAL_HEADING/DISTANCE_VALID，可加RED；A前段0..5000，B末段0..270，U本方航向 | 受理不代表送达；实际推入、开爪/观察、视觉确认和退出分别沿原回包 |
++| 0x14 step6 | 新增本方围栏航向U=9000/27000，用于持载到A；已放货后的步仍用扫向0/18000 | 同action实时D/H，D=0且物理执行完成 |
++| 0x14 step3 | 新增A=-160，保留旧-200 | 原定距完成；重发不重启 |
++| 0x17侧挤 | 可从真实非视觉ALIGN完成入口进入 | 三段都完成才DONE；故障不冒充完成，原失败回包保留 |
++
++旧无距离ENTER仍可被FinalRun2接受并按旧400+270执行；封存FinalRun不支持新距离ENTER，不可混用。
++
++## 实际验证与范围
++
++- `competition_rescue/tests/test_pose_delivery.py`：红蓝分段动作号、旧/未完成回包、10mm与1°边界、锁框/新走廊、失框115°、发布后距离锁存、W1镜像及普通/原货返程。
++- 下位 `tools/check_finalrun2_pose_pair.py`：实际上位发布→生产C解析/Task→真实CRC回包。14个距离边界报文；8条红蓝/材料伤员/名义与20mm补位投送（含mode48真实审核、确认与未确认退出、分段返程）；4条完整W1横扫至原货观察入口。
++- 下位 `tools/test_finalrun2_pose.c`：8组推进长度；1°边界；83°等待；重复、参数变更、旧action、暂停恢复、新NAV清旧DONE；侧挤三段及不重复抵扣；旧ENTER与会话重置。已复现并修复“同action在D=0完成后收到迟到正距离会重新运动”。
++- 既有 `check_finals_rdk_pair.py` 的实际载荷、分离、抓后复审、旧命令拒绝、确认/未确认完成回包兼容检查通过。
++
++这些是离线测试。相机/YOLO/定位设备、轮滑、惯性、真实83°高度和带货扫掠未验；现有硬件失败、无有效画面、无定位或人工暂停仍会按原出口等待/退出。不能据此承诺实车永不卡住。
++
++两端由本聊天先后实现并各自核对生产代码；未把同一实现者的核对称为独立互审。实际部署SHA、板端actual与实跑验收仍待现场记录。
+diff --git a/rescue_map/field_model.py b/rescue_map/field_model.py
+index c9503e2..9163cbb 100755
+--- a/rescue_map/field_model.py
++++ b/rescue_map/field_model.py
+@@ -290,7 +290,7 @@ def write_session(
+     t265_map_path: Path | None = None,
+     t265_translation_scale_enabled: bool = False,
+     t265_translation_scale: float = DEFAULT_T265_TRANSLATION_SCALE,
+-    opening_strategy: str = "attack",
++    opening_strategy: str = "defense",
+     actual_lower_firmware: str = "unconfirmed",
+     actual_lower_mode: str = "unconfirmed",
+ ) -> None:
+diff --git a/rescue_map/map_app.py b/rescue_map/map_app.py
+index 7a48c9a..fb52dab 100755
+--- a/rescue_map/map_app.py
++++ b/rescue_map/map_app.py
+@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
+                         help="operator-confirmed flashed F407 commit, for session logging only")
+     parser.add_argument("--actual-lower-mode", default="unconfirmed",
+                         choices=("unconfirmed", "NormalRun", "Gamepad", "MotionDebug"))
+-    parser.add_argument("--opening-strategy", choices=("attack", "defense"), default="attack")
++    parser.add_argument("--opening-strategy", choices=("attack", "defense"), default="defense")
+     parser.add_argument("--corner-offset-mm", type=float, default=DEFAULT_CORNER_OFFSET_M * 1000.0)
+     parser.add_argument(
+         "--encoder-weight",
+@@ -192,7 +192,7 @@ class RescueMapApp:
+         self.map_left, self.map_top, self.map_size = 30, 60, 850
+         self.zone = options.zone or 1
+         self.side = options.side or "red"
+-        self.opening_strategy = getattr(options, "opening_strategy", "attack")
++        self.opening_strategy = getattr(options, "opening_strategy", "defense")
+         self.selecting = not (options.zone and options.side)
+         self.corner_offset_m = options.corner_offset_mm / 1000.0
+         requested_encoder_weight = float(options.encoder_weight)

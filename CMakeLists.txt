@@ -24,6 +24,9 @@ set(F405_PROFILE "" CACHE STRING "F405 firmware: MotionDebug, NormalRun or Final
 if(F405_PROFILE STREQUAL "MotionDebug")
     set(firmware_target MotionDebug)
     set(APP_NORMALDEBUG_MOTION_TEST ON)
+elseif(F405_PROFILE STREQUAL "FinalRun2")
+    set(firmware_target FinalRun2)
+    set(APP_NORMALDEBUG_MOTION_TEST OFF)
 elseif(F405_PROFILE STREQUAL "NormalRun" OR F405_PROFILE STREQUAL "FinalRun")
     # Both competition profiles are selectable for the same CLion executable.
     set(firmware_target NormalRun)
@@ -40,7 +43,7 @@ set(APP_NORMALDEBUG_UPPER_BAUD 921600)
 
 # Core project settings
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-    project(Final_task)
+    project(FinalRun2)
 endif()
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
@@ -52,13 +55,15 @@ add_executable(${firmware_target})
 set_target_properties(${firmware_target} PROPERTIES
     OUTPUT_NAME "${F405_PROFILE}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-if(F405_PROFILE STREQUAL "FinalRun")
+if(F405_PROFILE STREQUAL "FinalRun" OR F405_PROFILE STREQUAL "FinalRun2")
     target_compile_definitions(${firmware_target} PRIVATE
         APP_ENABLE_CARGO_LIFT_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1
         APP_ENABLE_FINAL_PUSH_LIFT=1 APP_ENABLE_FINALS_CLAW_TIGHTEN=1
         APP_FINALS_SIDE_ONLY_SEPARATION=1 APP_NAV_STAGE_MAX_SPEED_MM_S=800.0f
         APP_NAV_FINE_MAX_SPEED_MM_S=600.0f)
-    add_custom_target(FinalRun DEPENDS ${firmware_target})
+    if(F405_PROFILE STREQUAL "FinalRun")
+        add_custom_target(FinalRun DEPENDS ${firmware_target})
+    endif()
 endif()
 
 # Add STM32CubeMX generated sources

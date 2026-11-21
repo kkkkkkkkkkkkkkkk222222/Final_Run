@@ -606,6 +606,7 @@
 /* Align to the field normal, then translate laterally from live pixel error.
  * The original gyro hold also owns the subsequent local-wheel ENTER stroke. */
 #define APP_SAFE_ALIGN_TOLERANCE_DEG        3.0f
+#define APP_SAFE_POSE_ALIGN_TOLERANCE_DEG   1.0f
 #define APP_SAFE_ALIGN_HOLD_TOLERANCE_DEG   6.0f
 /* Positioning/sweep absolute-yaw alignment only; keep finite TURN unchanged. */
 #define APP_POSITION_ALIGN_TURN_MIN_MM_S  200.0f

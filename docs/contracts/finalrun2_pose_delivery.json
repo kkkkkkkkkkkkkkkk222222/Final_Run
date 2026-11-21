@@ -1,0 +1,37 @@
+{
+  "scope": "offline pairing; not board actual or runtime interlock",
+  "date": "2026-11-22 Asia/Shanghai",
+  "upper_repository": "https://github.com/danmo-teng/shijue_fangan-finals",
+  "upper_branch": "finals-pose-delivery",
+  "upper_commit": "46d9b0323105178071b2afc3a9bb93d94b14d856",
+  "upper_push_status": "403 denied to configured Git account; complete commit patch provided here",
+  "upper_patch": "rdk_pose_delivery_46d9b03.patch",
+  "upper_patch_sha256": "8d51a161c099731ae5111ae2618145774aa64a3f7483a5cc43cafa6984e8bcb0",
+  "lower_repository": "https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run",
+  "lower_branch": "FinalRun2-pose-delivery",
+  "lower_base": "24c7dab93368bf9e46cf7366f0a9a9ca466b611b",
+  "lower_commit": "use the containing commit; final firmware identity is recorded in WWW field-20261121/FINALRUN2.md",
+  "actual_lower": null,
+  "actual_upper": null,
+  "examples": {
+    "red": {
+      "context_and_enter_hex": "a3b31d070007000b000000001559c3a3b31807051f00aa010e232899bfc3",
+      "front_mm": 170,
+      "tail_mm": 270,
+      "heading_cdeg": 9000
+    },
+    "blue": {
+      "context_and_enter_hex": "a3b31d070007000b000000001559c3a3b31807051700aa010e69782723c3",
+      "front_mm": 170,
+      "tail_mm": 270,
+      "heading_cdeg": 27000
+    }
+  },
+  "source_sha256": {
+    "competition_rescue\\protocol.py": "68c10b27a79363a12a753a2fd014b2940835c626cc4b6510b1169772cb4e5360",
+    "competition_rescue\\state_machine.py": "52eb5e58058e6ea904019fd340f01c9a534642219750e879045a9c4a23875dd7",
+    "competition_rescue\\delivery_route.py": "71b72fd1caf156eacdf944e33d548d98116e721bbb8cab2b5107c2d27780b89d",
+    "competition_rescue\\obstacle_route.py": "72867b4d9f758b6c078bc4d26219043dbc44c99e927bddfd7aa5b20d88731e6d",
+    "competition_rescue\\run_competition_rescue.py": "d434835c50ae973dd7c7f1561b02a1a8620f707972d99103edbb6bb2afb31593"
+  }
+}

@@ -396,6 +396,10 @@ typedef enum {
 static struct {
   bool active;
   bool front_budget_active;
+  bool distances_latched;
+  uint16_t front_mm, total_mm;
+  int16_t enter_arg_a, enter_arg_b;
+  uint16_t enter_heading_cdeg;
   bool final_push_lift_requested;
   uint32_t final_push_lift_ready_ms;
   uint32_t push_elapsed_ms;
@@ -404,6 +408,17 @@ static struct {
   RepushPhase repush;
   uint32_t repush_wait_ms;
 } delivery;
+
+static uint32_t delivery_front_mm(void)
+{
+  return delivery.distances_latched ? delivery.front_mm :
+      APP_SAFE_ENTER_TOTAL_DISTANCE_MM - APP_SAFE_FINAL_PUSH_DISTANCE_MM;
+}
+
+static uint32_t delivery_total_mm(void)
+{
+  return delivery.distances_latched ? delivery.total_mm : APP_SAFE_ENTER_TOTAL_DISTANCE_MM;
+}
 static bool first_delivery_done;
 /* Field yaw is CCW-positive. Explicit station direction survives deliveries. */
 static int8_t search_yaw_direction;
@@ -4484,6 +4499,12 @@ static void task_begin_safe_align(uint32_t now_ms)
       (uint16_t)(task_safe_zone_heading() + 0.5f) % 360U;
 }
 
+static float task_safe_align_tolerance(void)
+{
+  return safe_align_visual_confirmed ? APP_SAFE_ALIGN_TOLERANCE_DEG :
+      APP_SAFE_POSE_ALIGN_TOLERANCE_DEG;
+}
+
 static float task_safe_align_yaw(float error_deg)
 {
   const float requested =
@@ -4495,7 +4516,7 @@ static float task_safe_align_yaw(float error_deg)
   yaw_mm_s = task_align_rate_brake(yaw_mm_s, closing_rate_dps);
   const float predicted_travel_deg =
       closing_rate_dps * APP_SAFE_ALIGN_BRAKE_LOOKAHEAD_S;
-  const float remaining_deg = task_abs(error_deg) - APP_SAFE_ALIGN_TOLERANCE_DEG;
+  const float remaining_deg = task_abs(error_deg) - task_safe_align_tolerance();
   if (predicted_travel_deg > remaining_deg) {
     yaw_mm_s *= remaining_deg / predicted_travel_deg;
   }
@@ -4512,11 +4533,11 @@ static void task_process_safe_align(uint32_t now_ms)
   const float current_heading_deg = (float)pose.heading_mdeg / 1000.0f;
   const float error_deg = task_wrap_angle(target_heading_deg - current_heading_deg);
 
-  /* Translation may hold within 6 degrees, but initial alignment and final
-   * completion both need the original 3-degree arrival window. */
+  /* New pose-only delivery completes within 1 degree. Legacy visual control
+   * retains its original arrival/translation tolerances. */
   const float tolerance_deg =
       safe_align_visual_confirmed && safe_align_lateral_active && nav_ready ?
-          APP_SAFE_ALIGN_HOLD_TOLERANCE_DEG : APP_SAFE_ALIGN_TOLERANCE_DEG;
+          APP_SAFE_ALIGN_HOLD_TOLERANCE_DEG : task_safe_align_tolerance();
   if (nav_ready && task_abs(error_deg) > tolerance_deg) {
     safe_align_done = false;
     accepted_context.completed = false;
@@ -4528,7 +4549,7 @@ static void task_process_safe_align(uint32_t now_ms)
   if (!nav_ready) {
     safe_align_done = false;
     accepted_context.completed = false;
-    if (task_abs(error_deg) > APP_SAFE_ALIGN_TOLERANCE_DEG) {
+    if (task_abs(error_deg) > task_safe_align_tolerance()) {
       /* ALIGN is continuous; its positioning speed bounds are independent
        * of finite TURN's speed profile and timeout. */
       /* Lower P starts deceleration farther out. Rate feedback and a smooth
@@ -4576,7 +4597,7 @@ static void task_process_safe_align(uint32_t now_ms)
 static float safe_enter_speed(int16_t fence_distance_mm)
 {
   if (fence_distance_mm >= (int16_t)APP_SAFE_ENTER_SLOWDOWN_MM) {
-    const float front_mm = APP_SAFE_ENTER_TOTAL_DISTANCE_MM - APP_SAFE_FINAL_PUSH_DISTANCE_MM;
+    const float front_mm = (float)delivery_front_mm();
     const float remaining_mm = (float)fence_distance_mm - APP_SAFE_ENTER_CONTACT_DISTANCE_MM;
     return task_entry_speed(remaining_mm - 0.5f * front_mm, APP_SAFE_ENTER_CRUISE_SPEED_MM_S,
                             APP_SAFE_ENTER_FAST_MM_S, APP_NAV_SPEED_DECEL_MM_S2);
@@ -4626,16 +4647,14 @@ static RemoteRouteStatus safe_enter_follow(
     safe_enter_path_valid = true;
   }
 
-  const uint32_t contact_start_mm =
-      APP_SAFE_ENTER_TOTAL_DISTANCE_MM -
-      APP_SAFE_FINAL_PUSH_DISTANCE_MM;
+  const uint32_t contact_start_mm = delivery_front_mm();
   const uint32_t enter_travelled_mm =
       pose.path_mm - safe_enter_start_path_mm;
 
   if (!nav_final_push_active &&
       (enter_travelled_mm >= contact_start_mm)) {
     delivery.front_budget_active = false;
-    if (APP_ENABLE_FINAL_PUSH_LIFT && enter_travelled_mm < APP_SAFE_ENTER_TOTAL_DISTANCE_MM) {
+    if (APP_ENABLE_FINAL_PUSH_LIFT && enter_travelled_mm < delivery_total_mm()) {
       if (!delivery.final_push_lift_requested) {
         delivery.final_push_lift_ready_ms = now_ms + Lift_PositionWaitMs(APP_LIFT_FINAL_PUSH_ANGLE);
         Lift_SetFinalPushPosition();
@@ -4666,7 +4685,7 @@ static RemoteRouteStatus safe_enter_follow(
     /* Keep one encoder origin for the entire ENTER stroke. The contact
      * protection timer starts at the final push and excludes PAUSE time. */
     const uint32_t elapsed_ms = now_ms - nav_final_push_started_ms;
-    if ((enter_travelled_mm >= APP_SAFE_ENTER_TOTAL_DISTANCE_MM) ||
+    if ((enter_travelled_mm >= delivery_total_mm()) ||
         (elapsed_ms >= APP_SAFE_FINAL_PUSH_TIMEOUT_MS)) {
       Motor_Stop();
       task_status.motors_active = false;
@@ -4793,6 +4812,18 @@ static bool delivery_enter_command_ok(const VisionMissionCommand *command)
   const bool red = (command != NULL) &&
       ((command->flags & VISION_CMD_RED_SIDE) != 0U);
   const uint16_t fallback_heading = red ? 9000U : 27000U;
+  if (command != NULL && (command->flags & VISION_CMD_DISTANCE_VALID) != 0U) {
+    const uint8_t required = VISION_CMD_VALID | VISION_CMD_DRIVE_STRAIGHT |
+        VISION_CMD_USE_FINAL_HEADING | VISION_CMD_DISTANCE_VALID;
+    return !(first_green_core_conflict && !first_delivery_done) &&
+        task_mission_valid(command) && command->command == VISION_CMD_ENTER_SAFE_ZONE &&
+        (command->flags & required) == required &&
+        (command->flags & (uint8_t)~(required | VISION_CMD_RED_SIDE)) == 0U &&
+        task_side_flag_valid(command->flags) &&
+        command->target_x_mm >= 0 && command->target_x_mm <= APP_NAV_REMOTE_MAX_DISTANCE_MM &&
+        command->target_y_mm >= 0 && command->target_y_mm <= APP_SAFE_FINAL_PUSH_DISTANCE_MM &&
+        command->heading_cdeg == fallback_heading;
+  }
   return !(first_green_core_conflict && !first_delivery_done) && task_mission_valid(command) &&
          (command->command == VISION_CMD_ENTER_SAFE_ZONE) &&
          ((command->flags & VISION_CMD_DRIVE_STRAIGHT) != 0U) &&
@@ -4839,7 +4870,7 @@ static void task_delivery_check_front_budget(uint32_t now_ms)
   const LocationPose pose = Location_GetPose();
   if (nav_final_push_active || (safe_enter_path_valid && pose.valid &&
       pose.path_mm - safe_enter_start_path_mm >=
-          APP_SAFE_ENTER_TOTAL_DISTANCE_MM - APP_SAFE_FINAL_PUSH_DISTANCE_MM)) {
+          delivery_front_mm())) {
     delivery.front_budget_active = false;
     return;
   }
@@ -5482,10 +5513,16 @@ static bool task_accept_bulldozer(const VisionMissionCommand *command,
     }
   }
   const bool first_step = VISION_BULLDOZER_STEP(command->flags) == VISION_BULLDOZER_TURN_RIGHT;
-  const bool start = first_step &&
+  const bool transport_permitted = (audit_received && audit_valid && !audit_initial_stash) ||
+      (confirmed_load.active && task_confirmed_load_available());
+  const bool loaded_to_a = VISION_BULLDOZER_STEP(command->flags) == VISION_BULLDOZER_LEFT_TO_SWEEP &&
+      command->heading_cdeg == (configured_color == VISION_COLOR_RED ? 9000U : 27000U) &&
+      owned_task && state == TASK_ALIGN_SAFE_ZONE && safe_align_done &&
+      task_status.gripper_closed && transport_permitted;
+  const bool start = (first_step &&
       ((state == TASK_ALIGN_SAFE_ZONE && safe_align_done &&
-        task_status.gripper_closed && audit_received && audit_valid) ||
-       (state == TASK_SEARCH && !task_status.gripper_closed));
+        task_status.gripper_closed && transport_permitted) ||
+       (state == TASK_SEARCH && !task_status.gripper_closed))) || loaded_to_a;
   if (!previous_step_done && !start && !release_done && !empty_search_entry &&
       !attack_face_entry) {
     return false;
@@ -5866,8 +5903,8 @@ static void task_begin_safe_sweep(const VisionMissionCommand *command,
     /* Sweep returns to the interruption point. Credit completed ENTER travel
      * without adding the distance or time spent on the sweep. */
     const uint32_t travelled_mm = pose.path_mm - safe_enter_start_path_mm;
-    safe_enter_resume_mm = travelled_mm < APP_SAFE_ENTER_TOTAL_DISTANCE_MM ?
-        travelled_mm : APP_SAFE_ENTER_TOTAL_DISTANCE_MM;
+    safe_enter_resume_mm = travelled_mm < delivery_total_mm() ?
+        travelled_mm : delivery_total_mm();
     if (nav_final_push_active) {
       const uint32_t push_end_ms = nav_final_push_paused ? nav_final_push_paused_ms : now_ms;
       safe_enter_resume_push_ms = push_end_ms - nav_final_push_started_ms;
@@ -7776,7 +7813,18 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
     task_status.acknowledged_sequence = command->sequence;
     command_accepted = true;
     if (command->target_x_mm == -1) safe_enter_resume_mm = remote_action.nudge_forward_mm;
+    else if ((command->flags & VISION_CMD_DISTANCE_VALID) != 0U)
+      safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
     task_enter(TASK_NAVIGATE, now_ms);
+    const bool explicit_distances = (command->flags & VISION_CMD_DISTANCE_VALID) != 0U;
+    delivery.front_mm = explicit_distances ? (uint16_t)command->target_x_mm :
+        APP_SAFE_ENTER_TOTAL_DISTANCE_MM - APP_SAFE_FINAL_PUSH_DISTANCE_MM;
+    delivery.total_mm = explicit_distances ?
+        (uint16_t)(command->target_x_mm + command->target_y_mm) : APP_SAFE_ENTER_TOTAL_DISTANCE_MM;
+    delivery.distances_latched = true;
+    delivery.enter_arg_a = command->target_x_mm;
+    delivery.enter_arg_b = command->target_y_mm;
+    delivery.enter_heading_cdeg = command->heading_cdeg;
     delivery_enter_active = true;
     delivery.repush = task_delivery_needs_material_repush() ? REPUSH_ARMED : REPUSH_NONE;
     delivery.active = true;
@@ -8219,7 +8267,7 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
   if (state == TASK_ALIGN_SAFE_ZONE && safe_align_done) {
     const LocationPose pose = Location_GetPose();
     if (!pose.valid || task_abs(task_wrap_angle(task_safe_zone_heading() -
-            pose.heading_mdeg / 1000.0f)) > APP_SAFE_ALIGN_TOLERANCE_DEG) {
+            pose.heading_mdeg / 1000.0f)) > task_safe_align_tolerance()) {
       /* Revoke stale ALIGN completion before a queued ENTER can consume it. */
       safe_align_done = false;
       accepted_context.completed = false;
@@ -8297,12 +8345,22 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
       accepted_context.action_id == UINT16_MAX && incoming.action_id == 0U;
   const bool new_target = new_task && !task_rollover;
   const bool new_action = new_task || incoming.action_id != accepted_context.action_id;
+  const bool completed_stage_replay = !new_action &&
+      incoming.command == VISION_CMD_NAVIGATE_WAYPOINT &&
+      accepted_context.opcode == VISION_CMD_NAVIGATE_WAYPOINT &&
+      state == TASK_NAVIGATE && delivery_stage_only && distance_command_done &&
+      task_stage_command(&incoming);
+  if (!new_action && incoming.command == VISION_CMD_ENTER_SAFE_ZONE &&
+      delivery.distances_latched &&
+      (incoming.target_x_mm != delivery.enter_arg_a ||
+       incoming.target_y_mm != delivery.enter_arg_b ||
+       incoming.heading_cdeg != delivery.enter_heading_cdeg)) goto rejected;
   const bool nudge = incoming.command == VISION_CMD_CORRIDOR_NUDGE;
   if (nudge) {
     if (new_target || !task_side_flag_valid(incoming.flags) || incoming.vision_frame != 0U ||
         !task_status.gripper_closed) goto rejected;
     if (new_action) {
-      if (state != TASK_ALIGN_SAFE_ZONE || !safe_align_done || !safe_align_visual_confirmed ||
+      if (state != TASK_ALIGN_SAFE_ZONE || !safe_align_done ||
           accepted_context.opcode != VISION_CMD_ALIGN_SAFE_ZONE) goto rejected;
     } else if (remote_action.type != REMOTE_ACTION_CORRIDOR_NUDGE ||
                incoming.target_y_mm != remote_action.arg_b ||
@@ -8768,6 +8826,8 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
     if (!reuse_nav_toggle && (incoming.command == VISION_CMD_NAVIGATE_WAYPOINT ||
         incoming.command == VISION_CMD_RETURN_CENTER)) {
       nav_reset_coarse();
+      distance_command_done = false;
+      task_status.nav_done = false;
     }
     accepted_context.task_id = incoming.task_id;
     accepted_context.action_id = incoming.action_id;
@@ -8803,6 +8863,9 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
 
   /* An identical picture cannot silently replace the current pixel target. */
   VisionMissionCommand control = incoming;
+  /* D=0 closes one staging leg. A delayed positive-distance packet for that
+   * same action must not move it again; a correction uses a new action ID. */
+  if (completed_stage_replay) control.target_x_mm = 0;
   if (!new_action && !command_visual_new && !range_request &&
       incoming.command == VISION_CMD_APPROACH_TARGET) {
     control.target_x_mm = last_app_x;

@@ -13,21 +13,7 @@
             }
         },
         {
-            "name": "MotionDebug",
-            "inherits": "f405",
-            "cacheVariables": {
-                "APP_AUTO_BACKUP": "OFF"
-            }
-        },
-        {
-            "name": "NormalRun",
-            "inherits": "f405",
-            "cacheVariables": {
-                "APP_AUTO_BACKUP": "OFF"
-            }
-        },
-        {
-            "name": "FinalRun",
+            "name": "FinalRun2",
             "inherits": "f405",
             "cacheVariables": {
                 "APP_AUTO_BACKUP": "OFF"
@@ -36,16 +22,8 @@
     ],
     "buildPresets": [
         {
-            "name": "MotionDebug",
-            "configurePreset": "MotionDebug"
-        },
-        {
-            "name": "NormalRun",
-            "configurePreset": "NormalRun"
-        },
-        {
-            "name": "FinalRun",
-            "configurePreset": "FinalRun"
+            "name": "FinalRun2",
+            "configurePreset": "FinalRun2"
         }
     ]
 }

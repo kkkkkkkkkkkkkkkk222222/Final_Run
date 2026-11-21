@@ -221,18 +221,21 @@ static bool vision_bulldozer_payload_valid(uint8_t flags, int16_t a, int16_t b,
     case VISION_BULLDOZER_FORWARD_PARK:
       return a == 200 && b == 0 && heading == sweep_heading;
     case VISION_BULLDOZER_BACK_200:
-      return a == -200 && b == 0 && heading == sweep_heading;
+      return (a == -200 || a == -160) && b == 0 && heading == sweep_heading;
     case VISION_BULLDOZER_ATTACK_BACK_100:
       return (a == -100 || a == -150) && b == 0 && heading ==
           ((flags & VISION_CMD_RED_SIDE) != 0U ? 27000U : 9000U);
     case VISION_BULLDOZER_SWEEP_1000:
       return a == 1000 && b == 0 && heading == sweep_heading;
     case VISION_BULLDOZER_BACK_TO_SWEEP:
-    case VISION_BULLDOZER_LEFT_TO_SWEEP:
     case VISION_BULLDOZER_BACK_TO_STAGE:
     case VISION_BULLDOZER_RIGHT_TO_STAGE:
       return a >= 0 && a <= APP_NAV_REMOTE_MAX_DISTANCE_MM &&
           b >= -18000 && b <= 18000 && heading == sweep_heading;
+    case VISION_BULLDOZER_LEFT_TO_SWEEP:
+      return a >= 0 && a <= APP_NAV_REMOTE_MAX_DISTANCE_MM &&
+          b >= -18000 && b <= 18000 &&
+          (heading == sweep_heading || heading == sweep_heading + 9000U);
     case VISION_BULLDOZER_EMPTY_BODY_MOVE:
       return a >= 0 && a <= APP_NAV_REMOTE_MAX_DISTANCE_MM &&
           b >= -18000 && b <= 18000 && heading < 36000U;
@@ -422,8 +425,15 @@ static void vision_save_mission(const uint8_t *payload, uint8_t sequence,
         (flags & VISION_CMD_VISUAL_CORRECTION_VALID) != 0U;
     const bool red = (flags & VISION_CMD_RED_SIDE) != 0U;
     const uint16_t fallback_heading = red ? 9000U : 27000U;
-    if (((flags & VISION_CMD_DRIVE_STRAIGHT) == 0U) ||
-        ((flags & VISION_CMD_DISTANCE_VALID) != 0U) ||
+    if ((flags & VISION_CMD_DISTANCE_VALID) != 0U) {
+      const uint8_t required = VISION_CMD_VALID | VISION_CMD_DRIVE_STRAIGHT |
+          VISION_CMD_USE_FINAL_HEADING | VISION_CMD_DISTANCE_VALID;
+      if ((flags & required) != required ||
+          (flags & (uint8_t)~(required | VISION_CMD_RED_SIDE)) != 0U ||
+          arg_a < 0 || arg_a > APP_NAV_REMOTE_MAX_DISTANCE_MM ||
+          arg_b < 0 || arg_b > APP_SAFE_FINAL_PUSH_DISTANCE_MM ||
+          heading != fallback_heading) goto rejected_payload;
+    } else if (((flags & VISION_CMD_DRIVE_STRAIGHT) == 0U) ||
         (arg_a != 0 && !(visual && arg_a == -1)) || (arg_b != 0) ||
         (visual ? (((flags & VISION_CMD_USE_FINAL_HEADING) != 0U) ||
                    (heading != 0U)) :

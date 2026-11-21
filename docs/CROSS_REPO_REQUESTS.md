@@ -1,5 +1,10 @@
 # 决赛两端当前要求与回执
 
+## 当前配套：FINALRUN2-POSE-DELIVERY-20261122
+
+本次下位实现为独立FinalRun2，基于封存24c7dab；不改原FinalRun。配套上位为finals-pose-delivery，精确SHA与接口样例见[新配套锁](contracts/finalrun2_pose_delivery.json)，实际检查见[验证记录](FINALRUN2_PAIR_VALIDATION.md)。已离线通过真实报文、完成归属与机械替身检查；未烧录或实跑。以下28deaa6条目是冻结版历史。
+
+
 ## 当前配套：决赛正式上位机 28deaa6
 
 FinalRun 使用普通左右分离、按实际载荷投送。拒绝陈旧的预转、轻撞和无侧别分离。两端决策及报文定向验证见[联测记录](FINALS_PAIR_VALIDATION.md)。下方早期版本及其补丁为历史记录，不能覆盖当前上位机。

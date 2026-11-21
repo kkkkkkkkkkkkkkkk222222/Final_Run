@@ -1,23 +1,15 @@
-# Final_task · F405 决赛工程
+# FinalRun2 · F405 独立决赛开发工程
 
-决赛换物块前的源码快照保存在本地 Git 标签 `www-before-final`。在本目录使用 CLion 或下列 CMake 预设开发；当前分支为 `Final_task`，预设默认在本机构建。
+从封存 Final_task@24c7dab 独立建立。原 FinalRun 不改，当前工程与新上位 finals-pose-delivery 配套。修改点、接口与检查见 [验证记录](docs/FINALRUN2_PAIR_VALIDATION.md)。**未烧录、未发车。**
 
-在 CLion 重新加载 CMake，按用途选择同一行的预设和下载项。
+| 入口 | CMake预设 | 下载配置 | ELF |
+| --- | --- | --- | --- |
+| 本目录独立打开 | FinalRun2 | DAPLink FinalRun2 | build/F405/FinalRun2/FinalRun2.elf |
+| 相邻WWW中选择 | FinalRun2 | DAPLink FinalRun2 | ../WWW/build/F405/FinalRun2/FinalRun2.elf |
 
-| 用途 | CMake 预设 | CLion 下载项 | 固件路径 | 板端身份 |
-| --- | --- | --- | --- | --- |
-| 运动、舵机和地图调试 | MotionDebug | DAPLink MotionDebug | `build/F405/MotionDebug/MotionDebug.elf` | mode=5，service=1 |
-| 正式比赛 | NormalRun | DAPLink NormalRun | `build/F405/NormalRun/NormalRun.elf` | mode=5，service=2 |
-| 决赛换物块 | FinalRun | DAPLink FinalRun | `build/F405/FinalRun/FinalRun.elf` | mode=5，service=2 |
+本轮构建的是WWW入口对应的镜像。重新加载CMake后选择 `FinalRun2 - FinalRun2` 和 `DAPLink FinalRun2`。DAPLink配置使用本工程dap.cfg；串口仍为RDK UART4 921600/8N1、程序器USART1 115200/8N1。
 
-决赛代码在本目录维护，也可从相邻的 `WWW` 工程选择 `FinalRun` 构建。 在 CLion 顶部选择 `FinalRun - FinalRun` 和 `DAPLink FinalRun`。命令行可在本工程执行 `cmake --preset FinalRun` 和 `cmake --build --preset FinalRun`。
-
-三个预设均使用 STM32F405RG、RDK UART4 921600/8N1、程序器 USART1 115200/8N1 和协议 1.3。
-07 每个真实编码器相邻采样区间发布一次，标称 100Hz；08 有新源时最高 100Hz。
-本轮跨端要求与交付状态见 [固定协作入口](docs/CROSS_REPO_REQUESTS.md)。
-命令行依次执行 `cmake --preset NormalRun` 和 `cmake --build --preset NormalRun`；
-调试时两处都换成 `MotionDebug`。烧录时认准表内路径。
-协作规则见 [AGENTS.md](AGENTS.md)，本轮状态见 [CURRENT_STATUS](docs/CURRENT_STATUS.md)。
+在所选入口目录执行 `cmake --preset FinalRun2`、`cmake --build --preset FinalRun2`。自动备份关闭。构建/校验不等于烧录或实车验收；本次不要使用FinalRun旧配套上位启动新接口。
 
 <details>
 <summary>历史开发记录（旧目录、预设及下载说明已退役）</summary>

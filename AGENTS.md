@@ -1,5 +1,7 @@
 # 协作入口
 
+决赛先读 `../WWW/docs/field-20261121/TEAM_HANDOFF.md` 及其中版本锁。FinalRun2新配套另见 `docs/FINALRUN2_PAIR_VALIDATION.md`，不得覆盖封存FinalRun或将离线验证当作板端actual。
+
 先读 `docs/CURRENT_STATUS.md` 的当前摘要与相关 TODO，核对实际代码后推进。
 当前硬件固定为 F405。MotionDebug 用于运动测试，NormalRun 用于原比赛，FinalRun 使用 Final_task 的决赛源码。
 构建和下载使用 README 页首对应的预设、DAPLink 配置及 build/F405 下的同名镜像。
