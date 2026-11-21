@@ -246,6 +246,159 @@ def test_casualty_audit_and_material_retention():
         assert m._audit_valid(orange)  # Opening relocation is not casualty delivery.
 
 
+def test_opening_casualty_relook_keeps_real_audit_and_task():
+    Planner, Log = load_planner()
+    for side in ("red", "blue"):
+        m = sm.CompetitionMission(sm.CompetitionSettings(side=side))
+        pose = sm.PoseSnapshot(True, 0, 0, 135, 0)
+        injury = sm.TrackedCargo(7, "injured_orange", .9, (600, 500, 40, 40),
+                                None, 3, 0, True, False)
+        audit = sm.CargoAudit(left_class="injured_orange", left_count=1, total_count=1)
+        v = sm.VisionSnapshot(frame_sequence=10, cargo=(injury,), capture_cargo=(injury,),
+                              capture_audit=audit)
+        assert m._pile_batch(v) is None
+        mixed = replace(v, cargo=(injury, replace(injury, track_id=8, class_name="core_black")))
+        assert set(m._pile_batch(mixed).classes) == {"injured_orange", "core_black"}
+        search = sm.StmSnapshot(mode=3, camera_pitch_cdeg=10500, age_ms=0)
+        m.step(v, pose, search, 1.)
+        out = m.step(v, pose, search, 1.02)
+        assert out.state == sm.CompetitionState.INITIAL_CLAW_CHECK
+        ready = sm.StmSnapshot(mode=21, flags=1, camera_pitch_cdeg=14000, age_ms=0)
+        m.step(v, pose, ready, 1.7)
+        for frame, now in ((11, 1.8), (12, 1.91)):
+            v = replace(v, frame_sequence=frame, observed_monotonic_s=now)
+            out = m.step(v, pose, ready, now)
+        assert out.state == sm.CompetitionState.AUDIT_CONFIRM
+        assert out.command.audit.stable and out.command.audit.total_count == 1
+        assert out.command.audit.left_class == "injured_orange"
+        assert out.command.audit.initial_stash and out.command.audit_vision_frame == 12
+        assert m.pending_audit_release_context == "initial_injury_relook"
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            planner = Planner(m, root/'pose', root/'stm', root/'cmd', root/'diag', Log(root/'events'), 20)
+            planner.protocol_vision = v
+            planner._publish(out)
+            task, action = planner.protocol_task, planner.protocol_action
+            reply = replace(ready, flags=81, acknowledged_sequence=1,
+                relay_mission_tx_frames=1, relay_last_mission_command=p.CMD_CARGO_AUDIT,
+                relay_last_mission_payload=tuple(out.command.to_frame(0)[4:12]),
+                context_valid=True, context_matches=True,
+                accepted_command=p.CMD_CARGO_AUDIT, action_status=1)
+            for bad in (replace(reply, context_matches=False), replace(reply, flags=17),
+                        replace(reply, accepted_command=p.CMD_HOLD)):
+                wait = m.step(v, pose, bad, 1.92)
+                assert wait.command.opcode == p.CMD_CARGO_AUDIT
+            out = m.step(v, pose, reply, 1.93)
+            assert out.command.opcode == p.CMD_APPROACH_TARGET
+            assert (out.command.arg_a, out.command.arg_b, out.command.aux) == (0, 12000, 5)
+            assert out.command.source_vision_frame == 12
+            planner._publish(out)
+            assert planner.protocol_task == task and planner.protocol_action != action
+            assert planner.protocol_vision_frame == 12
+            relook_action = planner.protocol_action
+            planner._publish(out)
+            assert planner.protocol_action == relook_action
+        out = m.step(v, pose, replace(reply, mode=3, camera_pitch_cdeg=12000,
+                                     accepted_command=p.CMD_APPROACH_TARGET), 1.94)
+        assert out.state == sm.CompetitionState.INITIAL_OBSERVE
+        out = m.step(replace(v, frame_sequence=13, observed_monotonic_s=2.), pose, search, 2.)
+        assert out.command.opcode == p.CMD_HOLD  # Do not chase the same casualty.
+
+
+def test_opening_mixed_batch_never_tracks_injury_when_material_disappears():
+    for side in ("red", "blue"):
+        m = sm.CompetitionMission(sm.CompetitionSettings(side=side))
+        m.state = sm.CompetitionState.INITIAL_OBSERVE
+        m.initial_claw_check_started = True
+        green = sm.TrackedCargo(8, "green_supply", .9, (400, 300, 80, 80),
+                                None, 3, 0, True, False)
+        injury = replace(green, track_id=9, class_name="injured_orange", bbox=(650, 540, 80, 80))
+        v = sm.VisionSnapshot(frame_sequence=20, cargo=(green, injury), observed_monotonic_s=1.)
+        st = sm.StmSnapshot(mode=3, camera_pitch_cdeg=12000, age_ms=0)
+        pose = sm.PoseSnapshot(True, 0, 0, 135, 0)
+        out = m.step(v, pose, st, 1.)
+        assert out.state == sm.CompetitionState.INITIAL_APPROACH
+        assert m.locked_target_track_id == 8
+        assert set(m.selected_batch.classes) == {"green_supply", "injured_orange"}
+        # Even within the ordinary brief-loss replay window, do not chase.
+        m.last_approach_command = out.command
+        injury_only = replace(v, frame_sequence=21, cargo=(injury,), observed_monotonic_s=1.01)
+        out = m.step(injury_only, pose, st, 1.01)
+        assert out.command.opcode == p.CMD_HOLD
+        assert m._target_for_batch(injury_only) is None
+        # Previously locked injury ID and a replacement ID both stay excluded.
+        m.locked_target_track_id = injury.track_id
+        m.target_last_class = "injured_orange"
+        assert m._target_for_batch(injury_only) is None
+        assert m._target_for_batch(replace(injury_only, cargo=(replace(injury, track_id=99),))) is None
+
+
+def test_original_pickup_requires_new_120_view_and_rechecks_misses():
+    for side in ("red", "blue"):
+        for role in ("original", "obstacle"):
+            m = mission(side)
+            route = ObstacleRoute(side, (7,), ("core_black",), "material",
+                (0, .77), (0, .77), ("core_black",), "pickup")
+            route.pickup_role = role
+            m.obstacle_route = route
+            m.state = sm.CompetitionState.OBSTACLE_PICKUP
+            st = status(p.CMD_BULLDOZER_STEP, mode=25)
+            target = sm.TrackedCargo(7, "core_black", .9, (600, 500, 40, 40),
+                                    None, 3, 0, True, False)
+            v = sm.VisionSnapshot(frame_sequence=10, cargo=(target,), range_pitch_cdeg=14000,
+                                  observed_monotonic_s=1.)
+            out = m._obstacle_pickup_output(v, replace(st, camera_pitch_cdeg=14000), 1.)
+            assert out.state == sm.CompetitionState.OBSTACLE_PICKUP
+            out = m._obstacle_pickup_output(v, st, 1.1)
+            assert out.command.opcode == p.CMD_HOLD
+            out = m._obstacle_pickup_output(replace(v, frame_sequence=11), st, 1.2)
+            assert out.command.opcode == p.CMD_HOLD  # Old viewpoint despite higher ID.
+            empty = replace(v, frame_sequence=12, cargo=(), range_pitch_cdeg=12000,
+                            observed_monotonic_s=1.3)
+            for _ in range(5):
+                out = m._obstacle_pickup_output(empty, st, 1.3)
+                assert m.obstacle_route is route
+            assert route.pickup_missing_frames == 1
+            for stamp in (None, -1.):
+                for cargo in ((), (target,)):
+                    out = m._obstacle_pickup_output(replace(empty, frame_sequence=13,
+                        cargo=cargo, observed_monotonic_s=stamp), st, 1.4)
+                    assert out.command.opcode == p.CMD_HOLD
+                    assert route.pickup_missing_frames == 1 and route.pickup_frame_floor == 12
+            out = m._obstacle_pickup_output(replace(empty, frame_sequence=13), st, 1.4)
+            assert route.pickup_missing_frames == 2
+            out = m._obstacle_pickup_output(replace(empty, frame_sequence=14, cargo=(target,)), st, 1.5)
+            assert out.state == sm.CompetitionState.APPROACH
+            assert out.command.opcode == p.CMD_APPROACH_TARGET
+            assert m.recovering_original_load == (role == "original")
+            # A separate complete empty observation exits on its third distinct new image.
+            m.obstacle_route = route
+            route.begin_original_recovery()
+            m.state = sm.CompetitionState.OBSTACLE_PICKUP
+            empty = replace(empty, observed_monotonic_s=2.)
+            m._obstacle_pickup_output(replace(empty, frame_sequence=20), st, 2.)
+            for frame in (21, 22, 23):
+                out = m._obstacle_pickup_output(replace(empty, frame_sequence=frame), st, 2.1)
+            assert out.state == sm.CompetitionState.SEARCH and m.obstacle_route is None
+
+
+def test_pickup_planner_blocks_source_before_camera_boundary():
+    Planner, Log = load_planner()
+    m = mission()
+    m.state = sm.CompetitionState.OBSTACLE_PICKUP
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        planner = Planner(m, root/'pose', root/'stm', root/'cmd', root/'diag', Log(root/'events'), 20)
+        old = replace(status(p.CMD_BULLDOZER_STEP, mode=25), camera_pitch_cdeg=14000,
+                      received_monotonic_ns=1_000_000_000)
+        planner.view_boundary.observe(old)
+        ready = replace(old, camera_pitch_cdeg=12000, received_monotonic_ns=2_000_000_000)
+        # Inference may finish late and carry a new sequence but an old source image.
+        v = sm.VisionSnapshot(frame_sequence=100, range_pitch_cdeg=12000, observed_monotonic_s=1.9)
+        out = planner._output_for_cycle(v, sm.PoseSnapshot(True, 0, .77, 90), ready, False, 2.1)
+        assert out.suppress_command_tx and out.reason == "camera_view_transition"
+
+
 if __name__ == "__main__":
     for name, test in list(globals().items()):
         if name.startswith("test_"):

@@ -2578,6 +2578,7 @@ class CompetitionPlanner:
         ready_ns = self.view_boundary.observe(stm)
         if (not paused and not stm.fault and stm.received_monotonic_ns and vision.frame_sequence
                 and (stm.mode in (3, 11, 15, 20, 21, 23, 37, 38, 43, 45, 48, 52)
+                     or self.mission.state == CompetitionState.OBSTACLE_PICKUP
                      or self.mission.state in (CompetitionState.ACQUIRE_SAFE_ZONE,
                                                CompetitionState.SAFE_ZONE_CORRIDOR_CHECK)
                      and stm.mode in (10, 25))

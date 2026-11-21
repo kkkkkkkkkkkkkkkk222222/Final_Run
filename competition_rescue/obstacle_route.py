@@ -59,6 +59,8 @@ class ObstacleRoute:
     arrival_latched: bool = False
     deposit_vehicle_point: tuple[float, float] | None = None
     pickup_frame_floor: int = 0
+    pickup_view_ready: bool = False
+    pickup_missing_frames: int = 0
     pickup_role: str = "original"
     awaiting_obstacle_delivery: bool = False
     recover_after_delivery: bool = False
@@ -111,6 +113,8 @@ class ObstacleRoute:
         self.zero_sent = False
         self.original_recovery = True
         self.pickup_role = "original"
+        self.pickup_view_ready = False
+        self.pickup_missing_frames = 0
         self.awaiting_obstacle_delivery = False
         self.recover_after_delivery = False
 

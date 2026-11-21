@@ -2361,6 +2361,11 @@ class CompetitionMission:
                 )
         elif vision_fresh:
             self._note_target_missing_frame(vision)
+            if self.selected_batch is not None and self.selected_batch.initial_stash:
+                visible = self._visible_cargo(vision)
+                if visible and all(item.class_name == "injured_orange" for item in visible):
+                    # Do not replay the last chase coordinates into an injury-only view.
+                    self.last_approach_command = None
             lost = self._lost_green_reselection(vision, stm, now)
             if lost is not None:
                 return lost
@@ -3498,6 +3503,10 @@ class CompetitionMission:
                 stm, audit_confirm_mode, self.pending_audit_initial_ack
             ) and
             stm.audit_ready and (not self.pending_audit_valid or stm.audit_valid) and
+            (self.pending_audit_release_context != "initial_injury_relook" or
+             (stm.context_valid and stm.context_matches and not stm.gripper_closed and
+              stm.accepted_command == CMD_CARGO_AUDIT and bool(stm.action_status & 1) and
+              bool(self.pending_audit_frame_sequence))) and
             (audit_confirm_mode != STM_MODE_SAFE_SWEEP_DONE or
              (stm.context_valid and stm.context_matches and stm.gripper_closed and
               stm.accepted_command == CMD_CARGO_AUDIT))
@@ -3507,11 +3516,26 @@ class CompetitionMission:
             release_side = self.pending_audit_release_side
             final_release = self.pending_audit_final
             release_context = self.pending_audit_release_context
+            audit_frame = self.pending_audit_frame_sequence
             if valid and self.safe_sweep_reaudit_active:
                 self.committed_audit_handoff_mode = stm.mode
             else:
                 self._clear_pending_audit()
             if valid:
+                if release_context == "initial_injury_relook":
+                    # STASH_NONEMPTY is a truthful audit result, not permission
+                    # to close on casualties. Reuse the paired open-claw relook.
+                    self.range_epoch += 1
+                    self.pre_grab_completed_frame = None
+                    self.pre_grab_command = CommandRequest(CMD_APPROACH_TARGET,
+                        self._side_flags() | CMD_DISTANCE_VALID | CMD_APPROACH_RANGE,
+                        0, 12000, APPROACH_PRE_GRAB_RELOOK,
+                        source_vision_frame=audit_frame)
+                    self._set_state(CompetitionState.PRE_GRAB_ADVANCE, now)
+                    return CompetitionOutput(self.state, self.pre_grab_command,
+                        "开局纯伤员真实审核已确认，保持开爪抬到120°复看，不追抓",
+                        self.selected_batch, audit,
+                        event="initial_injury_relook_start", reason="pre_grab_relook")
                 if self.safe_sweep_reaudit_active:
                     self._latch_carried_manifest(audit)
                     self.safe_sweep_reaudit_active = False
@@ -3599,6 +3623,10 @@ class CompetitionMission:
         if self.state == CompetitionState.CLUSTER_APPROACH:
             return self._cluster_target_for_vision(vision)
         visible = self._visible_cargo(vision)
+        if self.selected_batch.initial_stash:
+            # Keep the full observed batch for auditing, but never track an
+            # injury ID (including a fallback ID) as the opening chase anchor.
+            visible = [item for item in visible if item.class_name != "injured_orange"]
         if self.locked_target_track_id is not None:
             locked = next(
                 (item for item in visible if item.track_id == self.locked_target_track_id),
@@ -3757,7 +3785,7 @@ class CompetitionMission:
             item for item in self._visible_cargo(vision)
             if item.hits >= 2
         ]
-        if not cargo:
+        if not cargo or all(item.class_name == "injured_orange" for item in cargo):
             return None
         cargo.sort(key=lambda item: (-item.area_px, item.distance_m, item.track_id))
         return CargoBatch(
@@ -4550,8 +4578,16 @@ class CompetitionMission:
             self.cluster_keep_side_count = keep_count
         payload = self._audit_payload(stable)
         if stable.stable and audit_valid:
+            opening_injury = (
+                self.selected_batch.initial_stash and not stm.gripper_closed and
+                not self.post_grab_audit_active and not self.cargo_recheck_pending and
+                not (stable.danger_present or stable.unknown_present or stable.injury_mixed) and
+                stable.total_count > 0 and
+                self._manifest_for_audit(stable) == ("injured_orange",) * stable.total_count
+            )
             if (self.selected_batch.initial_stash and
-                    not self.selected_batch.track_ids and self.initial_claw_check_started):
+                    not self.selected_batch.track_ids and self.initial_claw_check_started and
+                    not opening_injury):
                 # The opening view request began without assuming any cargo.
                 # Bind its batch to the actual qualifying in-claw observation.
                 ids = tuple(item.track_id for item in vision.capture_cargo)
@@ -4566,6 +4602,8 @@ class CompetitionMission:
                 "both",
                 False,
                 (
+                    "initial_injury_relook"
+                    if opening_injury else
                     "post_grab_valid"
                     if self.post_grab_audit_active else
                     "cluster_capture"
@@ -5173,19 +5211,33 @@ class CompetitionMission:
         route = self.obstacle_route
         assert route is not None
         ready_view = stm.camera_pitch_cdeg == 12000
-        if ready_view and vision.frame_sequence <= route.pickup_frame_floor:
-            return CompetitionOutput(self.state, self._hold(), "沿用120°后的新视图观察",
+        if not ready_view or not route.pickup_view_ready:
+            route.pickup_view_ready = ready_view
+            route.pickup_frame_floor = max(route.pickup_frame_floor, vision.frame_sequence)
+            route.pickup_missing_frames = 0
+            return CompetitionOutput(self.state, self._hold(), "等待120°到位后的新视图",
                                      reason="bulldozer_pickup_view")
+        if (vision.observed_monotonic_s is None or not self._vision_fresh(vision, now) or
+                vision.range_pitch_cdeg != 12000 or
+                vision.frame_sequence <= route.pickup_frame_floor):
+            return CompetitionOutput(self.state, self._hold(), "等待采集时间有效的120°新视图",
+                                     reason="bulldozer_pickup_view")
+        route.pickup_frame_floor = vision.frame_sequence
         allowed = (set(route.original_classes) if route.pickup_role == "original" else
                    MATERIAL_CLASSES if route.original_destination == "material" else {"injured_orange"})
         candidates = [item for item in self._visible_cargo(vision)
-                      if ready_view and item.class_name in allowed]
+                      if item.class_name in allowed]
         if not candidates:
+            route.pickup_missing_frames += 1
+            if route.pickup_missing_frames <= 2:
+                return CompetitionOutput(self.state, self._hold(),
+                    "本张新图未认回目标，继续原地复看",
+                    reason="bulldozer_pickup_missing_recheck")
             self.obstacle_route = None
             self._clear_search_recovery_context(vision, clear_carried=True)
             self._set_state(CompetitionState.SEARCH, now)
             return CompetitionOutput(self.state, self._hold(),
-                "定向观察未找到目标，放弃旧找回任务并恢复正常搜索",
+                "连续三张120°新图未找到目标，放弃旧找回任务并恢复正常搜索",
                 event="bulldozer_pickup_abandoned", reason="bulldozer_pickup_abandoned")
         target = min(candidates, key=lambda item: (
             item.track_id not in route.original_ids if route.pickup_role == "original" else False,
