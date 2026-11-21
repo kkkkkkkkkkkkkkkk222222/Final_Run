@@ -1,0 +1,163 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 078ae7f..e575244 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -53,7 +53,8 @@ set_target_properties(${firmware_target} PROPERTIES
+     OUTPUT_NAME "${F405_PROFILE}"
+     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+ if(F405_PROFILE STREQUAL "FinalRun")
+-    target_compile_definitions(${firmware_target} PRIVATE APP_ENABLE_CARGO_LIFT_FILTER=0)
++    target_compile_definitions(${firmware_target} PRIVATE
++        APP_ENABLE_CARGO_LIFT_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1)
+     add_custom_target(FinalRun DEPENDS ${firmware_target})
+ endif()
+
+diff --git a/Main/Inc/app_config.h b/Main/Inc/app_config.h
+index a65a0fa..9db92ea 100644
+--- a/Main/Inc/app_config.h
++++ b/Main/Inc/app_config.h
+@@ -674,6 +674,9 @@
+ #ifndef APP_ENABLE_CARGO_LIFT_FILTER
+ #define APP_ENABLE_CARGO_LIFT_FILTER      1
+ #endif
++#ifndef APP_FINALS_DELIVERY_CONFIRMATION
++#define APP_FINALS_DELIVERY_CONFIRMATION  0
++#endif
+ /* Temporary lift position for filtering and orange/core separation. */
+ #define APP_LIFT_FIRST_GREEN_FILTER_ANGLE 82U
+ #define APP_SINGLE_CARGO_FILTER_BACK_SPEED_MM_S 250.0f
+diff --git a/Main/Inc/vision.h b/Main/Inc/vision.h
+index e4c2b49..8845364 100644
+--- a/Main/Inc/vision.h
++++ b/Main/Inc/vision.h
+@@ -142,6 +142,7 @@
+ #define VISION_APPROACH_ORANGE_TOP_VIEW 4U
+ #define VISION_SEPARATION_ORANGE_CORE_82 8200U
+ #define VISION_RELEASE_SAME_SIDE_BLUE      1U
++#define VISION_TASK_COMPLETE_UNCONFIRMED   1U
+ #define VISION_PRE_GRAB_ADVANCE_MM      50U
+ #define VISION_MODE_APPROACH_RANGE_WAIT 52U
+ #define VISION_MODE_APPROACH_RANGE_MOVE 53U
+diff --git a/Main/Src/Task.c b/Main/Src/Task.c
+index dba406b..a5876c7 100644
+--- a/Main/Src/Task.c
++++ b/Main/Src/Task.c
+@@ -381,7 +381,8 @@ static bool delivery_enter_active;
+ typedef enum {
+   DELIVERY_FINISH_NONE = 0,
+   DELIVERY_FINISH_COMPLETE,
+-  DELIVERY_FINISH_FRONT_TIMEOUT
++  DELIVERY_FINISH_FRONT_TIMEOUT,
++  DELIVERY_FINISH_UNCONFIRMED
+ } DeliveryFinishReason;
+ typedef enum {
+   REPUSH_NONE, REPUSH_ARMED, REPUSH_RAISE, REPUSH_BACK, REPUSH_LOWER, REPUSH_FORWARD, REPUSH_DONE
+@@ -4790,15 +4791,23 @@ static void task_delivery_check_front_budget(uint32_t now_ms)
+   }
+ }
+
++static DeliveryFinishReason task_delivery_completion_reason(uint16_t heading)
++{
++  return APP_FINALS_DELIVERY_CONFIRMATION && heading == VISION_TASK_COMPLETE_UNCONFIRMED ?
++      DELIVERY_FINISH_UNCONFIRMED : DELIVERY_FINISH_COMPLETE;
++}
++
+ static void task_finish_delivery_exit(uint32_t now_ms)
+ {
+   /* Called only after the original Claw_Open reports its mechanical finish. */
+   if (state != TASK_OPEN_FOR_RAM && state != TASK_RAM_VERIFY) { return; }
+-  /* Legacy delivery parity applies until an explicit station direction wins. */
+-  if (!search_direction_latched) {
+-    search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
++  if (!APP_FINALS_DELIVERY_CONFIRMATION || delivery.finish == DELIVERY_FINISH_COMPLETE) {
++    /* Legacy delivery parity applies until an explicit station direction wins. */
++    if (!search_direction_latched) {
++      search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
++    }
++    first_delivery_done = true;
+   }
+-  first_delivery_done = true;
+   task_bulldozer_clear_load();
+   safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
+   task_enter(TASK_EXIT_SAFE_ZONE, now_ms);
+@@ -4872,8 +4881,8 @@ static void task_process_delivery_repush(uint32_t now_ms)
+ static void task_process_delivery_open(const VisionMissionCommand *command,
+                                        uint32_t now_ms)
+ {
+-  const uint8_t owner_opcode = delivery.finish == DELIVERY_FINISH_COMPLETE ?
+-      VISION_CMD_TASK_COMPLETE : VISION_CMD_ENTER_SAFE_ZONE;
++  const uint8_t owner_opcode = delivery.finish == DELIVERY_FINISH_FRONT_TIMEOUT ?
++      VISION_CMD_ENTER_SAFE_ZONE : VISION_CMD_TASK_COMPLETE;
+   const bool local_finish_owned = task_delivery_is_finishing() &&
+       accepted_context.valid && !accepted_context.cancelled &&
+       accepted_context.opcode == owner_opcode;
+@@ -4899,7 +4908,8 @@ static void task_process_delivery_open(const VisionMissionCommand *command,
+       step_started_ms = now_ms;
+     }
+   }
+-  if (delivery.repush == REPUSH_ARMED && delivery.finish != DELIVERY_FINISH_COMPLETE) {
++  if (delivery.repush == REPUSH_ARMED &&
++      (delivery.finish == DELIVERY_FINISH_NONE || delivery.finish == DELIVERY_FINISH_FRONT_TIMEOUT)) {
+     delivery.repush_wait_ms = Lift_PositionWaitMs(APP_LIFT_RELEASE_RAISE_ANGLE);
+     Lift_SetReleaseRaisePosition();
+     delivery.repush = REPUSH_RAISE;
+@@ -7668,7 +7678,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
+     /* ENTER may finish the repush as the host's visual COMPLETE is in flight. */
+     task_status.acknowledged_sequence = command->sequence;
+     command_accepted = true;
+-    delivery.finish = DELIVERY_FINISH_COMPLETE;
++    delivery.finish = task_delivery_completion_reason(command->heading_cdeg);
+   } else if ((command->command == VISION_CMD_TASK_COMPLETE) &&
+              (delivery.finish == DELIVERY_FINISH_NONE || task_timeout_repush_can_complete()) &&
+              ((!task_status.gripper_closed && state == TASK_RAM_VERIFY) ||
+@@ -7678,7 +7688,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
+     task_status.acknowledged_sequence = command->sequence;
+     command_accepted = true;
+     delivery.active = true;
+-    delivery.finish = DELIVERY_FINISH_COMPLETE;
++    delivery.finish = task_delivery_completion_reason(command->heading_cdeg);
+     if (delivery.repush == REPUSH_FORWARD) { task_record_repush_end(false); }
+     delivery.repush = REPUSH_NONE;
+     delivery.front_budget_active = false;
+@@ -8323,12 +8333,16 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
+   if (incoming.command == VISION_CMD_TASK_COMPLETE) {
+     /* Only the current ENTER can hand off to COMPLETE. A visual confirmation
+      * may end its three-material timeout repush, including at the exit boundary. */
++    const DeliveryFinishReason reason = task_delivery_completion_reason(incoming.heading_cdeg);
+     if (new_target || !accepted_context.valid ||
+         !task_side_flag_valid(incoming.flags) ||
+         incoming.flags != (VISION_CMD_VALID | (incoming.flags & VISION_CMD_RED_SIDE)) ||
+-        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 || incoming.heading_cdeg != 0U ||
++        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 ||
++        (incoming.heading_cdeg != 0U && reason != DELIVERY_FINISH_UNCONFIRMED) ||
++        (!new_action && APP_FINALS_DELIVERY_CONFIRMATION && delivery.finish != reason) ||
+         (new_action && (accepted_context.opcode != VISION_CMD_ENTER_SAFE_ZONE ||
+-                        (delivery.finish != DELIVERY_FINISH_NONE && !task_timeout_repush_can_complete())))) goto rejected;
++                        (delivery.finish != DELIVERY_FINISH_NONE &&
++                         (reason != DELIVERY_FINISH_COMPLETE || !task_timeout_repush_can_complete()))))) goto rejected;
+   }
+   if (incoming.command == VISION_CMD_ENTER_SAFE_ZONE && delivery.active && new_action &&
+       !(state == TASK_NAVIGATE && delivery_enter_active &&
+diff --git a/tools/vision_protocol.py b/tools/vision_protocol.py
+index c478d53..eff8e50 100644
+--- a/tools/vision_protocol.py
++++ b/tools/vision_protocol.py
+@@ -56,6 +56,7 @@ CMD_NAVIGATE_WAYPOINT = 0x03
+ CMD_ALIGN_SAFE_ZONE = 0x04
+ CMD_ENTER_SAFE_ZONE = 0x05
+ CMD_TASK_COMPLETE = 0x06
++TASK_COMPLETE_UNCONFIRMED = 1
+ CMD_ABORT = 0x07
+ CMD_RETURN_CENTER = 0x08
+ CMD_APPROACH_TARGET = 0x09
+@@ -352,6 +353,10 @@ def mission_frame(
+                         CMD_CORRIDOR_NUDGE, CMD_ORANGE_CORE_FILTER) and
+             not CMD_GRAB_CONFIRMED <= command <= CMD_BULLDOZER_STEP):
+         raise ValueError("invalid mission command")
++    if command == CMD_TASK_COMPLETE and (
++            not flags & CMD_VALID or flags & ~(CMD_VALID | CMD_RED_SIDE) or
++            target_x_mm != 0 or target_y_mm != 0 or heading_cdeg not in (0, TASK_COMPLETE_UNCONFIRMED)):
++        raise ValueError("invalid task completion payload")
+     allowed_flags = 0xF9 if command == CMD_BULLDOZER_STEP else 0x1F
+     if command == CMD_APPROACH_TARGET:
+         allowed_flags |= CMD_CLUSTER_TARGET | CMD_APPROACH_RANGE

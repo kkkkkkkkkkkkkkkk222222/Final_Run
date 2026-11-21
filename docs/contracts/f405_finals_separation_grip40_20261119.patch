@@ -1,0 +1,127 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 605778d..8edd335 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -55,7 +55,7 @@ set_target_properties(${firmware_target} PROPERTIES
+ if(F405_PROFILE STREQUAL "FinalRun")
+     target_compile_definitions(${firmware_target} PRIVATE
+         APP_ENABLE_CARGO_LIFT_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1
+-        APP_ENABLE_FINAL_PUSH_LIFT=1)
++        APP_ENABLE_FINAL_PUSH_LIFT=1 APP_ENABLE_FINALS_CLAW_TIGHTEN=1)
+     add_custom_target(FinalRun DEPENDS ${firmware_target})
+ endif()
+
+diff --git a/Main/Inc/app_config.h b/Main/Inc/app_config.h
+index 3967e7e..2cd8984 100644
+--- a/Main/Inc/app_config.h
++++ b/Main/Inc/app_config.h
+@@ -734,6 +734,11 @@
+ #define APP_CLAW_SEPARATE_ORANGE_OPEN_DEG          5U
+ #define APP_CLAW_SEPARATE_STEP_DEG                 4U /* Per 20 ms Task period. */
+ #define APP_CLAW_SEPARATE_SETTLE_MS              260U /* After the final angle command. */
++#ifndef APP_ENABLE_FINALS_CLAW_TIGHTEN
++#define APP_ENABLE_FINALS_CLAW_TIGHTEN             0
++#endif
++#define APP_CLAW_FINALS_TIGHTEN_DEG               20U
++#define APP_CLAW_FINALS_TIGHTEN_DEG_S             40U
+ #define APP_CARGO_SEPARATE_ARC_BACK_MM_S        300.0f
+ #define APP_CARGO_SEPARATE_ARC_SIDE_MM_S          0.0f
+ #define APP_CARGO_SEPARATE_ARC_YAW_MM_S         150.0f
+diff --git a/Main/Src/Task.c b/Main/Src/Task.c
+index 1aafd96..803a226 100644
+--- a/Main/Src/Task.c
++++ b/Main/Src/Task.c
+@@ -3149,19 +3149,23 @@ static bool task_prepare_separation(int8_t keep_side, bool keep_orange, uint32_t
+   separation_turn_deg = release_three ? APP_CARGO_SEPARATE_THREE_TURN_DEG :
+       APP_CARGO_SEPARATE_ONE_OR_TWO_TURN_DEG;
+
+-  /* Keep the soft grip on retries and on anything except a confirmed singleton. */
+-  uint8_t close_deg = APP_CLAW_SEPARATE_SOFT_CLOSE_DEG;
+-  if (counts_known && separation_total_attempts == 0U &&
+-      (audit_single_side_mask & keep_bit) != 0U) {
+-    close_deg = release_three ? APP_CLAW_SEPARATE_THREE_CLOSE_DEG :
+-        APP_CLAW_SEPARATE_ONE_OR_TWO_CLOSE_DEG;
+-  }
+-  const uint8_t keep_count = keep_side > 0 ? left_count : right_count;
+-  const uint8_t keep_class = keep_side > 0 ? audit_last_left_class : audit_last_right_class;
+-  if (keep_orange || (keep_count == 1U && keep_class == VISION_CARGO_INJURED)) {
+-    Claw_SetOrangeSeparationHold(close_deg);
++  if (APP_ENABLE_FINALS_CLAW_TIGHTEN) {
++    Claw_SetSeparationHold(APP_CLAW_FINALS_TIGHTEN_DEG);
+   } else {
+-    Claw_SetSeparationHold(close_deg);
++    /* Keep the soft grip on retries and on anything except a confirmed singleton. */
++    uint8_t close_deg = APP_CLAW_SEPARATE_SOFT_CLOSE_DEG;
++    if (counts_known && separation_total_attempts == 0U &&
++        (audit_single_side_mask & keep_bit) != 0U) {
++      close_deg = release_three ? APP_CLAW_SEPARATE_THREE_CLOSE_DEG :
++          APP_CLAW_SEPARATE_ONE_OR_TWO_CLOSE_DEG;
++    }
++    const uint8_t keep_count = keep_side > 0 ? left_count : right_count;
++    const uint8_t keep_class = keep_side > 0 ? audit_last_left_class : audit_last_right_class;
++    if (keep_orange || (keep_count == 1U && keep_class == VISION_CARGO_INJURED)) {
++      Claw_SetOrangeSeparationHold(close_deg);
++    } else {
++      Claw_SetSeparationHold(close_deg);
++    }
+   }
+   separation_keep_side = keep_side;
+   if (separation_total_attempts < UINT8_MAX) { ++separation_total_attempts; }
+diff --git a/Main/Src/mechanism.c b/Main/Src/mechanism.c
+index 4e6e79d..5249e18 100644
+--- a/Main/Src/mechanism.c
++++ b/Main/Src/mechanism.c
+@@ -26,6 +26,7 @@ static uint32_t claw_step_ms;
+ static uint32_t claw_wait_ms;
+ static bool claw_done;
+ static uint8_t separation_left_hold_angle = APP_CLAW_LEFT_TOUCH_ANGLE;
++static uint32_t separation_tighten_mdeg;
+
+ void Claw_RestartAction(void)
+ {
+@@ -217,12 +218,25 @@ bool Claw_OpenIfNeeded(uint32_t now_ms)
+   return Claw_Open(now_ms);
+ }
+
+-static bool claw_step_to(uint8_t id, uint8_t target)
++static bool claw_step_to(uint8_t id, uint8_t target, bool retained)
+ {
+   const int current = Servo_GetAngle(id);
+   if (current == target) { return true; }
+-  const int step = APP_CLAW_SEPARATE_STEP_DEG;
++  int step = APP_CLAW_SEPARATE_STEP_DEG;
+   int delta = (int)target - current;
++  if (APP_ENABLE_FINALS_CLAW_TIGHTEN && retained && (id == 4U ? delta < 0 : delta > 0)) {
++    const int before_touch = id == 4U ? current - (int)APP_CLAW_LEFT_TOUCH_ANGLE :
++        (int)APP_CLAW_RIGHT_TOUCH_ANGLE - current;
++    if (before_touch > 0) {
++      if (step > before_touch) { step = before_touch; }
++    } else {
++      /* The servo accepts integer degrees. Carry the fraction to the next task tick. */
++      separation_tighten_mdeg += APP_CLAW_FINALS_TIGHTEN_DEG_S * APP_TASK_PERIOD_MS;
++      step = (int)(separation_tighten_mdeg / 1000U);
++      separation_tighten_mdeg %= 1000U;
++      if (step == 0) { return false; }
++    }
++  }
+   if (delta > step) { delta = step; }
+   if (delta < -step) { delta = -step; }
+   const uint8_t next = (uint8_t)(current + delta);
+@@ -239,12 +253,15 @@ static bool claw_move_separation(ClawAction action, uint32_t now_ms,
+     claw_step = 1U;
+     claw_step_ms = now_ms;
+     claw_done = false;
++    separation_tighten_mdeg = 0U;
+   }
+   if (!claw_done && claw_step == 1U &&
+       (uint32_t)(now_ms - claw_step_ms) >= APP_TASK_PERIOD_MS) {
+     /* At most one step after a pause; never catch up with a large angle jump. */
+-    const bool left_at_target = claw_step_to(4U, left_angle);
+-    const bool right_at_target = claw_step_to(2U, right_angle);
++    const bool keep_left = action == CLAW_ACTION_OPEN_RIGHT || action == CLAW_ACTION_CLUSTER_OPEN_RIGHT;
++    const bool keep_right = action == CLAW_ACTION_OPEN_LEFT || action == CLAW_ACTION_CLUSTER_OPEN_LEFT;
++    const bool left_at_target = claw_step_to(4U, left_angle, keep_left);
++    const bool right_at_target = claw_step_to(2U, right_angle, keep_right);
+     claw_step_ms = now_ms;
+     if (left_at_target && right_at_target) { claw_step = 2U; }
+   }

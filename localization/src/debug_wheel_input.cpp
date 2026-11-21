@@ -1,0 +1,615 @@
+#include "debug_wheel_input.hpp"
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <poll.h>
+#include <unistd.h>
+#include <cerrno>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <iterator>
+#include <limits>
+#include <pthread.h>
+#include <sched.h>
+#include <cstdlib>
+#include <stdexcept>
+#include <vector>
+
+namespace omni {
+namespace {
+std::array<double, 3> vector3(const DebugWheelInput::Json &value)
+{
+    if (!value.is_array() || value.size() != 3) throw std::runtime_error("expected vector3");
+    std::array<double, 3> out;
+    for (int i = 0; i < 3; ++i) {
+        out[i] = value.at(i).get<double>();
+        if (!std::isfinite(out[i])) throw std::runtime_error("nonfinite vector3");
+    }
+    return out;
+}
+
+bool full_wheel_diagnostics_requested()
+{
+    const char *profile = std::getenv("RDK_WHEEL_SDK_LOG_PROFILE");
+    return !profile || std::strcmp(profile, "summary") != 0;
+}
+}
+
+DebugWheelInput::DebugWheelInput(const LocalizationConfig &config, const std::string &session,
+                               const std::string &address, const std::string &log_path, bool synthetic_input,
+                               bool experiment_enabled)
+    : config_(config), session_(session), log_(log_path, std::ios::app),synthetic_input_(synthetic_input),
+      experiment_enabled_(experiment_enabled),
+      full_diagnostics_(synthetic_input || experiment_enabled || full_wheel_diagnostics_requested())
+{
+    if (!log_) logging_failed_=true; // Diagnostic failure does not disable SDK input.
+    status_path_ = log_path.substr(0, log_path.find_last_of('/')+1)+"wheel_sdk_status.json";
+    // Abstract Unix socket: no filesystem socket or stale file to clean up.
+    if (!address.empty()) {
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        if (address[0] != '@' || address.size() >= sizeof(addr.sun_path))
+            throw std::runtime_error("debug wheel socket must be a short @abstract address");
+        std::memcpy(addr.sun_path+1, address.data()+1, address.size()-1);
+        socket_ = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (socket_ < 0) throw std::runtime_error("cannot create debug wheel socket");
+        if (::bind(socket_, reinterpret_cast<sockaddr *>(&addr),
+                   offsetof(sockaddr_un, sun_path)+address.size()) != 0) {
+            ::close(socket_); socket_ = -1;
+            throw std::runtime_error("cannot bind debug wheel socket (owner already running?)");
+        }
+    }
+    log_thread_=std::thread([this]{write_logs();});
+    record({{"event", "wheel_input_session"}, {"input_frame", "C_at_tracking_origin"},
+            {"dependencies", synthetic_input_ ? Json{"synthetic_test_fixture"} : Json{"measured_wheel_feedback", "primary_gyro_rate"}},
+            {"experiment_enabled",experiment_enabled_},
+            {"diagnostic_profile",full_diagnostics_ ? "full" : "summary"},
+            {"accuracy_verified", false}});
+}
+
+DebugWheelInput::~DebugWheelInput()
+{
+    stop();logging_stopping_=true;log_ready_.notify_one();
+    if(log_thread_.joinable())log_thread_.join();
+    if (socket_ >= 0) ::close(socket_);
+}
+
+void DebugWheelInput::start()
+{
+    if (socket_ < 0 || input_thread_.joinable()) return;
+    started_=true;
+    if(native_) {input_thread_=std::thread([this]{native_loop();});return;}
+    input_thread_=std::thread([this]{
+        while(!stopping_) {
+            try {
+                // Readiness wakes immediately; the timeout only bounds idle
+                // shutdown. It is neither a sample delay nor an age gate.
+                pollfd input{socket_, POLLIN, 0};
+                const int ready = ::poll(&input, 1, 50);
+                if (ready < 0) {
+                    if (errno == EINTR) continue;
+                    throw std::runtime_error("wheel socket poll failed");
+                }
+                if (input.revents & (POLLERR | POLLHUP | POLLNVAL))
+                    throw std::runtime_error("wheel socket unavailable");
+                if (input.revents & POLLIN) poll(0);
+            }
+            catch(const std::exception &e) {
+                logging_failed_=true;
+                record({{"event","wheel_input_worker_failed"},{"error",e.what()}});
+                break;
+            }
+        }
+    });
+}
+
+void DebugWheelInput::stop()
+{
+    stopping_=true;input_ready_.notify_one();if(input_thread_.joinable())input_thread_.join();
+    wheel_.reset();
+}
+
+void DebugWheelInput::prepare_sdk_restart() {
+    stop();
+    std::deque<WirePacket> context;
+    {
+        std::lock_guard<std::mutex> lock(input_mutex_);
+        context.swap(input_);started_=false;
+        if(native_){
+            // Offline ingress retains only original identity/clock exchanges.
+            // Applying them here never opens a UART or asks for another reply.
+            for(const auto &p:context){
+                if(p.request)native_->request(p.data.data(),p.data.size(),p.ns);
+                else native_->feedback(p.data.data(),p.data.size(),p.ns);
+            }
+            native_->discard_motion_support();
+        }
+        wheel_.reset();config_loaded_=false;
+        have_packet_=have_epoch_=false;epoch_=nullptr;alignment_clock_.clear();
+        next_frame_=last_packet_=last_end_=0;last_success_ns_=0;
+        accepted_=rejected_=sdk_failed_samples_=paused_samples_=0;
+        last_sdk_call_failed_=false;
+        have_last_submitted_=experiment_have_hold_=false;
+        experiment_pending_=experiment_active_=false;experiment_mode_="normal";experiment_phase_id_.clear();
+        ++sdk_generation_;stopping_=false;
+    }
+    record({{"event","wheel_sdk_session_prepared"},{"pending_motion_replayed",false},
+        {"identity_clock_context_preserved",true},{"source_pause_preserved",input_paused_}});
+}
+
+void DebugWheelInput::use_native_feedback() {
+    if(started_||synthetic_input_)throw std::logic_error("native feedback must be selected before SDK input starts");
+    native_.reset(new F405WheelMeasurements(config_,session_,[this](Json j){record(std::move(j));},
+                                           full_diagnostics_));
+}
+
+void DebugWheelInput::wire_packet(const std::uint8_t *p,std::size_t n,std::uint64_t ns,bool request) {
+    if(!native_)return;
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    // Keep matched context for a real new SDK session, without accumulating
+    // offline wheel/gyro samples that would become an injection backlog.
+    if(stopping_&&!request&&n>=4&&(p[3]==7||p[3]==8))return;
+    if(stopping_&&request&&n==15&&p[2]==0x19)return;
+    // Retain identity/clock context during SDK startup, never play the
+    // pre-start wheel/rate backlog into a newly started estimator.
+    if(!request && n>=4 && (p[3]==7||p[3]==8) && !started_) {++prestart_feedback_;return;}
+    if(input_.size()>=256) {input_.pop_front();++input_drops_;}
+    input_.push_back({std::vector<std::uint8_t>(p,p+n),ns,request});input_ready_.notify_one();
+}
+void DebugWheelInput::wire_feedback(const std::uint8_t *p,std::size_t n,std::uint64_t ns) {wire_packet(p,n,ns,false);}
+void DebugWheelInput::wire_request(const std::uint8_t *p,std::size_t n,std::uint64_t ns) {wire_packet(p,n,ns,true);}
+
+void DebugWheelInput::native_loop() {
+    ::pthread_setname_np(::pthread_self(),"t265-wheel-in");
+    const char *rt=std::getenv("RDK_LOCALIZATION_RT");
+    const bool requested=!rt || (std::strcmp(rt,"0")&&std::strcmp(rt,"off")&&std::strcmp(rt,"false"));
+    sched_param priority{};priority.sched_priority=10;
+    const int error=requested?::pthread_setschedparam(::pthread_self(),SCHED_FIFO,&priority):0;
+    int policy=0;::pthread_getschedparam(::pthread_self(),&policy,&priority);
+    record({{"event","wheel_native_worker_started"},{"processing_owner","native_cpp_sdk_owner"},
+        {"scheduling",{{"requested",requested},{"error",error},{"actual_policy",policy},{"actual_priority",priority.sched_priority}}}});
+    while(!stopping_) {
+        std::deque<WirePacket> batch;std::uint64_t dropped=0,prestart=0;
+        {
+            std::unique_lock<std::mutex> lock(input_mutex_);
+            input_ready_.wait_for(lock,std::chrono::milliseconds(50),[&]{return !input_.empty()||stopping_;});
+            batch.swap(input_);dropped=input_drops_;input_drops_=0;prestart=prestart_feedback_;prestart_feedback_=0;
+        }
+        if(dropped||prestart)record({{"event","wheel_native_input_discarded"},{"queue_overflow",dropped},{"before_sdk_start",prestart}});
+        try {
+            const auto policy_before=source_policy_revision_;
+            receive_source_policies();
+            if(policy_before!=source_policy_revision_){
+                // This explicit source boundary also consumes the already
+                // dequeued batch, not just packets still in the shared queue.
+                batch.erase(std::remove_if(batch.begin(),batch.end(),[](const WirePacket &p){
+                    return !p.request&&p.data.size()>=4&&(p.data[3]==7||p.data[3]==8);
+                }),batch.end());
+            }
+            for(const auto &p:batch) {
+                if(p.request)native_->request(p.data.data(),p.data.size(),p.ns);
+                else native_->feedback(p.data.data(),p.data.size(),p.ns);
+            }
+            auto ready=native_->latest();
+            if(!ready.is_null()) {
+                const auto now=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                process(std::move(ready),now,[&](std::uint32_t frame,const rs2_vector &v){return wheel_->send_wheel_odometry(0,frame,v);});
+            }
+        }catch(const std::exception &e) {
+            record({{"event","wheel_native_rejected"},{"reason","malformed_native_measurement"},{"error",e.what()}});
+        }
+    }
+}
+
+bool DebugWheelInput::source_policy(const Json &p) {
+    if(p.at("schema")!=3 || p.at("kind")!="wheel_source_policy" || p.at("session_id")!=session_ || !p.at("pause").is_boolean())return false;
+    const bool pause=p.at("pause").get<bool>();const auto reason=p.at("reason").get<std::string>();
+    const bool zero = p.value("zero_body_translation",false);
+    if(pause==input_paused_ && zero==zero_body_translation_ && reason==input_policy_reason_)return true;
+    zero_body_translation_=zero;
+    if(pause!=input_paused_){
+        ++source_policy_revision_;
+        if(native_)native_->discard_motion_support();
+        std::lock_guard<std::mutex> lock(input_mutex_);
+        input_.erase(std::remove_if(input_.begin(),input_.end(),[](const WirePacket &packet){
+            return !packet.request&&packet.data.size()>=4&&(packet.data[3]==7||packet.data[3]==8);
+        }),input_.end());
+    }
+    input_paused_=pause;input_policy_reason_=reason;
+    record({{"event","wheel_source_policy_applied"},{"policy_request",p},
+        {"device_estimator_reset",false},{"previous_wheel_dependency_cleared",false}});
+    return true;
+}
+
+bool DebugWheelInput::experiment_policy(const Json &p,std::uint64_t now) {
+    // This explicit laboratory option never changes the measured packet or
+    // enables a second producer. The normal source policy remains independent.
+    if(!experiment_enabled_ || synthetic_input_)return false;
+    try {
+        if(p.at("schema")!=3 || p.at("kind")!="wheel_input_experiment" || p.at("session_id")!=session_)
+            return false;
+        const auto phase=p.at("phase_id").get<std::string>();
+        const auto mode=p.at("mode").get<std::string>();
+        if(phase.empty() || (mode!="normal"&&mode!="drop"&&mode!="bias_body"&&mode!="zero_camera"&&mode!="hold_last_camera"))
+            return false;
+        auto tick=[&](const char *key,std::uint64_t fallback) {
+            if(!p.count(key))return fallback;
+            const auto &value=p.at(key);
+            if(!value.is_number_integer() || value.get<double>()<0)
+                throw std::runtime_error("experiment time must be a nonnegative integer");
+            return value.get<std::uint64_t>();
+        };
+        const auto requested_start=tick("start_monotonic_ns",0);
+        const auto duration=tick("duration_ns",0);
+        if(!duration && mode!="normal")return false;
+        const auto start=requested_start?requested_start:now;
+        if(duration>std::numeric_limits<std::uint64_t>::max()-start)return false;
+        const auto bias=p.count("bias_body_mps")?vector3(p.at("bias_body_mps")):std::array<double,3>{{0.,0.,0.}};
+        if(mode=="bias_body" && !p.count("bias_body_mps"))return false;
+        experiment_mode_=mode;experiment_phase_id_=phase;experiment_bias_=bias;
+        experiment_start_ns_=start;experiment_end_ns_=duration?start+duration:0;
+        experiment_applied_ns_=0;experiment_pending_=duration!=0;experiment_active_=false;
+        experiment_have_hold_=false;
+        record({{"event","wheel_experiment_requested"},{"request",p},
+            {"request_received_monotonic_ns",now},{"scheduled_start_monotonic_ns",start},
+            {"scheduled_end_monotonic_ns",duration?Json(start+duration):Json(nullptr)},
+            {"replaces_previous_profile",true},{"sdk_call_attempted",false},
+            {"previous_wheel_dependency_cleared",false}});
+        return true;
+    }catch(const std::exception &){return false;}
+}
+
+DebugWheelInput::Json DebugWheelInput::experiment_context() const {
+    return {{"experiment_phase_id",experiment_phase_id_},
+        {"experiment_mode",experiment_active_?experiment_mode_:"normal"},
+        {"experiment_requested_mode",experiment_mode_},{"experiment_window_active",experiment_active_},
+        {"experiment_pending",experiment_pending_},{"experiment_bias_body_mps",experiment_bias_},
+        {"experiment_applied_monotonic_ns",experiment_applied_ns_?Json(experiment_applied_ns_):Json(nullptr)},
+        {"experiment_hold_frame_num",experiment_have_hold_?Json(experiment_hold_frame_):Json(nullptr)},
+        {"experiment_hold_sdk_result",experiment_have_hold_?Json(experiment_hold_result_):Json(nullptr)}};
+}
+
+void DebugWheelInput::update_experiment(std::uint64_t now) {
+    if(!experiment_enabled_ || !experiment_pending_)return;
+    if(now>=experiment_end_ns_) {
+        const auto previous=experiment_context();
+        experiment_pending_=experiment_active_=false;
+        record({{"event","wheel_experiment_window_ended"},{"experiment",previous},
+            {"timestamp_monotonic_ns",now},{"scheduled_end_monotonic_ns",experiment_end_ns_},
+            {"next_mode","normal"},{"sdk_call_attempted",false}});
+        return;
+    }
+    if(now<experiment_start_ns_ || experiment_active_)return;
+    experiment_active_=true;experiment_applied_ns_=now;
+    if(experiment_mode_=="hold_last_camera" && have_last_submitted_) {
+        experiment_have_hold_=true;experiment_hold_=last_submitted_;
+        experiment_hold_frame_=last_submitted_frame_;experiment_hold_result_=last_submitted_result_;
+    }
+    record({{"event","wheel_experiment_applied"},{"experiment",experiment_context()},
+        {"timestamp_monotonic_ns",now},{"scheduled_start_monotonic_ns",experiment_start_ns_},
+        {"scheduled_end_monotonic_ns",experiment_end_ns_},{"sdk_call_attempted",false}});
+}
+
+void DebugWheelInput::receive_source_policies() {
+    for(int i=0;i<64;++i) {
+        char bytes[8192];const auto n=::recv(socket_,bytes,sizeof(bytes),MSG_DONTWAIT|MSG_TRUNC);
+        if(n<0)break;
+        try {
+            if(n>=static_cast<ssize_t>(sizeof(bytes)))throw std::runtime_error("oversized wheel policy");
+            const auto p=Json::parse(bytes,bytes+n);
+            const bool experiment=p.value("kind",std::string())=="wheel_input_experiment";
+            const auto now=experiment?std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count():0;
+            if(!(experiment?experiment_policy(p,now):source_policy(p)))
+                throw std::runtime_error("native owner accepts source-policy requests, not a second converted-velocity producer");
+        }catch(const std::exception &e) {record({{"event","wheel_source_policy_rejected"},{"error",e.what()}});}
+    }
+}
+
+void DebugWheelInput::validate_config(const Json &config)
+{
+    const auto &sensors = config.at("velocimeters");
+    if (!sensors.is_array() || sensors.size() != 1) throw std::runtime_error("exactly one C-frame velocity source required");
+    const auto &s = sensors.at(0);
+    const std::vector<double> identity{1,0,0,0,1,0,0,0,1};
+    if (s.at("scale_and_alignment").get<std::vector<double>>() != identity)
+        throw std::runtime_error("wheel scale/alignment must be identity for converted C input");
+    for (const auto *key : {"T", "W"})
+        for (double v : vector3(s.at("extrinsics").at(key)))
+            if (v != 0) throw std::runtime_error("C input requires zero SDK T and W");
+    const double noise = s.at("noise_variance").get<double>();
+    if (!std::isfinite(noise) || noise <= 0) throw std::runtime_error("positive noise variance required");
+}
+
+void DebugWheelInput::record(Json event)
+{
+    if(event.value("event",std::string())=="wheel_native_rejected")++rejected_;
+    event["log_monotonic_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    event["session_id"] = session_;
+    event["sdk_api_success_samples"] = accepted_;
+    event["rejected_samples"] = rejected_;
+    event["result_scope"] = "host_SDK_call_return_only; no_device_fusion_ACK";
+    event["device_fusion_confirmed"] = false;
+    event["wheel_dependency_present"] = accepted_ > 0;
+    // Historical failed calls may still have affected the device; this label
+    // preserves the dependency provenance, never blocks subsequent samples.
+    event["wheel_dependency_suspect"] = sdk_failed_samples_ > 0;
+    event["sdk_api_failed_samples"] = sdk_failed_samples_;
+    event["last_sdk_call_failed"] = last_sdk_call_failed_;
+    event["sdk_failure_policy"] = "continue_with_next_new_sample";
+    event["config_loaded"]=config_loaded_;
+    event["sdk_input_generation"]=sdk_generation_;
+    event["input_source"]=synthetic_input_ ? "synthetic_test_fixture" : "measured_wheel_feedback";
+    event["last_sdk_success_ns"]=last_success_ns_;
+    event["wheel_input_paused"]=input_paused_;
+    event["zero_body_translation"]=zero_body_translation_;
+    event["wheel_input_policy_reason"]=input_policy_reason_;
+    event["wheel_input_paused_samples"]=paused_samples_;
+    std::lock_guard<std::mutex> lock(log_mutex_);
+    if(records_.size()>=4096) {logging_failed_=true;++dropped_logs_;return;}
+    records_.push_back(std::move(event));log_ready_.notify_one();
+}
+
+void DebugWheelInput::write_logs()
+{
+    const char *recording = std::getenv("RDK_MATCH_RECORDING");
+    const bool save_history = !recording || std::string(recording) != "0";
+    Json latest;
+    std::deque<std::uint64_t> success_times;
+    auto last_write=std::chrono::steady_clock::now()-std::chrono::seconds(1);
+    while(true) {
+        std::deque<Json> batch;
+        bool ending=false;
+        {
+            std::unique_lock<std::mutex> lock(log_mutex_);
+            log_ready_.wait_for(lock,std::chrono::milliseconds(50),[&]{return !records_.empty()||logging_stopping_;});
+            batch.swap(records_);
+            ending=batch.empty()&&logging_stopping_;
+        }
+        for(const auto &event:batch) {
+            const auto kind=event.value("event",std::string());
+            const bool sdk_success=kind=="wheel_sdk_result" && event.value("sdk_result",false);
+            if(save_history && (full_diagnostics_ || !sdk_success))log_<<event.dump()<<'\n';
+            latest=event;
+            if(kind=="wheel_sdk_session_prepared")success_times.clear();
+            if(sdk_success)
+                success_times.push_back(event["last_sdk_success_ns"].get<std::uint64_t>());
+        }
+        const auto now=std::chrono::steady_clock::now();
+        if(!log_)logging_failed_=true;
+        if(!latest.is_null() && (now-last_write>=std::chrono::milliseconds(100)||logging_stopping_)) {
+            const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+            while(!success_times.empty() && ns-success_times.front()>1000000000)success_times.pop_front();
+            latest["sdk_api_rate_hz"]=success_times.size(); // Actual calls in the trailing 1-second window.
+            latest["status_monotonic_ns"]=ns;
+            latest["logging_healthy"]=!logging_failed_;
+            latest["dropped_log_records"]=dropped_logs_.load();
+            latest["diagnostic_profile"]=full_diagnostics_ ? "full" : "summary";
+            const auto temp=status_path_+".tmp";
+            std::ofstream status(temp);status<<latest.dump()<<'\n';status.close();
+            if(!status||std::rename(temp.c_str(),status_path_.c_str())!=0)logging_failed_=true;
+            log_.flush();last_write=now;
+        }
+        if(ending)break;
+    }
+    if(dropped_logs_)log_<<Json({{"event","logging_incomplete"},{"dropped_records",dropped_logs_.load()}}).dump()<<'\n';
+    log_.flush();
+}
+
+void DebugWheelInput::configure(const rs2::pose_sensor &sensor, const std::string &path)
+{
+    std::ifstream file(path, std::ios::binary);
+    const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file), {}};
+    if (!file || bytes.empty() || bytes.size() >= 10000)
+        throw std::runtime_error("cannot read wheel input config or exceeds SDK calibration limit");
+    const auto config = Json::parse(bytes.begin(), bytes.end());
+    validate_config(config);
+    wheel_.reset(new rs2::wheel_odometer(sensor));
+    if (!*wheel_) throw std::runtime_error("SDK pose sensor has no wheel_odometer extension");
+    bool loaded = false;
+    try { loaded = wheel_->load_wheel_odometery_config(bytes); }
+    catch (const std::exception &e) {
+        record({{"event", "wheel_config_load"}, {"sdk_result", false}, {"error", e.what()}});
+        throw;
+    }
+    config_loaded_=loaded;
+    record({{"event", "wheel_config_load"}, {"before_pipeline_start", true},
+            {"sdk_result", loaded}, {"config", config}});
+    if (!loaded) throw std::runtime_error("SDK rejected wheel config; debug session not started");
+}
+
+bool DebugWheelInput::process(Json p, std::uint64_t now, const Send &send)
+{
+    const auto began = std::chrono::steady_clock::now();
+    std::string reason;
+    std::uint64_t packet_id = 0, start = 0, end = 0;
+    rs2_vector v{};
+    std::array<float,3> rotation_only{};
+    try {
+        const bool valid_source=synthetic_input_
+            ? (p.at("source")=="synthetic_test_fixture" && p.at("measurement_valid")==false &&
+               p.at("test_fixture_valid")==true && p.at("fixture_session_id")==session_ && p.at("mcu_epoch").is_null())
+            : (p.at("source")=="measured_wheel_feedback" && p.at("measurement_valid")==true);
+        if (p.at("schema") != 2 || p.at("session_id") != session_ ||
+            p.at("time_policy") != "received_feedback_no_age_gate_v1" ||
+            !valid_source || !p.at("capture_time_qualified").is_boolean())
+            throw std::runtime_error("invalid_session_or_source");
+        auto tick = [&](const char *name) {
+            const auto &j = p.at(name);
+            if (!j.is_number_integer() || j.get<double>() < 0) throw std::runtime_error("invalid_time_or_id");
+            return j.get<std::uint64_t>();
+        };
+        packet_id = tick("packet_id"); start = tick("alignment_start_ns"); end = tick("alignment_end_ns");
+        tick("receive_monotonic_ns"); tick("gyro_receive_ns");
+        const auto gs = tick("alignment_gyro_start_ns"), ge = tick("alignment_gyro_end_ns");
+        const auto clock=p.at("alignment_clock").get<std::string>();
+        if ((synthetic_input_ ? clock!="synthetic_host_clock" : (clock!="mcu_event" && clock!="host_monotonic_event")) ||
+            (have_packet_ && clock!=alignment_clock_) || start>=end || gs>start || ge<end)
+            throw std::runtime_error("invalid_alignment_interval");
+        // Unknown capture/drift bounds and sample age are diagnostic only.
+        // These ticks describe one source interval, not an SDK timestamp.
+        if (have_packet_ && (packet_id <= last_packet_ || start < last_end_))
+            throw std::runtime_error("duplicate_or_out_of_order");
+        const Json input_epoch=synthetic_input_ ? Json(session_) : p.at("mcu_epoch");
+        if (input_epoch.is_null()) throw std::runtime_error("unknown_epoch");
+        if (have_epoch_ && input_epoch != epoch_)
+            throw std::runtime_error("epoch_changed_new_sdk_session_required");
+        if (!have_epoch_) { epoch_ = input_epoch; have_epoch_ = true; }
+        alignment_clock_=clock;
+        const auto body = vector3(p.at("v_body_mps"));
+        const auto omega = vector3(p.at("omega_body_rad_s"));
+        const auto camera = vector3(p.at("v_camera_mps"));
+        const auto lever = vector3(p.at("lever_body_mps"));
+        if (std::hypot(body[0], body[1]) > 1.5 || std::abs(body[2]) > 1e-9 ||
+            std::abs(omega[0])+std::abs(omega[1]) > 1e-9 || std::abs(omega[2]) > 8.)
+            throw std::runtime_error("implausible_planar_velocity");
+        const std::array<double,3> expected_lever{-omega[2]*config_.camera_offset_left_m,
+                                                omega[2]*config_.camera_offset_forward_m, 0};
+        const auto &f = config_.camera_robot_forward_axis;
+        const auto &u = config_.camera_robot_up_axis;
+        const std::array<double,3> l{u[1]*f[2]-u[2]*f[1], u[2]*f[0]-u[0]*f[2], u[0]*f[1]-u[1]*f[0]};
+        for (int i = 0; i < 3; ++i) {
+            rotation_only[i] = float(f[i]*expected_lever[0] + l[i]*expected_lever[1]);
+            const double expected = f[i]*(body[0]+expected_lever[0])+l[i]*(body[1]+expected_lever[1]);
+            if (std::abs(camera[i]-expected) > 1e-6 || std::abs(lever[i]-expected_lever[i]) > 1e-6)
+                throw std::runtime_error("mount_conversion_mismatch");
+        }
+        if (next_frame_ > 0xffffffffULL) throw std::runtime_error("frame_sequence_exhausted_new_session_required");
+        v = {float(camera[0]), float(camera[1]), float(camera[2])};
+    } catch (const std::exception &e) { reason = e.what(); }
+    if (!reason.empty()) {
+        ++rejected_;
+        record({{"event", "wheel_input_rejected"}, {"reason", reason}, {"sdk_call_attempted", false},
+                {"timestamp_monotonic_ns", now}, {"packet", p}});
+        return false;
+    }
+    last_packet_ = packet_id; last_end_ = end; have_packet_ = true;
+    const rs2_vector measured_velocity=v;
+    if (zero_body_translation_) {
+        // Chassis translation is zero at contact; the offset camera still moves when turning.
+        v = {rotation_only[0],rotation_only[1],rotation_only[2]};
+    }
+    if(experiment_enabled_)update_experiment(now);
+    if(input_paused_) {
+        ++paused_samples_;
+        Json event{{"event","wheel_input_sample_paused"},{"sdk_call_attempted",false},{"reason",input_policy_reason_},{"packet",p}};
+        if(experiment_enabled_)event["experiment"]=experiment_context();
+        record(std::move(event));
+        return false; // Consumed once, no fake zero, no replay on resume.
+    }
+    if(experiment_active_) {
+        if(experiment_mode_=="drop" || (experiment_mode_=="hold_last_camera"&&!experiment_have_hold_)) {
+            record({{"event","wheel_experiment_sample_skipped"},{"sdk_call_attempted",false},
+                {"reason",experiment_mode_=="drop"?"explicit_experiment_drop":"no_previous_submitted_velocity"},
+                {"timestamp_monotonic_ns",now},{"experiment",experiment_context()},{"packet",p}});
+            return false;
+        }
+        if(experiment_mode_=="zero_camera")v={0.f,0.f,0.f};
+        else if(experiment_mode_=="hold_last_camera")v=experiment_hold_;
+        else if(experiment_mode_=="bias_body") {
+            const auto &f=config_.camera_robot_forward_axis;const auto &u=config_.camera_robot_up_axis;
+            const std::array<double,3> left{u[1]*f[2]-u[2]*f[1],u[2]*f[0]-u[0]*f[2],u[0]*f[1]-u[1]*f[0]};
+            const auto original=vector3(p.at("v_camera_mps"));
+            std::array<float,3> changed;
+            for(int i=0;i<3;++i)changed[i]=static_cast<float>(original[i]+
+                f[i]*experiment_bias_[0]+left[i]*experiment_bias_[1]+u[i]*experiment_bias_[2]);
+            if(!std::isfinite(changed[0])||!std::isfinite(changed[1])||!std::isfinite(changed[2])) {
+                record({{"event","wheel_experiment_sample_skipped"},{"sdk_call_attempted",false},
+                    {"reason","nonfinite_experiment_velocity"},{"timestamp_monotonic_ns",now},
+                    {"experiment",experiment_context()},{"packet",p}});
+                return false;
+            }
+            v={changed[0],changed[1],changed[2]};
+        }
+    }
+    const auto frame = std::uint32_t(next_frame_++); // SDK sequence, never a timestamp.
+    if(full_diagnostics_) {
+        Json attempt{{"event", "wheel_sdk_attempt"}, {"frame_num", frame}, {"sensor_id", 0},
+            {"timestamp_monotonic_ns", now},
+            {"age_from_wheel_receive_ns",static_cast<std::int64_t>(now)-p.at("receive_monotonic_ns").get<std::int64_t>()},
+            {"time_policy","received_feedback_no_age_gate_v1"},{"packet", p}};
+        if(experiment_enabled_) {
+            attempt["experiment"]=experiment_context();
+            attempt["sdk_velocity_camera_mps"]={v.x,v.y,v.z};
+            attempt["measured_velocity_camera_mps"]={measured_velocity.x,measured_velocity.y,measured_velocity.z};
+            attempt["sdk_velocity_source"]=experiment_active_&&experiment_mode_!="normal"?"explicit_test_transform":"measured_wheel_feedback";
+        }
+        record(std::move(attempt));
+    }
+    // record() may drop under disk pressure. Preserve the real SDK call;
+    // logging_healthy/dropped_log_records remain visible in the status output.
+    bool ok = false;
+    std::string error;
+    if(experiment_enabled_) {
+        have_last_submitted_=true;last_submitted_=v;last_submitted_frame_=frame;
+    }
+    const auto call_start = std::chrono::steady_clock::now();
+    try { ok = send(frame, v); } catch (const std::exception &e) { error = e.what(); }
+    const auto call_end=experiment_enabled_?std::chrono::steady_clock::now():call_start;
+    if(experiment_enabled_)last_submitted_result_=ok;
+    // Consume every attempted sample/frame exactly once, including failures.
+    // A failed API call is not a permanent SDK/session failure: the next new
+    // measured sample is attempted normally, without replay or synthetic zero.
+    last_sdk_call_failed_ = !ok;
+    if (ok) {++accepted_;last_success_ns_=now+std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-began).count();}
+    else { ++rejected_; ++sdk_failed_samples_; }
+    Json result{{"event", "wheel_sdk_result"}, {"frame_num", frame}, {"sdk_result", ok},
+            {"packet_id", packet_id}, {"error", error},
+            {"timestamp_monotonic_ns", now}, {"accuracy_verified", false}};
+    if(zero_body_translation_) {
+        result["sdk_velocity_source"]="delivery_contact_rotation_only";
+        result["sdk_velocity_camera_mps"]={v.x,v.y,v.z};
+    }
+    if(full_diagnostics_ || !ok)
+        result["sdk_duration_ns"]=std::chrono::duration_cast<std::chrono::nanoseconds>(
+            (experiment_enabled_?call_end:std::chrono::steady_clock::now())-call_start).count();
+    if(!full_diagnostics_ && !ok)result["packet"]=std::move(p); // No separate attempt row in summary mode.
+    if(experiment_enabled_) {
+        result["experiment"]=experiment_context();
+        result["sdk_velocity_camera_mps"]={v.x,v.y,v.z};
+        result["measured_velocity_camera_mps"]={measured_velocity.x,measured_velocity.y,measured_velocity.z};
+        result["sdk_velocity_source"]=experiment_active_&&experiment_mode_!="normal"?"explicit_test_transform":"measured_wheel_feedback";
+        result["call_start_monotonic_ns"]=std::chrono::duration_cast<std::chrono::nanoseconds>(call_start.time_since_epoch()).count();
+        result["call_end_monotonic_ns"]=std::chrono::duration_cast<std::chrono::nanoseconds>(call_end.time_since_epoch()).count();
+    }
+    record(std::move(result));
+    return ok;
+}
+
+void DebugWheelInput::poll(std::uint64_t now)
+{
+    // Bounded latest-value ingress. Do not replay a socket backlog into SDK.
+    Json latest;
+    unsigned superseded = 0;
+    for (int count = 0; count < 64; ++count) {
+        char bytes[16384];
+        const auto size = ::recv(socket_, bytes, sizeof(bytes), MSG_DONTWAIT | MSG_TRUNC);
+        if (size < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            throw std::runtime_error("debug wheel IPC receive failed");
+        }
+        Json p;
+        try {
+            if (size >= static_cast<ssize_t>(sizeof(bytes))) throw std::runtime_error("oversized wheel packet");
+            p = Json::parse(bytes, bytes+size);
+        } catch (const std::exception &e) {
+            ++rejected_;
+            record({{"event", "wheel_input_malformed"}, {"error", e.what()}});
+            continue;
+        }
+        if (!latest.is_null()) ++superseded;
+        latest = std::move(p);
+    }
+    if (latest.is_null()) return;
+    if (superseded) record({{"event","wheel_requests_coalesced"}, {"samples",superseded},
+        {"sdk_call_attempted",false}, {"kept_packet_id",latest.value("packet_id",Json())}});
+    const auto current = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    process(std::move(latest), static_cast<std::uint64_t>(current), [&](std::uint32_t frame, const rs2_vector &velocity) {
+        return wheel_->send_wheel_odometry(0, frame, velocity);
+    });
+}
+} // namespace omni

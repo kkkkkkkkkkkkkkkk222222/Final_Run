@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+if [[ -z "${desktop_dir}" ]]; then
+    desktop_dir="/home/sunrise/桌面"
+fi
+
+mkdir -p "${desktop_dir}"
+entries=(
+    "competition_rescue/complete-rescue.desktop:决赛-正式比赛.desktop"
+    "vision/calibrate_range_view.desktop:决赛-物资测距标定.desktop"
+    "competition_rescue/capture-roi-editor.desktop:决赛-识别区域绘制.desktop"
+)
+for entry in "${entries[@]}"; do
+    source_name="${entry%%:*}"
+    target_name="${entry#*:}"
+    install -m 0755 "${script_dir}/../${source_name}" "${desktop_dir}/${target_name}"
+    if command -v gio >/dev/null 2>&1; then
+        gio set "${desktop_dir}/${target_name}" metadata::trusted true >/dev/null 2>&1 || true
+    fi
+    echo "桌面快捷方式已安装：${desktop_dir}/${target_name}"
+done

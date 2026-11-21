@@ -1,0 +1,17 @@
+{
+  "camera_pitch_cdeg": 14000,
+  "image_size": [
+    1280,
+    1024
+  ],
+  "classes": {
+    "green_supply": [
+      217,
+      364
+    ],
+    "injured_orange": [
+      233,
+      373
+    ]
+  }
+}

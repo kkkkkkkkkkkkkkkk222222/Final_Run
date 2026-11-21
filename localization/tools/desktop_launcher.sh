@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+export DISPLAY="${DISPLAY:-:0}"
+cd "${project_root}"
+exec python3 "${project_root}/localization/tools/t265_f407_motion_map.py" --fullscreen "$@"

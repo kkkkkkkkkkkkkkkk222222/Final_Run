@@ -1,0 +1,2694 @@
+#include <librealsense2/rs.hpp>
+
+#include "config.hpp"
+#include "f407_protocol.hpp"
+#include "f405_telemetry.hpp"
+#include "fusion.hpp"
+#include "serial_port.hpp"
+#include "operator_uart.hpp"
+#include "debug_wheel_input.hpp"
+#include "test_uart_relay.hpp"
+#include "dynamic_pose_relay.hpp"
+#include "debug_fisheye_evidence.hpp"
+#include "async_csv_log.hpp"
+#include "raw_imu_csv.hpp"
+#include "async_latest_file.hpp"
+#include "priority_inheritance_mutex.hpp"
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <iterator>
+#include <memory>
+#include <mutex>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+
+volatile std::sig_atomic_t g_stop = 0;
+volatile std::sig_atomic_t g_sdk_retry = 0;
+
+void signal_handler(int)
+{
+    g_stop = 1;
+}
+
+void sdk_retry_signal_handler(int) { g_sdk_retry = 1; }
+
+struct Options {
+    std::string config_path = "config/localization.example.conf";
+    std::string uart_path;
+    std::string serial;
+    std::string output_path = "localization_result.json";
+    std::string csv_path;
+    std::string raw_pose_csv_path;
+    std::string raw_imu_csv_path;
+    std::string command_file_path;
+    std::string stm_status_output_path;
+    std::string t265_map_path;
+    std::string events_path;
+    std::string debug_wheel_socket, debug_wheel_config, debug_wheel_log, debug_wheel_session;
+    std::string debug_test_session,debug_fisheye_output,debug_fisheye_request;
+    std::string debug_pose_socket;
+    std::string wheel_feedback_socket, wheel_feedback_requests;
+    std::string motion_feedback_socket;
+    std::string test_uart_socket;
+    std::string dynamic_pose_socket, dynamic_pose_output;
+    std::string operator_socket;
+    bool operator_uart_only = false;
+    int baud = 115200;
+    double output_rate_hz = 20.0;
+    double tx_rate_hz = 0.0;
+    double duration_sec = 0.0;
+    double relocalization_timeout_sec = 30.0;
+    double frame_timeout_sec = 5.0;
+    bool debug_sdk = false;
+    bool ignore_encoders = false;
+    bool t265_only_output = false;
+    int pose_jumping_override = -1; // -1 leaves the SDK setting unchanged.
+    int mapping_override = -1;
+    int relocalization_override = -1;
+    int map_preservation_override = -1;
+    bool debug_fresh_session = false;
+    bool debug_wheel_synthetic = false;
+    bool debug_wheel_experiment = false;
+    bool experimental_robust_localization = false;
+};
+
+struct T265Unavailable : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+struct TimedEncoderFrame {
+    omni::EncoderFrame frame;
+    std::chrono::steady_clock::time_point received;
+};
+
+struct WheelDebugState {
+    bool have_latest_frame = false;
+    omni::EncoderFrame latest_frame{};
+    std::uint64_t latest_frame_ns = 0;
+    std::uint64_t latest_update_ns = 0;
+    std::uint64_t latest_accepted_update_ns = 0;
+    bool updated_this_pose = false;
+    bool accepted_this_pose = false;
+    bool rejected_this_pose = false;
+    bool have_latest_increment = false;
+    bool latest_increment_accepted = false;
+    omni::WheelIncrement latest_increment{};
+    double latest_wheel_kinematic_yaw_rad = 0.0;
+    double latest_gyro_yaw_delta_rad = 0.0;
+    double latest_t265_yaw_at_increment_rad = 0.0;
+    bool latest_increment_yaw_synchronized = false;
+    bool latest_increment_uses_gyro = false;
+    std::uint64_t odom_updates = 0;
+};
+
+class EncoderQueue {
+public:
+    void push(const omni::EncoderFrame &frame)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (frames_.size() >= 512) {
+            frames_.pop_front();
+            ++dropped_;
+        }
+        frames_.push_back({frame, std::chrono::steady_clock::now()});
+    }
+
+    std::deque<TimedEncoderFrame> drain()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::deque<TimedEncoderFrame> result;
+        result.swap(frames_);
+        return result;
+    }
+
+    std::uint64_t dropped() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return dropped_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::deque<TimedEncoderFrame> frames_;
+    std::uint64_t dropped_ = 0;
+};
+
+class DebugPoseQueue {
+public:
+    struct Sample {rs2::pose_frame frame{rs2::frame{}};std::chrono::steady_clock::time_point received;};
+    void push(rs2::pose_frame frame) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(queue_.size()>=256) {queue_.pop_front();++dropped_;}
+        queue_.push_back({std::move(frame),std::chrono::steady_clock::now()});
+    }
+    bool pop(Sample &sample) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(queue_.empty())return false;
+        sample=std::move(queue_.front());queue_.pop_front();return true;
+    }
+    std::atomic<std::uint64_t> dropped_{0};
+private:
+    std::mutex mutex_;std::deque<Sample> queue_;
+};
+
+struct DebugPipelineGuard {
+    rs2::pipeline &pipeline;
+    omni::DebugWheelInput *wheel;
+    bool stopped=false;
+    void stop() {
+        if(stopped)return;
+        stopped=true;
+        if(wheel)wheel->stop();
+        try {pipeline.stop();}catch(const std::exception &) {}
+    }
+    ~DebugPipelineGuard() {stop();}
+};
+
+struct UartThreadsGuard {
+    std::atomic<bool> &running;
+    std::thread &uart,&relay;
+    std::unique_ptr<omni::TestUartRelay> &test;
+    ~UartThreadsGuard() {
+        test.reset();running=false;
+        if(uart.joinable())uart.join();
+        if(relay.joinable())relay.join();
+    }
+};
+
+class DebugPosePublisher {
+public:
+    explicit DebugPosePublisher(const std::string &address) {
+        if(address.empty())return;
+        if(address[0]!='@' || address.size()>=sizeof(address_.sun_path))
+            throw std::invalid_argument("debug pose output requires short @abstract socket");
+        address_.sun_family=AF_UNIX;
+        std::memcpy(address_.sun_path+1,address.data()+1,address.size()-1);
+        size_=offsetof(sockaddr_un,sun_path)+address.size();
+        fd_=::socket(AF_UNIX,SOCK_SEQPACKET|SOCK_NONBLOCK|SOCK_CLOEXEC,0);
+        if(fd_<0)throw std::runtime_error("cannot create debug pose publisher");
+        const int budget=262144;
+        ::setsockopt(fd_,SOL_SOCKET,SO_SNDBUF,&budget,sizeof(budget));
+        if(::connect(fd_,reinterpret_cast<const sockaddr *>(&address_),size_)!=0){
+            ::close(fd_);fd_=-1;throw std::runtime_error("debug pose receiver unavailable");
+        }
+    }
+    ~DebugPosePublisher(){if(fd_>=0)::close(fd_);}
+    void send(const omni::DebugWheelInput::Json &value) {
+        if(fd_<0)return;
+        auto packet=value;packet["ipc_drops"]=drops_;
+        const auto bytes=packet.dump();
+        if(::send(fd_,bytes.data(),bytes.size(),MSG_DONTWAIT|MSG_NOSIGNAL)!=static_cast<ssize_t>(bytes.size()))++drops_;
+    }
+private:
+    int fd_=-1;sockaddr_un address_{};socklen_t size_=0;std::uint64_t drops_=0;
+};
+
+double parse_nonnegative(const std::string &text, const char *name)
+{
+    try {
+        std::size_t used = 0;
+        const double result = std::stod(text, &used);
+        if (used != text.size() || result < 0.0) throw std::invalid_argument("range");
+        return result;
+    } catch (const std::exception &) {
+        throw std::invalid_argument(std::string("invalid value for ") + name + ": " + text);
+    }
+}
+
+int parse_positive_int(const std::string &text, const char *name)
+{
+    const double value = parse_nonnegative(text, name);
+    const int result = static_cast<int>(value);
+    if (result <= 0 || static_cast<double>(result) != value) {
+        throw std::invalid_argument(std::string("invalid value for ") + name + ": " + text);
+    }
+    return result;
+}
+
+void usage(const char *program)
+{
+    std::cout
+        << "T265-primary + three-wheel omni encoder localization\n\n"
+        << "Usage: " << program << " [options]\n"
+        << "  --config FILE       localization config\n"
+        << "  --uart DEVICE       F407 UART, e.g. /dev/ttyS3 (optional)\n"
+        << "  --baud BAUD         UART baud, default 115200\n"
+        << "  --operator-socket @NAME  one-shot operator beep/manual ABORT IPC\n"
+        << "  --operator-uart-only     standby UART owner, no T265/CONFIG/task startup\n"
+        << "  --serial SERIAL     select T265 serial\n"
+        << "  --output FILE       atomic JSON output\n"
+        << "  --csv FILE          full-rate T265/odometry diagnostic CSV log\n"
+        << "  --raw-pose-csv FILE  retain all received SDK Pose samples, including confidence=0\n"
+        << "  --raw-imu-csv FILE   record raw T265 gyro/accel in the same SDK session (no WIO)\n"
+        << "  --command-file FILE relay new valid TYPE 0x11/0x12/0x18 frames\n"
+        << "  --stm-status FILE   atomic TYPE 0x17 status JSON output\n"
+        << "  --dynamic-pose-socket @NAME  receive desktop dynamic localization result\n"
+        << "  --dynamic-pose-output FILE  formal JSON matching dynamic 0x16 (raw --output separate)\n"
+        << "  --t265-map FILE     import a T265 localization map before start\n"
+        << "  --relocalization-timeout SEC  map startup timeout (default 30)\n"
+        << "  --t265-frame-timeout SEC  first Pose-frame timeout in map mode (default 5)\n"
+        << "  --events FILE       append localization and relocalization events\n"
+        << "  --rate HZ           stdout/JSON rate, default 20\n"
+        << "  --tx-rate HZ        legacy fused-pose UART rate (default 0/off)\n"
+        << "  --ignore-encoders   keep UART/task active but do not fuse wheel odometry\n"
+        << "  --t265-only-output  output T265 directly, retaining wheel reference logs\n"
+        << "  --enable-pose-jumping   enable T265 pose jumps and log debug continuity events\n"
+        << "  --disable-pose-jumping  disable T265 pose jumps and log debug continuity events\n"
+        << "  --enable-mapping       enable T265 internal mapping\n"
+        << "  --disable-mapping      disable T265 internal mapping\n"
+        << "  --disable-relocalization  disable matching back to previously mapped poses\n"
+        << "  --disable-map-preservation  do not keep internal map across pipeline restarts\n"
+        << "  --duration SEC      0 runs until Ctrl-C\n"
+        << "  --debug-sdk         detailed librealsense log\n"
+        << "  --experimental-robust-localization  retain UART without T265; retry once per attach or SIGUSR1 (test only)\n"
+        << "  --debug-wheel-socket @NAME  opt-in measured C-frame velocity IPC (test only)\n"
+        << "  --debug-wheel-config FILE  identity C-frame SDK wheel configuration\n"
+        << "  --debug-wheel-log FILE     complete SDK wheel attempt/result log\n"
+        << "  --debug-wheel-session ID   independent SDK test session identity\n"
+        << "  --debug-wheel-experiment   explicit real-feedback input fault experiment (test UART only)\n"
+        << "  --debug-fresh-session      disable map preservation for debug A/B\n"
+        << "  --debug-test-session ID    record actual SDK process/session identity\n"
+        << "  --wheel-feedback-socket @NAME  formal UART measured-feedback tap\n"
+        << "  --motion-feedback-socket @NAME  independent passive measured-feedback lane to localization worker\n"
+        << "  --wheel-feedback-requests FILE  one identity + one stream request from existing codec\n"
+        << "  --test-uart-socket @NAME  test transport; C++ owns UART, Python retains action pairing\n"
+        << "  --debug-fisheye-output DIR --debug-fisheye-request FILE  opt-in bounded same-pipeline evidence\n"
+        << "  -h, --help          show help\n";
+}
+
+Options parse_options(int argc, char **argv)
+{
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument(argv[i]);
+        auto value = [&](const char *name) -> std::string {
+            if (++i >= argc) throw std::invalid_argument(std::string("missing value for ") + name);
+            return argv[i];
+        };
+        if (argument == "-h" || argument == "--help") {
+            usage(argv[0]);
+            std::exit(EXIT_SUCCESS);
+        } else if (argument == "--config") {
+            options.config_path = value("--config");
+        } else if (argument == "--uart") {
+            options.uart_path = value("--uart");
+        } else if (argument == "--baud") {
+            options.baud = parse_positive_int(value("--baud"), "--baud");
+        } else if (argument == "--operator-socket") {
+            options.operator_socket = value("--operator-socket");
+        } else if (argument == "--operator-uart-only") {
+            options.operator_uart_only = true;
+        } else if (argument == "--serial") {
+            options.serial = value("--serial");
+        } else if (argument == "--output") {
+            options.output_path = value("--output");
+        } else if (argument == "--csv") {
+            options.csv_path = value("--csv");
+        } else if (argument == "--raw-pose-csv") {
+            options.raw_pose_csv_path = value("--raw-pose-csv");
+        } else if (argument == "--raw-imu-csv") {
+            options.raw_imu_csv_path = value("--raw-imu-csv");
+        } else if (argument == "--command-file") {
+            options.command_file_path = value("--command-file");
+        } else if (argument == "--stm-status") {
+            options.stm_status_output_path = value("--stm-status");
+        } else if (argument == "--t265-map") {
+            options.t265_map_path = value("--t265-map");
+        } else if (argument == "--events") {
+            options.events_path = value("--events");
+        } else if (argument == "--rate") {
+            options.output_rate_hz = parse_nonnegative(value("--rate"), "--rate");
+        } else if (argument == "--tx-rate") {
+            options.tx_rate_hz = parse_nonnegative(value("--tx-rate"), "--tx-rate");
+        } else if (argument == "--duration") {
+            options.duration_sec = parse_nonnegative(value("--duration"), "--duration");
+        } else if (argument == "--relocalization-timeout") {
+            options.relocalization_timeout_sec = parse_nonnegative(
+                value("--relocalization-timeout"), "--relocalization-timeout");
+        } else if (argument == "--t265-frame-timeout") {
+            options.frame_timeout_sec = parse_nonnegative(
+                value("--t265-frame-timeout"), "--t265-frame-timeout");
+        } else if (argument == "--debug-sdk") {
+            options.debug_sdk = true;
+        } else if (argument == "--experimental-robust-localization") {
+            options.experimental_robust_localization = true;
+        } else if (argument == "--debug-wheel-socket") {
+            options.debug_wheel_socket = value("--debug-wheel-socket");
+        } else if (argument == "--debug-wheel-config") {
+            options.debug_wheel_config = value("--debug-wheel-config");
+        } else if (argument == "--debug-wheel-log") {
+            options.debug_wheel_log = value("--debug-wheel-log");
+        } else if (argument == "--debug-wheel-session") {
+            options.debug_wheel_session = value("--debug-wheel-session");
+        } else if (argument == "--debug-wheel-synthetic") {
+            options.debug_wheel_synthetic = true;
+        } else if (argument == "--debug-wheel-experiment") {
+            options.debug_wheel_experiment = true;
+        } else if (argument == "--debug-fresh-session") {
+            options.debug_fresh_session = true;
+        } else if (argument == "--debug-test-session") {
+            options.debug_test_session=value("--debug-test-session");
+        } else if (argument == "--debug-pose-socket") {
+            options.debug_pose_socket=value("--debug-pose-socket");
+        } else if (argument == "--debug-fisheye-output") {
+            options.debug_fisheye_output=value("--debug-fisheye-output");
+        } else if (argument == "--debug-fisheye-request") {
+            options.debug_fisheye_request=value("--debug-fisheye-request");
+        } else if (argument == "--dynamic-pose-socket") {
+            options.dynamic_pose_socket = value("--dynamic-pose-socket");
+        } else if (argument == "--dynamic-pose-output") {
+            options.dynamic_pose_output = value("--dynamic-pose-output");
+        } else if (argument == "--wheel-feedback-socket") {
+            options.wheel_feedback_socket = value("--wheel-feedback-socket");
+        } else if (argument == "--motion-feedback-socket") {
+            options.motion_feedback_socket = value("--motion-feedback-socket");
+        } else if (argument == "--wheel-feedback-requests") {
+            options.wheel_feedback_requests = value("--wheel-feedback-requests");
+        } else if (argument == "--test-uart-socket") {
+            options.test_uart_socket = value("--test-uart-socket");
+        } else if (argument == "--ignore-encoders") {
+            options.ignore_encoders = true;
+        } else if (argument == "--t265-only-output") {
+            options.t265_only_output = true;
+        } else if (argument == "--enable-pose-jumping") {
+            options.pose_jumping_override = 1;
+        } else if (argument == "--disable-pose-jumping") {
+            options.pose_jumping_override = 0;
+        } else if (argument == "--enable-mapping") {
+            options.mapping_override = 1;
+        } else if (argument == "--disable-mapping") {
+            options.mapping_override = 0;
+        } else if (argument == "--disable-relocalization") {
+            options.relocalization_override = 0;
+        } else if (argument == "--disable-map-preservation") {
+            options.map_preservation_override = 0;
+        } else {
+            throw std::invalid_argument("unknown option: " + argument);
+        }
+    }
+    if ((!options.operator_socket.empty() && options.uart_path.empty()) ||
+        (options.operator_uart_only && (options.operator_socket.empty() ||
+         !options.command_file_path.empty() || !options.dynamic_pose_socket.empty() ||
+         !options.wheel_feedback_socket.empty() || !options.motion_feedback_socket.empty() || !options.debug_wheel_socket.empty() ||
+         options.tx_rate_hz != 0)))
+        throw std::invalid_argument("operator UART-only needs UART/socket and no localization/task streams");
+    if (!options.motion_feedback_socket.empty() &&
+        (options.uart_path.empty() || options.debug_wheel_synthetic))
+        throw std::invalid_argument("motion feedback tap needs the existing measured UART owner");
+    if (options.dynamic_pose_socket.empty() != options.dynamic_pose_output.empty() ||
+        (!options.dynamic_pose_socket.empty() && (options.dynamic_pose_output == options.output_path ||
+          options.debug_pose_socket.empty() || options.wheel_feedback_socket.empty())))
+        throw std::invalid_argument("dynamic pose requires separate raw output, Pose IPC and formal wheel owner");
+    const bool wheel = !options.debug_wheel_socket.empty();
+    const bool competition_wheel = !options.wheel_feedback_socket.empty();
+    const bool test_uart = !options.test_uart_socket.empty();
+    if(test_uart && (options.uart_path.empty() || competition_wheel || options.debug_wheel_synthetic ||
+        options.debug_test_session.empty() || !options.command_file_path.empty() || options.tx_rate_hz!=0))
+        throw std::invalid_argument("test UART transport requires one identified debug session and no formal command/pose TX");
+    if (competition_wheel != !options.wheel_feedback_requests.empty() ||
+        (competition_wheel && (!wheel || options.uart_path.empty() || options.debug_wheel_synthetic)))
+        throw std::invalid_argument("competition wheel feedback needs the C++ UART, measured SDK input and startup requests");
+    if(!options.debug_pose_socket.empty() && (!options.debug_fresh_session || options.debug_test_session.empty()))
+        throw std::invalid_argument("pose IPC is limited to identified debug sessions");
+    if(options.debug_wheel_synthetic && (!wheel || !options.debug_fresh_session || options.debug_test_session.empty()))
+        throw std::invalid_argument("synthetic input requires an explicitly identified isolated debug SDK session");
+    if(options.debug_wheel_experiment && (!wheel || !test_uart || competition_wheel ||
+        options.debug_wheel_synthetic || !options.debug_fresh_session || options.debug_test_session.empty() ||
+        options.debug_wheel_session!=options.debug_test_session))
+        throw std::invalid_argument("wheel experiment requires the same identified fresh test-UART SDK session; formal/synthetic paths forbidden");
+    if (wheel != !options.debug_wheel_config.empty() || wheel != !options.debug_wheel_log.empty() ||
+        wheel != !options.debug_wheel_session.empty())
+        throw std::invalid_argument("debug wheel input requires socket/config/log/session together");
+    if (wheel && ((!competition_wheel && !test_uart && (!options.uart_path.empty() || options.tx_rate_hz != 0)) ||
+                  !options.ignore_encoders || !options.t265_only_output || options.pose_jumping_override < 0))
+        throw std::invalid_argument("wheel input needs direct Pose, ignore-encoders, explicit pose-jumping setting; internal UART only with competition feedback tap");
+    if (options.debug_fresh_session && (!options.t265_only_output || !options.ignore_encoders ||
+                                       (!competition_wheel && !test_uart && !options.uart_path.empty()) || options.pose_jumping_override < 0 ||
+                                       !options.t265_map_path.empty()))
+        throw std::invalid_argument("fresh debug A/B requires direct Pose, external UART, explicit pose-jumping setting, no imported map");
+    if(options.debug_fisheye_output.empty()!=options.debug_fisheye_request.empty())
+        throw std::invalid_argument("fisheye evidence requires both output and trigger paths");
+    if(!options.debug_fisheye_output.empty() && (!options.debug_fresh_session || options.debug_test_session.empty()))
+        throw std::invalid_argument("fisheye evidence is confined to an identified debug session");
+    if (!options.t265_map_path.empty() && options.relocalization_override == 0)
+        throw std::invalid_argument("imported-map startup requires relocalization; omit the imported map for continuous local mapping");
+    return options;
+}
+
+int run_operator_standby(const Options &options)
+{
+    // Executed before constructing rs2::context: idle selection works without
+    // opening the T265, loading its firmware, or sending autonomous CONFIG.
+    omni::SerialPort uart(options.uart_path, options.baud);
+    uart.open_port();
+    omni::OperatorUartRelay relay(options.operator_socket,
+        [&](const std::array<std::uint8_t, omni::kFrameSize> &frame) {
+            return uart.write_all(frame.data(), frame.size(), 50);
+        });
+    std::cerr << "[OPERATOR] standby UART owner " << options.uart_path << " @ "
+              << options.baud << "; no SDK, no autonomous configuration\n";
+    const auto started = std::chrono::steady_clock::now();
+    std::uint8_t buffer[512];
+    while (!g_stop) {
+        // Drain the existing receive stream; standby neither subscribes nor
+        // interprets sensor telemetry and does not query firmware repeatedly.
+        if (uart.read_some(buffer, sizeof(buffer), 50) < 0)
+            throw std::runtime_error("operator standby UART read failed");
+        if (options.duration_sec > 0 && std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count() >= options.duration_sec) break;
+    }
+    return EXIT_SUCCESS;
+}
+
+std::string device_info(const rs2::device &device, rs2_camera_info field)
+{
+    try {
+        return device.supports(field) ? device.get_info(field) : "-";
+    } catch (const rs2::error &) {
+        return "-";
+    }
+}
+
+std::uint64_t monotonic_ns()
+{
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+std::uint64_t steady_time_ns(std::chrono::steady_clock::time_point time)
+{
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        time.time_since_epoch()).count());
+}
+
+double steady_time_s(std::chrono::steady_clock::time_point time)
+{
+    return std::chrono::duration<double>(time.time_since_epoch()).count();
+}
+
+std::string json_escape(const std::string &value)
+{
+    std::ostringstream output;
+    for (const unsigned char character : value) {
+        switch (character) {
+            case '\\': output << "\\\\"; break;
+            case '"': output << "\\\""; break;
+            case '\n': output << "\\n"; break;
+            case '\r': output << "\\r"; break;
+            case '\t': output << "\\t"; break;
+            default:
+                if (character < 0x20u) {
+                    output << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                           << static_cast<int>(character) << std::dec << std::setfill(' ');
+                } else {
+                    output << static_cast<char>(character);
+                }
+        }
+    }
+    return output.str();
+}
+
+std::vector<std::uint8_t> read_binary_file(const std::string &path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("cannot open T265 localization map: " + path);
+    file.seekg(0, std::ios::end);
+    const std::streamoff size = file.tellg();
+    if (size <= 0 || size > static_cast<std::streamoff>(128u * 1024u * 1024u)) {
+        throw std::runtime_error("T265 localization map is empty or larger than 128 MiB: " + path);
+    }
+    file.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    file.read(reinterpret_cast<char *>(bytes.data()), size);
+    if (!file) throw std::runtime_error("cannot read T265 localization map: " + path);
+    return bytes;
+}
+
+struct T265MapStatus {
+    bool enabled = false;
+    bool imported = false;
+    bool relocalized = false;
+    bool startup_ready = false;
+    bool timeout = false;
+    bool frame_timeout = false;
+    std::uint64_t event_count = 0;
+    std::uint64_t pose_frame_count = 0;
+    double relocalization_wait_ms = -1.0;
+    double first_pose_wait_ms = -1.0;
+    double last_pose_age_ms = -1.0;
+    std::string path;
+    std::string error;
+};
+
+omni::Pose2d configured_start_pose(const omni::LocalizationConfig &config)
+{
+    const bool right = config.start_zone == 2 || config.start_zone == 4;
+    const bool top = config.start_zone == 1 || config.start_zone == 2;
+    const double headings_deg[] = {0.0, 135.0, 45.0, 225.0, 315.0};
+    return {
+        right ? config.start_center_m : -config.start_center_m,
+        top ? config.start_center_m : -config.start_center_m,
+        omni::radians(std::fmod(
+            headings_deg[config.start_zone] + config.start_heading_offset_deg + 360.0, 360.0)),
+    };
+}
+
+void write_map_status_json(const std::string &path,
+                           const T265MapStatus &map,
+                           const omni::LocalizationConfig &config,
+                           std::uint8_t tracker_confidence = 0,
+                           std::uint8_t mapper_confidence = 0)
+{
+    if (path.empty()) return;
+    const std::string temporary = path + ".tmp";
+    std::ofstream file(temporary, std::ios::trunc);
+    if (!file) {
+        std::cerr << "[LOG WARNING] cannot write map status JSON: " << temporary << '\n';
+        return;
+    }
+    const double translation_scale = config.t265_translation_scale_enabled
+        ? config.t265_translation_scale : 1.0;
+    const omni::Pose2d start_pose = configured_start_pose(config);
+    file << std::fixed << std::setprecision(9)
+         << "{\n"
+         << "  \"schema_version\": 1,\n"
+         << "  \"timestamp_monotonic_ns\": " << monotonic_ns() << ",\n"
+         << "  \"frame\": \"field\",\n"
+         << "  \"quality\": \"LOST\",\n"
+         << "  \"pose\": {\"x_m\": " << start_pose.x_m
+         << ", \"y_m\": " << start_pose.y_m
+         << ", \"yaw_rad\": " << start_pose.yaw_rad
+         << ", \"yaw_deg\": " << omni::degrees(start_pose.yaw_rad) << "},\n"
+         << "  \"t265\": {\"translation_scale\": " << translation_scale
+         << ", \"translation_scale_enabled\": "
+         << (config.t265_translation_scale_enabled ? "true" : "false")
+         << ", \"camera_offset_forward_m\": " << config.camera_offset_forward_m
+         << ", \"camera_offset_left_m\": " << config.camera_offset_left_m
+         << ", \"tracker_confidence\": " << static_cast<unsigned>(tracker_confidence)
+         << ", \"mapper_confidence\": " << static_cast<unsigned>(mapper_confidence)
+         << ", \"travel_from_start_m\": 0.0},\n"
+         << "  \"t265_map\": {\"enabled\": "
+         << (map.enabled ? "true" : "false")
+         << ", \"path\": \"" << json_escape(map.path)
+         << "\", \"imported\": " << (map.imported ? "true" : "false")
+         << ", \"relocalized\": " << (map.relocalized ? "true" : "false")
+         << ", \"startup_ready\": " << (map.startup_ready ? "true" : "false")
+         << ", \"timeout\": " << (map.timeout ? "true" : "false")
+         << ", \"frame_timeout\": " << (map.frame_timeout ? "true" : "false")
+         << ", \"event_count\": " << map.event_count
+         << ", \"pose_frame_count\": " << map.pose_frame_count
+         << ", \"relocalization_wait_ms\": " << map.relocalization_wait_ms
+         << ", \"first_pose_wait_ms\": " << map.first_pose_wait_ms
+         << ", \"last_pose_age_ms\": " << map.last_pose_age_ms
+         << ", \"error\": \"" << json_escape(map.error) << "\"}\n"
+         << "}\n";
+    file.close();
+    if (!file || std::rename(temporary.c_str(), path.c_str()) != 0) {
+        std::cerr << "[LOG WARNING] cannot replace map status JSON: " << path << '\n';
+    }
+}
+
+class EventLog {
+public:
+    explicit EventLog(const std::string &path) : output_(path, true) {}
+
+    void write(const std::string &event, const std::string &data = "{}")
+    {
+        if (!output_.enabled()) return;
+        std::ostringstream row;
+        row << "{\"timestamp_monotonic_ns\":" << monotonic_ns()
+                << ",\"event\":\"" << json_escape(event)
+                << "\",\"data\":" << (data.empty() ? "{}" : data) << "}\n";
+        output_.submit(row.str());
+    }
+
+    void close() { output_.close(); }
+    bool failed() const { return output_.failed(); }
+    std::uint64_t dropped() const { return output_.dropped(); }
+
+private:
+    omni::AsyncCsvLog output_;
+};
+
+double age_ms(std::uint64_t now_ns, std::uint64_t event_ns)
+{
+    if (event_ns == 0 || now_ns < event_ns) return -1.0;
+    return static_cast<double>(now_ns - event_ns) / 1000000.0;
+}
+
+struct RelayMissionSnapshot {
+    std::uint64_t tx_frames = 0;
+    bool have_last = false;
+    std::uint8_t last_command = 0;
+    std::uint8_t last_sequence = 0;
+    std::array<std::uint8_t, 8> last_payload{};
+    std::uint64_t last_tx_ns = 0;
+};
+
+const char *quality_name(std::uint8_t tracker_confidence,
+                         std::uint8_t mapper_confidence,
+                         bool t265_update_accepted)
+{
+    if (tracker_confidence >= 2 && mapper_confidence > 0 &&
+        t265_update_accepted) return "GOOD";
+    if (tracker_confidence >= 1) return "DEGRADED";
+    return "LOST";
+}
+
+std::string stm_status_json(std::uint64_t received_ns,
+                           const omni::StmStatusFrame &status,
+                           std::uint64_t relay_frames,
+                           std::uint64_t relay_errors,
+                           std::uint8_t relay_sequence,
+                           std::uint64_t relay_last_tx_ns,
+                           const RelayMissionSnapshot &mission)
+{
+    const double relay_age_ms = age_ms(received_ns, relay_last_tx_ns);
+    const double mission_age_ms = age_ms(received_ns, mission.last_tx_ns);
+    std::ostringstream file;
+    file << "{\n"
+         << "  \"schema_version\": 1,\n"
+         << "  \"timestamp_monotonic_ns\": " << received_ns << ",\n"
+         << "  \"sequence\": " << static_cast<unsigned>(status.sequence) << ",\n"
+         << "  \"flags\": " << static_cast<unsigned>(status.flags) << ",\n"
+         << "  \"mode\": " << static_cast<unsigned>(status.mode) << ",\n"
+         << "  \"camera_pitch_cdeg\": " << status.camera_pitch_cdeg << ",\n"
+         << "  \"acknowledged_sequence\": "
+         << static_cast<unsigned>(status.acknowledged_sequence) << ",\n"
+         << "  \"fault_code\": " << static_cast<unsigned>(status.fault_code) << ",\n"
+         << "  \"wall_yaw_tag\": " << status.wall_yaw_tag << ",\n"
+         << "  \"context_valid\": " << (status.context_valid ? "true" : "false") << ",\n"
+         << "  \"task_id\": " << status.task_id << ",\n"
+         << "  \"action_id\": " << status.action_id << ",\n"
+         << "  \"accepted_command\": " << static_cast<unsigned>(status.accepted_command) << ",\n"
+         << "  \"action_status\": " << static_cast<unsigned>(status.action_status) << ",\n"
+         << "  \"rejected_action_id\": " << status.rejected_action_id << ",\n"
+         << "  \"relay\": {\"tx_frames\": " << relay_frames
+         << ", \"tx_errors\": " << relay_errors
+         << ", \"last_sequence\": " << static_cast<unsigned>(relay_sequence)
+         << ", \"last_tx_age_ms\": " << std::fixed << std::setprecision(3)
+         << relay_age_ms
+         << ", \"mission_tx_frames\": " << mission.tx_frames
+         << ", \"last_mission_command\": ";
+    if (mission.have_last) {
+        file << static_cast<unsigned>(mission.last_command);
+    } else {
+        file << "null";
+    }
+    file << ", \"last_mission_sequence\": ";
+    if (mission.have_last) {
+        file << static_cast<unsigned>(mission.last_sequence);
+    } else {
+        file << "null";
+    }
+    file << ", \"last_mission_payload\": [";
+    for (std::size_t i = 0; i < mission.last_payload.size(); ++i) {
+        if (i != 0) file << ',';
+        file << static_cast<unsigned>(mission.last_payload[i]);
+    }
+    file << "]"
+         << ", \"last_mission_tx_monotonic_ns\": " << mission.last_tx_ns
+         << ", \"last_mission_tx_age_ms\": " << mission_age_ms << "}\n"
+         << "}\n";
+    return file.str();
+}
+
+bool read_relay_frame(const std::string &path,
+                      std::array<std::uint8_t, omni::kFrameSize> &result,
+                      std::array<std::uint8_t, omni::kFrameSize> &context,
+                      bool &contextual)
+{
+    contextual = false;
+    context.fill(0);
+    if (path.empty()) return false;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+    file.read(reinterpret_cast<char *>(result.data()), result.size());
+    if (file.gcount() != static_cast<std::streamsize>(result.size())) return false;
+    if (result[2] == omni::kCommandContextMessageType) {
+        context = result;
+        file.read(reinterpret_cast<char *>(result.data()), result.size());
+        if (file.gcount() != static_cast<std::streamsize>(result.size()) ||
+            result[2] != omni::kMissionCommandMessageType || context[3] != result[3] ||
+            !omni::validate_relay_frame(context.data(), context.size())) return false;
+        contextual = true;
+    }
+    char extra = 0;
+    if (file.get(extra)) return false;
+    return omni::validate_relay_frame(result.data(), result.size());
+}
+
+std::string pose_snapshot_json(std::uint64_t now_ns,
+                       const omni::Pose2d &fused,
+                       const omni::T265FieldPose &t265,
+                       const omni::PlanarEkf &filter,
+                       const omni::PlanarOdometry &odometry,
+                       const WheelDebugState &wheel_debug,
+                       const char *quality,
+                       const std::string &wheel_gate,
+                       bool uart_fresh,
+                       std::uint64_t wheel_accepted,
+                       std::uint64_t wheel_rejected,
+                       std::uint64_t uart_frames,
+                       std::uint64_t uart_crc_errors,
+                       std::uint64_t uart_sequence_gaps,
+                       std::uint64_t pose_tx_frames,
+                       std::uint64_t pose_tx_errors,
+                       bool navigation_active,
+                       bool navigation_wheel_primary,
+                       bool navigation_distance_valid,
+                       bool navigation_distance_compensation_enabled,
+                       std::uint8_t navigation_code,
+                       std::uint16_t navigation_remaining,
+                       std::uint16_t navigation_heading,
+                       double navigation_wheel_progress_m,
+                       bool t265_position_corrected,
+                       double t265_position_sigma_multiplier,
+                       double t265_innovation_m,
+                       double encoder_fusion_weight,
+                       const T265MapStatus &t265_map)
+{
+    std::ostringstream file;
+    const omni::Pose2d odom_pose = odometry.pose();
+    const omni::WheelIncrement &increment = wheel_debug.latest_increment;
+    const bool odom_available = wheel_debug.odom_updates > 0;
+    const double fused_odom_delta_m = odom_available
+        ? std::hypot(fused.x_m - odom_pose.x_m, fused.y_m - odom_pose.y_m)
+        : -1.0;
+    const double fused_odom_yaw_delta_deg = odom_available
+        ? omni::degrees(omni::wrap_angle(fused.yaw_rad - odom_pose.yaw_rad))
+        : 0.0;
+    const double t265_odom_dx_m = odom_available
+        ? t265.pose.x_m - odom_pose.x_m : 0.0;
+    const double t265_odom_dy_m = odom_available
+        ? t265.pose.y_m - odom_pose.y_m : 0.0;
+    const double t265_odom_delta_m = odom_available
+        ? std::hypot(t265_odom_dx_m, t265_odom_dy_m) : -1.0;
+    const double t265_odom_yaw_delta_deg = odom_available
+        ? omni::degrees(omni::wrap_angle(t265.pose.yaw_rad - odom_pose.yaw_rad))
+        : 0.0;
+    const bool have_increment = wheel_debug.have_latest_increment;
+    const double raw_increment_forward_m = have_increment
+        ? increment.forward_m : 0.0;
+    const double raw_increment_left_m = have_increment
+        ? increment.left_m : 0.0;
+    const double fused_increment_forward_m = raw_increment_forward_m * encoder_fusion_weight;
+    const double fused_increment_left_m = raw_increment_left_m * encoder_fusion_weight;
+    const double fused_increment_yaw_rad = have_increment ? increment.yaw_rad : 0.0;
+    file << std::fixed << std::setprecision(9)
+         << "{\n"
+         << "  \"schema_version\": 3,\n"
+         << "  \"timestamp_monotonic_ns\": " << now_ns << ",\n"
+         << "  \"frame\": \"field\",\n"
+         << "  \"t265_map\": {\"enabled\": "
+         << (t265_map.enabled ? "true" : "false")
+         << ", \"path\": \"" << json_escape(t265_map.path)
+         << "\", \"imported\": " << (t265_map.imported ? "true" : "false")
+         << ", \"relocalized\": " << (t265_map.relocalized ? "true" : "false")
+         << ", \"startup_ready\": " << (t265_map.startup_ready ? "true" : "false")
+         << ", \"timeout\": " << (t265_map.timeout ? "true" : "false")
+         << ", \"frame_timeout\": " << (t265_map.frame_timeout ? "true" : "false")
+         << ", \"event_count\": " << t265_map.event_count
+         << ", \"pose_frame_count\": " << t265_map.pose_frame_count
+         << ", \"relocalization_wait_ms\": " << t265_map.relocalization_wait_ms
+         << ", \"first_pose_wait_ms\": " << t265_map.first_pose_wait_ms
+         << ", \"last_pose_age_ms\": " << t265_map.last_pose_age_ms
+         << ", \"error\": \"" << json_escape(t265_map.error)
+         << "\"},\n"
+         << "  \"quality\": \"" << quality << "\",\n"
+         << "  \"pose\": {\"x_m\": " << fused.x_m
+         << ", \"y_m\": " << fused.y_m
+         << ", \"yaw_rad\": " << fused.yaw_rad
+         << ", \"yaw_deg\": " << omni::degrees(fused.yaw_rad) << "},\n"
+         << "  \"sigma\": {\"position_m\": " << filter.position_sigma_m()
+         << ", \"yaw_rad\": " << filter.yaw_sigma_rad() << "},\n"
+         << "  \"t265\": {\"x_m\": " << t265.pose.x_m
+         << ", \"y_m\": " << t265.pose.y_m
+         << ", \"yaw_rad\": " << t265.pose.yaw_rad
+         << ", \"body_forward_velocity_mps\": "
+         << t265.body_forward_velocity_mps
+         << ", \"body_left_velocity_mps\": "
+         << t265.body_left_velocity_mps
+         << ", \"yaw_rate_radps\": " << t265.yaw_rate_radps
+         << ", \"camera_offset_forward_m\": "
+         << t265.camera_offset_forward_m
+         << ", \"camera_offset_left_m\": "
+         << t265.camera_offset_left_m
+         << ", \"tracking_origin\": {\"x_m\": "
+         << t265.tracking_origin_pose.x_m
+         << ", \"y_m\": " << t265.tracking_origin_pose.y_m
+         << ", \"yaw_rad\": " << t265.tracking_origin_pose.yaw_rad << "}"
+         << ", \"tracking_origin_delta_forward_m\": "
+         << t265.tracking_origin_delta_forward_m
+         << ", \"tracking_origin_delta_left_m\": "
+         << t265.tracking_origin_delta_left_m
+         << ", \"unscaled_robot_center_delta_forward_m\": "
+         << t265.unscaled_robot_center_delta_forward_m
+         << ", \"unscaled_robot_center_delta_left_m\": "
+         << t265.unscaled_robot_center_delta_left_m
+         << ", \"robot_center_delta_forward_m\": "
+         << t265.robot_center_delta_forward_m
+         << ", \"robot_center_delta_left_m\": "
+         << t265.robot_center_delta_left_m
+         << ", \"translation_scale\": " << t265.translation_scale
+         << ", \"translation_scale_enabled\": "
+         << (t265.translation_scale_enabled ? "true" : "false")
+         << ", \"gyro_yaw_rate_radps\": " << t265.gyro_yaw_rate_radps
+         << ", \"gyro_relative_yaw_rad\": " << t265.gyro_relative_yaw_rad
+         << ", \"gyro_pose_sync_error_rad\": "
+         << t265.gyro_pose_sync_error_rad
+         << ", \"gyro_yaw_rate_valid\": "
+         << (t265.gyro_yaw_rate_valid ? "true" : "false")
+         << ", \"tracker_confidence\": " << static_cast<unsigned>(t265.tracker_confidence)
+         << ", \"mapper_confidence\": " << static_cast<unsigned>(t265.mapper_confidence)
+         << ", \"travel_from_start_m\": " << t265.travel_from_origin_m
+         << ", \"forward_world\": [" << t265.forward_world[0] << ", "
+         << t265.forward_world[1] << ", " << t265.forward_world[2] << "]"
+         << ", \"left_world\": [" << t265.left_world[0] << ", "
+         << t265.left_world[1] << ", " << t265.left_world[2] << "]"
+         << ", \"up_world\": [" << t265.up_world[0] << ", "
+         << t265.up_world[1] << ", " << t265.up_world[2] << "]},\n"
+         << "  \"wheel\": {\"gate\": \"" << wheel_gate
+         << "\", \"uart_fresh\": " << (uart_fresh ? "true" : "false")
+         << ", \"fusion_weight\": " << encoder_fusion_weight
+         << ", \"accepted\": " << wheel_accepted
+         << ", \"rejected\": " << wheel_rejected
+         << ", \"last_frame_age_ms\": "
+         << age_ms(now_ns, wheel_debug.latest_frame_ns)
+         << ", \"last_update_age_ms\": "
+         << age_ms(now_ns, wheel_debug.latest_update_ns) << "},\n"
+         << "  \"wheel_odom\": {\"available\": "
+         << (odom_available ? "true" : "false")
+         << ", \"x_m\": " << odom_pose.x_m
+         << ", \"y_m\": " << odom_pose.y_m
+         << ", \"yaw_rad\": " << odom_pose.yaw_rad
+         << ", \"yaw_deg\": " << omni::degrees(odom_pose.yaw_rad)
+         << ", \"travel_m\": " << odometry.travel_m()
+         << ", \"forward_velocity_mps\": "
+         << (wheel_debug.have_latest_increment ? increment.forward_velocity_mps : 0.0)
+         << ", \"left_velocity_mps\": "
+         << (wheel_debug.have_latest_increment ? increment.left_velocity_mps : 0.0)
+         << ", \"yaw_rate_radps\": "
+         << ((wheel_debug.have_latest_increment && increment.dt_s > 0.0)
+                 ? increment.yaw_rad / increment.dt_s : 0.0)
+         << ", \"yaw_source\": \""
+         << (wheel_debug.have_latest_increment
+                 ? (wheel_debug.latest_increment_uses_gyro
+                         ? "t265_gyro" : "wheel_kinematics")
+                 : "none")
+         << "\""
+         << ", \"increment\": {\"forward_m\": "
+         << raw_increment_forward_m
+         << ", \"left_m\": "
+         << raw_increment_left_m
+         << ", \"yaw_rad\": "
+         << fused_increment_yaw_rad
+         << ", \"dt_s\": "
+         << (wheel_debug.have_latest_increment ? increment.dt_s : 0.0)
+         << ", \"sequence_step\": "
+         << (wheel_debug.have_latest_increment
+                 ? static_cast<unsigned>(increment.sequence_step) : 0u)
+         << ", \"wheel_kinematic_yaw_rad\": "
+         << wheel_debug.latest_wheel_kinematic_yaw_rad
+         << ", \"gyro_yaw_delta_rad\": "
+         << wheel_debug.latest_gyro_yaw_delta_rad
+         << ", \"t265_yaw_at_increment_rad\": "
+         << wheel_debug.latest_t265_yaw_at_increment_rad
+         << ", \"field_yaw_valid\": "
+         << (wheel_debug.latest_increment_yaw_synchronized ? "true" : "false")
+         << "}, \"raw_encoder_increment\": {\"forward_m\": "
+         << raw_increment_forward_m
+         << ", \"left_m\": " << raw_increment_left_m
+         << ", \"wheel_kinematic_yaw_rad\": "
+         << (have_increment ? wheel_debug.latest_wheel_kinematic_yaw_rad : 0.0)
+         << "}, \"fused_increment\": {\"forward_m\": "
+         << fused_increment_forward_m
+         << ", \"left_m\": " << fused_increment_left_m
+         << ", \"yaw_rad\": " << fused_increment_yaw_rad << "}"
+         << ", \"updates\": " << wheel_debug.odom_updates
+         << ", \"last_update_age_ms\": "
+         << age_ms(now_ns, wheel_debug.latest_update_ns)
+         << ", \"updated_this_pose\": "
+         << (wheel_debug.updated_this_pose ? "true" : "false")
+         << ", \"accepted_this_pose\": "
+         << (wheel_debug.accepted_this_pose ? "true" : "false")
+         << ", \"rejected_this_pose\": "
+         << (wheel_debug.rejected_this_pose ? "true" : "false")
+         << ", \"last_increment_accepted\": "
+         << (wheel_debug.latest_increment_accepted ? "true" : "false")
+         << ", \"last_frame\": {\"available\": "
+         << (wheel_debug.have_latest_frame ? "true" : "false")
+         << ", \"sequence\": "
+         << (wheel_debug.have_latest_frame
+                 ? static_cast<unsigned>(wheel_debug.latest_frame.sequence) : 0u)
+         << ", \"m1\": "
+         << (wheel_debug.have_latest_frame ? wheel_debug.latest_frame.position[0] : 0u)
+         << ", \"m2\": "
+         << (wheel_debug.have_latest_frame ? wheel_debug.latest_frame.position[1] : 0u)
+         << ", \"m3\": "
+         << (wheel_debug.have_latest_frame ? wheel_debug.latest_frame.position[2] : 0u)
+         << ", \"sample_period_ms\": "
+         << (wheel_debug.have_latest_frame
+                 ? static_cast<unsigned>(wheel_debug.latest_frame.sample_period_ms) : 0u)
+         << ", \"status\": "
+         << (wheel_debug.have_latest_frame
+                 ? static_cast<unsigned>(wheel_debug.latest_frame.status) : 0u)
+         << "}},\n"
+         << "  \"comparison\": {\"fused_vs_wheel_odom_distance_m\": "
+         << fused_odom_delta_m
+         << ", \"fused_vs_wheel_odom_yaw_deg\": "
+         << fused_odom_yaw_delta_deg
+         << ", \"t265_vs_wheel_odom_dx_m\": " << t265_odom_dx_m
+         << ", \"t265_vs_wheel_odom_dy_m\": " << t265_odom_dy_m
+         << ", \"t265_vs_wheel_odom_distance_m\": " << t265_odom_delta_m
+         << ", \"t265_vs_wheel_odom_yaw_deg\": "
+         << t265_odom_yaw_delta_deg << "},\n"
+         << "  \"navigation\": {\"active\": "
+         << (navigation_active ? "true" : "false")
+         << ", \"wheel_primary\": "
+         << (navigation_wheel_primary ? "true" : "false")
+         << ", \"distance_compensation_valid\": "
+         << (navigation_distance_valid ? "true" : "false")
+         << ", \"command\": " << static_cast<unsigned>(navigation_code)
+         << ", \"remaining_mm\": " << navigation_remaining
+         << ", \"heading_cdeg\": " << navigation_heading
+         << ", \"wheel_progress_m\": " << navigation_wheel_progress_m
+         << ", \"distance_compensation_m\": " << navigation_wheel_progress_m
+         << ", \"distance_compensation_enabled\": "
+         << (navigation_distance_compensation_enabled ? "true" : "false")
+         << ", \"distance_compensation_source\": "
+         << "\"encoder_projection_t265_heading\""
+         << ", \"t265_position_corrected\": "
+         << (t265_position_corrected ? "true" : "false")
+         << ", \"t265_position_sigma_multiplier\": "
+         << t265_position_sigma_multiplier
+         << ", \"t265_innovation_m\": " << t265_innovation_m << "},\n"
+         << "  \"uart\": {\"frames\": " << uart_frames
+         << ", \"crc_errors\": " << uart_crc_errors
+         << ", \"sequence_gaps\": " << uart_sequence_gaps
+         << ", \"pose_tx_frames\": " << pose_tx_frames
+         << ", \"pose_tx_errors\": " << pose_tx_errors << "}\n"
+         << "}\n";
+    return file.str();
+}
+
+}  // namespace
+
+int main(int argc, char **argv)
+{
+    std::atomic<bool> running{true};
+    std::thread uart_thread;
+    std::thread relay_thread;
+    std::unique_ptr<omni::AsyncLatestFile> stm_status_writer;
+    std::unique_ptr<omni::DebugWheelInput> debug_wheel;
+    std::unique_ptr<omni::SerialPort> uart;
+    std::unique_ptr<omni::TestUartRelay> test_uart_relay;
+    try {
+        const Options options = parse_options(argc, argv);
+        std::signal(SIGINT, signal_handler);
+        std::signal(SIGTERM, signal_handler);
+        if (options.experimental_robust_localization) std::signal(SIGUSR1, sdk_retry_signal_handler);
+        if (options.operator_uart_only) return run_operator_standby(options);
+        const omni::LocalizationConfig config = omni::load_config(options.config_path);
+        if(!options.debug_wheel_socket.empty()) {
+            debug_wheel.reset(new omni::DebugWheelInput(config,options.debug_wheel_session,
+                options.debug_wheel_socket,options.debug_wheel_log,options.debug_wheel_synthetic,
+                options.debug_wheel_experiment));
+            if(!options.uart_path.empty())debug_wheel->use_native_feedback();
+        }
+        rs2::log_to_console(options.debug_sdk ? RS2_LOG_SEVERITY_DEBUG : RS2_LOG_SEVERITY_WARN);
+
+        std::cerr << "[CONFIG] start_zone=" << config.start_zone
+                  << " wheel=" << config.wheel_diameter_m * 1000.0 << " mm"
+                  << " counts/rev=" << std::setprecision(10) << config.counts_per_wheel_revolution
+                  << " startup_gate=" << config.startup_wheel_disable_distance_m << " m"
+                  << " t265_translation_scale="
+                  << (config.t265_translation_scale_enabled
+                          ? config.t265_translation_scale : 1.0)
+                  << (config.t265_translation_scale_enabled ? " (enabled)" : " (disabled)")
+                  << '\n';
+
+        // The experimental path starts the sole UART owner before querying USB.
+        // Normal entry points retain their existing T265-first startup behavior.
+        std::atomic<bool> sdk_device_removed{false};
+        std::atomic<std::uint64_t> sdk_attach_generation{0}, sdk_device_event_errors{0};
+        std::mutex sdk_device_mutex;
+        std::condition_variable sdk_event_ready;
+        rs2::device sdk_watched_device;
+        std::unique_ptr<rs2::context> context;
+        std::string serial;
+        auto select_t265 = [&] {
+            if (!context) {
+                context.reset(new rs2::context());
+                if (options.experimental_robust_localization) {
+                    // Register even when no T265 is present at startup. A real
+                    // added-device event is the only automatic retry trigger.
+                    context->set_devices_changed_callback([&](rs2::event_information changed) {
+                        try {
+                            {
+                                std::lock_guard<std::mutex> lock(sdk_device_mutex);
+                                if (sdk_watched_device && changed.was_removed(sdk_watched_device))
+                                    sdk_device_removed = true;
+                            }
+                            for (const auto &added : changed.get_new_devices()) {
+                                if (device_info(added, RS2_CAMERA_INFO_PRODUCT_LINE) == "T200" &&
+                                    (options.serial.empty() || device_info(added, RS2_CAMERA_INFO_SERIAL_NUMBER) == options.serial))
+                                    ++sdk_attach_generation;
+                            }
+                            sdk_event_ready.notify_one();
+                        } catch (const std::exception &) {
+                            // SDK callbacks must not unwind the SDK watcher.
+                            ++sdk_device_event_errors;
+                        }
+                    });
+                }
+            }
+            sdk_device_removed = false;
+            rs2::device selected;
+            const auto devices = context->query_devices(RS2_PRODUCT_LINE_T200);
+            for (std::size_t i = 0; i < devices.size(); ++i) {
+                if (options.serial.empty() ||
+                    device_info(devices[i], RS2_CAMERA_INFO_SERIAL_NUMBER) == options.serial) {
+                    selected = devices[i];
+                    break;
+                }
+            }
+            if (!selected)
+                throw T265Unavailable("no running T265; use run_localization.sh to boot 03e7:2150 first");
+            serial = device_info(selected, RS2_CAMERA_INFO_SERIAL_NUMBER);
+            std::cerr << "[T265] serial=" << serial
+                      << " firmware=" << device_info(selected, RS2_CAMERA_INFO_FIRMWARE_VERSION)
+                      << " librealsense=" << RS2_API_VERSION_STR << '\n';
+            if (options.experimental_robust_localization) {
+                std::lock_guard<std::mutex> lock(sdk_device_mutex);
+                sdk_watched_device = selected;
+            }
+        };
+        if (!options.experimental_robust_localization) select_t265();
+
+        EncoderQueue encoder_queue;
+        omni::ParserStats final_parser_stats{};
+        std::atomic<std::uint64_t> live_uart_frames{0};
+        std::atomic<std::uint64_t> live_crc_errors{0};
+        std::atomic<std::uint64_t> live_sequence_gaps{0};
+        stm_status_writer.reset(new omni::AsyncLatestFile(options.stm_status_output_path));
+        std::atomic<std::int64_t> last_uart_ns{0};
+        std::atomic<std::uint64_t> relay_tx_frames{0};
+        std::atomic<std::uint64_t> relay_tx_errors{0};
+        std::atomic<std::uint8_t> relay_last_sequence{0};
+        std::atomic<std::uint64_t> relay_last_tx_ns{0};
+        RelayMissionSnapshot relay_mission_snapshot;
+        std::mutex relay_mission_mutex;
+        std::atomic<bool> navigation_command_active{false};
+        std::atomic<std::uint8_t> navigation_command_code{0};
+        std::atomic<std::uint16_t> navigation_remaining_mm{0};
+        std::atomic<std::uint16_t> navigation_heading_cdeg{0};
+        omni::PriorityInheritanceMutex uart_tx_mutex;
+        // Explicit physical-button STOP is scoped to this process/session.
+        // It prevents an in-flight model startup or old command file from
+        // sending CONFIG/mission heartbeats again after the manual ABORT.
+        std::atomic<bool> operator_stopped{false};
+        std::atomic<std::uint8_t> operator_stop_sequence{0};
+        std::unique_ptr<omni::OperatorUartRelay> operator_relay;
+        auto feedback_tap = std::make_shared<omni::WheelTelemetryTap>(options.wheel_feedback_socket);
+        auto motion_feedback_tap = std::make_shared<omni::MotionTelemetryTap>(options.motion_feedback_socket);
+        std::vector<std::uint8_t> feedback_requests;
+        const bool match_recording = !std::getenv("RDK_MATCH_RECORDING") ||
+            std::string(std::getenv("RDK_MATCH_RECORDING")) != "0";
+        const std::string uart_raw_path=!match_recording || options.debug_test_session.empty()||options.uart_path.empty()?"":
+            options.events_path.substr(0,options.events_path.find_last_of('/')+1)+"uart_rx_native.jsonl";
+        omni::AsyncCsvLog uart_raw_log(uart_raw_path);
+        if (!options.wheel_feedback_requests.empty()) {
+            std::ifstream file(options.wheel_feedback_requests, std::ios::binary);
+            feedback_requests.assign(std::istreambuf_iterator<char>(file), {});
+            // Existing codec produces one 19-byte identity and one 23-byte subscription request.
+            if (feedback_requests.size() != 42)
+                throw std::invalid_argument("expected one identity and one stream startup request");
+        }
+        // Join before local callback targets/mutexes unwind, also on SDK error.
+        UartThreadsGuard uart_threads{running,uart_thread,relay_thread,test_uart_relay};
+        if (!options.uart_path.empty()) {
+            uart.reset(new omni::SerialPort(options.uart_path, options.baud));
+            uart->open_port();
+            if(!options.test_uart_socket.empty()) {
+                test_uart_relay.reset(new omni::TestUartRelay(options.test_uart_socket,
+                    [&](const std::uint8_t *data,std::size_t size) {
+                        std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                        const auto before=monotonic_ns();
+                        if(debug_wheel)debug_wheel->wire_request(data,size,before);
+                        return uart->write_all(data,size,50);
+                    }));
+            }
+            if (!options.operator_socket.empty()) {
+                operator_relay.reset(new omni::OperatorUartRelay(options.operator_socket,
+                    [&](const std::array<std::uint8_t, omni::kFrameSize> &frame) {
+                        std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                        if (omni::is_operator_abort(frame)) {
+                            operator_stop_sequence.store(frame[3], std::memory_order_relaxed);
+                            operator_stopped.store(true, std::memory_order_relaxed);
+                            navigation_command_active.store(false, std::memory_order_relaxed);
+                        }
+                        return uart->write_all(frame.data(), frame.size(), 50);
+                    }));
+            }
+            std::cerr << "[UART] " << options.uart_path << " @ " << options.baud
+                      << " 8N1, RX TYPE=0x15/0x17, TX TYPE=0x16 @ "
+                      << options.tx_rate_hz
+                      << " Hz, mission heartbeat=100 Hz (T265-independent)\n";
+            uart_thread = std::thread([&, feedback_tap, motion_feedback_tap]() {
+                std::uint64_t received_ns = 0;
+                omni::F407FrameParser parser([&](const omni::EncoderFrame &frame) {
+                    if (!options.ignore_encoders) encoder_queue.push(frame);
+                    last_uart_ns.store(static_cast<std::int64_t>(monotonic_ns()),
+                                       std::memory_order_relaxed);
+                }, [&](const omni::StmStatusFrame &status) {
+                    RelayMissionSnapshot mission_snapshot;
+                    {
+                        std::lock_guard<std::mutex> lock(relay_mission_mutex);
+                        mission_snapshot = relay_mission_snapshot;
+                    }
+                    // A bounded latest snapshot: neither JSON formatting nor
+                    // SD writes may delay the next wheel/gyro read.
+                    const auto frames = relay_tx_frames.load(std::memory_order_relaxed);
+                    const auto errors = relay_tx_errors.load(std::memory_order_relaxed);
+                    const auto sequence = relay_last_sequence.load(std::memory_order_relaxed);
+                    const auto tx_ns = relay_last_tx_ns.load(std::memory_order_relaxed);
+                    const auto stamp = received_ns;
+                    stm_status_writer->submit([status, frames, errors, sequence, tx_ns, mission_snapshot, stamp] {
+                        return stm_status_json(stamp, status, frames, errors, sequence, tx_ns, mission_snapshot);
+                    });
+                });
+                omni::F405MixedFrames mixed(
+                    [&](const std::uint8_t *data, std::size_t size) {
+                        if(test_uart_relay)test_uart_relay->publish(data,size,received_ns);
+                        if(data[2]==omni::kOdomMessageType||data[2]==omni::kStmStatusMessageType||data[2]==omni::kStatusContextMessageType)
+                            parser.feed(data,size);
+                    },
+                    [&](const std::uint8_t *data, std::size_t size) {
+                        if(debug_wheel)debug_wheel->wire_feedback(data,size,received_ns);
+                        motion_feedback_tap->publish(data,size,received_ns);
+                        if(test_uart_relay)test_uart_relay->publish(data,size,received_ns);
+                        feedback_tap->publish(data,size,received_ns);
+                    },bool(test_uart_relay));
+                std::uint8_t buffer[256];
+                while (running.load(std::memory_order_relaxed) && !g_stop) {
+                    const int count = uart->read_some(buffer, sizeof(buffer), 50);
+                    if (count < 0) {
+                        std::cerr << "[UART ERROR] read failed on " << uart->path() << '\n';
+                        running.store(false, std::memory_order_relaxed);
+                        break;
+                    }
+                    if (count > 0) {
+                        received_ns = monotonic_ns();
+                        if(uart_raw_log.enabled()) {
+                            static const char digits[]="0123456789abcdef";
+                            std::string hex;hex.reserve(count*2);
+                            for(int i=0;i<count;++i){hex+=digits[buffer[i]>>4];hex+=digits[buffer[i]&15];}
+                            uart_raw_log.submit("{\"timestamp_monotonic_ns\":"+std::to_string(received_ns)+",\"data_hex\":\""+hex+"\"}\n");
+                        }
+                        if (!options.wheel_feedback_socket.empty() || !options.motion_feedback_socket.empty() || test_uart_relay || debug_wheel) mixed.feed(buffer, static_cast<std::size_t>(count));
+                        else parser.feed(buffer, static_cast<std::size_t>(count));
+                    }
+                    const omni::ParserStats &stats = parser.stats();
+                    live_uart_frames.store(stats.frames_ok, std::memory_order_relaxed);
+                    live_crc_errors.store(stats.crc_errors, std::memory_order_relaxed);
+                    live_sequence_gaps.store(stats.sequence_gaps, std::memory_order_relaxed);
+                }
+                final_parser_stats = parser.stats();
+            });
+            if (!feedback_requests.empty()) {
+                // One-shot startup configuration, no reply wait or periodic identity/sync loop.
+                std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                if(debug_wheel)debug_wheel->wire_request(feedback_requests.data(),feedback_requests.size(),monotonic_ns());
+                const bool sent = uart->write_all(feedback_requests.data(), feedback_requests.size(), 50);
+                std::cerr << "[WHEEL FEEDBACK] startup identity/subscription write=" << sent
+                          << "; no command/pose admission gate\n";
+            }
+            if (!options.command_file_path.empty()) {
+                relay_thread = std::thread([&]() {
+                    constexpr auto heartbeat_period = std::chrono::milliseconds(10);
+                    std::array<std::uint8_t, omni::kFrameSize> last_input{};
+                    std::array<std::uint8_t, omni::kFrameSize> active_mission{};
+                    std::array<std::uint8_t, omni::kFrameSize> active_context{};
+                    std::array<std::uint8_t, omni::kFrameSize> last_context{};
+                    bool active_contextual = false;
+                    bool have_last_input = false;
+                    bool have_active_mission = false;
+                    std::uint8_t mission_sequence = 0;
+                    auto next_heartbeat = std::chrono::steady_clock::now();
+
+                    auto transmit = [&](const std::array<std::uint8_t, omni::kFrameSize> &frame,
+                                        const std::array<std::uint8_t, omni::kFrameSize> *context = nullptr) {
+                        std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                        if (operator_stopped.load(std::memory_order_relaxed)) return;
+                        if (context && !uart->write_all(context->data(), context->size(), 50)) {
+                            relay_tx_errors.fetch_add(1, std::memory_order_relaxed);
+                            return;
+                        }
+                        if (uart->write_all(frame.data(), frame.size(), 50)) {
+                            relay_tx_frames.fetch_add(1, std::memory_order_relaxed);
+                            relay_last_sequence.store(frame[3], std::memory_order_relaxed);
+                            relay_last_tx_ns.store(monotonic_ns(), std::memory_order_relaxed);
+                            if (frame[2] == omni::kMissionCommandMessageType) {
+                                std::lock_guard<std::mutex> lock(relay_mission_mutex);
+                                relay_mission_snapshot.tx_frames += 1;
+                                relay_mission_snapshot.have_last = true;
+                                relay_mission_snapshot.last_command = frame[4];
+                                relay_mission_snapshot.last_sequence = frame[3];
+                                std::copy(frame.begin() + 4, frame.begin() + 12,
+                                          relay_mission_snapshot.last_payload.begin());
+                                relay_mission_snapshot.last_tx_ns = monotonic_ns();
+                            }
+                        } else {
+                            relay_tx_errors.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    };
+
+                    while (running.load(std::memory_order_relaxed) && !g_stop) {
+                        if (operator_stopped.load(std::memory_order_relaxed)) {
+                            have_active_mission = false;
+                            navigation_command_active.store(false, std::memory_order_relaxed);
+                            std::array<std::uint8_t, omni::kFrameSize> resume{}, ignored_context{};
+                            bool contextual = false;
+                            if (read_relay_frame(options.command_file_path, resume, ignored_context, contextual)) {
+                                std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                                if (omni::is_resume_config_for_stop(resume,
+                                        operator_stop_sequence.load(std::memory_order_relaxed))) {
+                                    operator_stopped.store(false, std::memory_order_relaxed);
+                                    have_last_input = false;
+                                }
+                            }
+                            if (operator_stopped.load(std::memory_order_relaxed)) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                                continue;
+                            }
+                        }
+                        std::array<std::uint8_t, omni::kFrameSize> input{};
+                        std::array<std::uint8_t, omni::kFrameSize> context{};
+                        bool contextual = false;
+                        const auto now = std::chrono::steady_clock::now();
+                        if (read_relay_frame(options.command_file_path, input, context, contextual) &&
+                            (!have_last_input || input != last_input || context != last_context)) {
+                            last_input = input;
+                            last_context = context;
+                            have_last_input = true;
+                            if (input[2] == omni::kMissionCommandMessageType) {
+                                if (!have_active_mission) {
+                                    mission_sequence = input[3];
+                                }
+                                active_mission = input;
+                                active_context = context;
+                                active_contextual = contextual;
+                                have_active_mission = true;
+                                const std::uint8_t command = input[4];
+                                const bool distance_valid = (input[5] & 0x10u) != 0u;
+                                navigation_command_code.store(command, std::memory_order_relaxed);
+                                navigation_remaining_mm.store(
+                                    static_cast<std::uint16_t>(
+                                        (static_cast<std::uint16_t>(input[6]) << 8) |
+                                        input[7]),
+                                    std::memory_order_relaxed);
+                                navigation_heading_cdeg.store(
+                                    static_cast<std::uint16_t>(
+                                        (static_cast<std::uint16_t>(input[10]) << 8) |
+                                        input[11]),
+                                    std::memory_order_relaxed);
+                                navigation_command_active.store(
+                                    distance_valid && (command == 3u || command == 8u),
+                                    std::memory_order_relaxed);
+                                next_heartbeat = now;
+                            } else {
+                                have_active_mission = false;
+                                navigation_command_active.store(false, std::memory_order_relaxed);
+                                transmit(input);
+                            }
+                        }
+                        // Last real command stays active until explicitly replaced,
+                        // operator STOP/ABORT or process shutdown; no producer-age gate.
+                        if (have_active_mission && now >= next_heartbeat) {
+                            auto heartbeat = active_mission;
+                            auto context_heartbeat = active_context;
+                            const auto sequence = mission_sequence++;
+                            if (omni::refresh_mission_frame_sequence(
+                                    heartbeat, sequence) &&
+                                (!active_contextual || omni::refresh_mission_frame_sequence(context_heartbeat, sequence))) {
+                                transmit(heartbeat, active_contextual ? &context_heartbeat : nullptr);
+                            } else {
+                                relay_tx_errors.fetch_add(1, std::memory_order_relaxed);
+                                have_active_mission = false;
+                            }
+                            next_heartbeat = now + heartbeat_period;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    }
+                });
+            }
+        } else {
+            std::cerr << "[UART] disabled; output is T265-only\n";
+        }
+
+        EventLog event_log(options.events_path);
+        const auto service_started = std::chrono::steady_clock::now();
+        std::unique_ptr<DebugPosePublisher> pose_publisher;
+        std::string sdk_device_session_id;
+        bool sdk_availability_known = false, sdk_available = false;
+        if (options.experimental_robust_localization)
+            pose_publisher.reset(new DebugPosePublisher(options.debug_pose_socket));
+        auto publish_sdk_availability = [&](bool available, const std::string &reason) {
+            if (sdk_availability_known && sdk_available == available) return;
+            sdk_availability_known = true; sdk_available = available;
+            const omni::DebugWheelInput::Json state{{"schema",1},{"kind","sdk_availability"},
+                {"session_id",options.debug_test_session},{"sdk_device_session_id",sdk_device_session_id},
+                {"available",available},{"reason",reason},{"receive_monotonic_ns",monotonic_ns()}};
+            if (options.experimental_robust_localization && pose_publisher) pose_publisher->send(state);
+            event_log.write("t265_sdk_availability",state.dump());
+        };
+
+        std::unique_ptr<omni::DynamicPoseRelay> dynamic_relay;
+        if (!options.dynamic_pose_socket.empty()) {
+            dynamic_relay.reset(new omni::DynamicPoseRelay(options.dynamic_pose_socket,
+                options.debug_test_session, options.dynamic_pose_output,
+                [&](const std::array<std::uint8_t, omni::kFrameSize> &bytes) {
+                    if (!uart) return false;
+                    std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                    return uart->write_all(bytes.data(), bytes.size(), 50);
+                }));
+            dynamic_relay->start();
+        }
+
+        omni::AsyncCsvLog csv_log(options.csv_path);
+        // All entry points use the same bounded asynchronous snapshot path.
+        // Keep stdout separate: a slow terminal must not hold up the GUI JSON.
+        omni::AsyncLatestFile raw_snapshot(options.output_path);
+        omni::AsyncLatestFile pose_stdout("POSE stdout",
+            [](const std::string &, const std::string &line) {
+                std::cout << line;
+                return static_cast<bool>(std::cout);
+            });
+        std::ostringstream csv;
+        if (!options.csv_path.empty()) {
+            csv << "timestamp_monotonic_ns,elapsed_s,t265_timestamp_s,"
+                   "raw_tx_m,raw_ty_m,raw_tz_m,raw_vx_mps,raw_vy_mps,raw_vz_mps,"
+                   "raw_qx,raw_qy,raw_qz,raw_qw,raw_ang_vx_radps,raw_ang_vy_radps,"
+                   "raw_ang_vz_radps,forward_world_x,forward_world_y,forward_world_z,"
+                   "left_world_x,left_world_y,left_world_z,raw_chassis_yaw_deg,"
+                   "relative_yaw_deg,t265_x_m,t265_y_m,t265_yaw_deg,"
+                   "tracking_origin_x_m,tracking_origin_y_m,"
+                   "tracking_origin_delta_forward_m,tracking_origin_delta_left_m,"
+                   "unscaled_robot_center_delta_forward_m,"
+                   "unscaled_robot_center_delta_left_m,"
+                   "robot_center_delta_forward_m,robot_center_delta_left_m,"
+                   "t265_translation_scale,t265_translation_scale_enabled,"
+                   "camera_offset_forward_m,camera_offset_left_m,"
+                   "t265_forward_velocity_mps,t265_left_velocity_mps,t265_yaw_rate_degps,"
+                   "gyro_yaw_rate_degps,gyro_relative_yaw_deg,gyro_yaw_rate_valid,"
+                   "gyro_pose_sync_error_deg,"
+                   "t265_travel_m,fused_x_m,fused_y_m,fused_yaw_deg,odom_x_m,odom_y_m,"
+                   "odom_yaw_deg,odom_travel_m,odom_forward_velocity_mps,"
+                   "odom_left_velocity_mps,odom_yaw_rate_degps,fused_odom_delta_m,"
+                   "fused_odom_yaw_delta_deg,t265_vs_wheel_odom_dx_m,"
+                   "t265_vs_wheel_odom_dy_m,t265_vs_wheel_odom_distance_m,"
+                   "t265_vs_wheel_odom_yaw_deg,odom_increment_forward_m,"
+                   "odom_increment_left_m,encoder_fusion_weight,"
+                   "fusion_increment_forward_m,fusion_increment_left_m,"
+                   "wheel_kinematic_yaw_deg,gyro_yaw_delta_deg,"
+                   "t265_yaw_at_increment_deg,increment_field_yaw_valid,"
+                   "odom_increment_yaw_deg,odom_increment_dt_s,"
+                   "odom_increment_sequence_step,wheel_frame_sequence,wheel_m1_count,"
+                   "wheel_m2_count,wheel_m3_count,wheel_sample_period_ms,wheel_status,"
+                   "wheel_update_this_pose,wheel_update_accepted,wheel_update_rejected,"
+                   "last_increment_accepted,wheel_gate,"
+                   "wheel_accepted_count,wheel_rejected_count,wheel_odom_updates,"
+                   "wheel_last_frame_age_ms,wheel_last_update_age_ms,tracker_confidence,"
+                   "mapper_confidence,t265_update_accepted,t265_position_corrected,"
+                   "t265_position_sigma_multiplier,t265_innovation_m,position_sigma_m,"
+                   "yaw_sigma_deg,quality,t265_map_enabled,t265_map_imported,"
+                   "t265_map_relocalized,t265_map_startup_ready,t265_map_event_count,"
+                   "t265_map_relocalization_wait_ms,t265_map_first_pose_wait_ms,"
+                   "t265_map_last_pose_age_ms,t265_map_pose_frame_count,"
+                   "t265_map_timeout,t265_map_frame_timeout,"
+                   "navigation_active,navigation_wheel_primary,"
+                   "navigation_distance_compensation_valid,"
+                   "navigation_distance_compensation_enabled,"
+                   "navigation_command,"
+                   "navigation_remaining_mm,navigation_heading_cdeg,"
+                   "navigation_wheel_progress_m,navigation_distance_compensation_m,pose_frame_number,pose_timestamp_domain,capture_age_ms,receive_monotonic_ns,up_world_x,up_world_y,up_world_z\n";
+            csv_log.submit(csv.str());csv.str("");
+        }
+
+        // Optional diagnostic stream precedes confidence/startup gating, so
+        // lost tracking and initial invalid samples are retained verbatim.
+        omni::AsyncCsvLog raw_pose_log(options.raw_pose_csv_path);
+        omni::RawImuCsv raw_imu_log(options.raw_imu_csv_path);
+        std::uint64_t imu_run_number = 0;
+        std::ostringstream raw_pose_csv;
+        if (!options.raw_pose_csv_path.empty()) {
+            raw_pose_csv << "receive_monotonic_ns,frame_number,capture_timestamp_ms,timestamp_domain,capture_age_ms,"
+                            "tx_m,ty_m,tz_m,vx_mps,vy_mps,vz_mps,qx,qy,qz,qw,"
+                            "wx_radps,wy_radps,wz_radps,tracker_confidence,mapper_confidence,processing_monotonic_ns,callback_queue_drops\n";
+            raw_pose_log.submit(raw_pose_csv.str());raw_pose_csv.str("");
+        }
+        event_log.write("uart_tx_mutex_protocol",omni::DebugWheelInput::Json{
+            {"mutex_protocol_requested","PTHREAD_PRIO_INHERIT"},
+            {"mutex_protocol_actual",uart_tx_mutex.priority_inheritance()?"PTHREAD_PRIO_INHERIT":"PTHREAD_PRIO_NONE"},
+            {"mutex_priority_inheritance",uart_tx_mutex.priority_inheritance()},
+            {"mutex_protocol_error",uart_tx_mutex.protocol_error()
+                ?omni::DebugWheelInput::Json(std::strerror(uart_tx_mutex.protocol_error()))
+                :omni::DebugWheelInput::Json(nullptr)}}.dump());
+        std::uint64_t consumed_attach_generation = 0;
+        // SDK resources unwind independently of UART, field reference and log
+        // writers. Reopening must not truncate raw logs or repeat CSV headers.
+        auto run_sdk = [&]() -> int {
+        if (options.experimental_robust_localization) select_t265();
+        T265MapStatus t265_map;
+        t265_map.enabled = !options.t265_map_path.empty();
+        t265_map.path = options.t265_map_path;
+        std::atomic<std::uint64_t> relocalization_event_count{0};
+        std::atomic<bool> relocalized{false};
+
+        rs2::pipeline pipeline(*context);
+        rs2::config rs_config;
+        if (!serial.empty()) rs_config.enable_device(serial);
+        rs_config.enable_stream(RS2_STREAM_POSE, RS2_FORMAT_6DOF);
+        const auto imu_run = ++imu_run_number;
+        if (raw_imu_log.enabled()) {
+            rs_config.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
+            rs_config.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
+        }
+        if(!options.debug_fisheye_output.empty()) {
+            rs_config.enable_stream(RS2_STREAM_FISHEYE,1,RS2_FORMAT_Y8);
+            rs_config.enable_stream(RS2_STREAM_FISHEYE,2,RS2_FORMAT_Y8);
+        }
+
+        const rs2_option pose_options[] = {
+            RS2_OPTION_ENABLE_MAPPING, RS2_OPTION_ENABLE_RELOCALIZATION,
+            RS2_OPTION_ENABLE_POSE_JUMPING, RS2_OPTION_ENABLE_MAP_PRESERVATION,
+            RS2_OPTION_ENABLE_DYNAMIC_CALIBRATION};
+        const char *pose_option_names[] = {
+            "enable_mapping", "enable_relocalization", "enable_pose_jumping", "enable_map_preservation",
+            "enable_dynamic_calibration"};
+        const int pose_option_values[] = {options.mapping_override, options.relocalization_override,
+            options.pose_jumping_override, options.map_preservation_override, -1};
+        const bool configure_pose_options = std::any_of(std::begin(pose_option_values),
+            std::end(pose_option_values), [](int value) { return value >= 0; });
+        std::unique_ptr<rs2::pose_sensor> map_pose_sensor;
+        try {
+        if (t265_map.enabled || configure_pose_options || options.debug_fresh_session || !options.debug_wheel_socket.empty()) {
+            // Resolve and obtain the pose sensor from the same pipeline
+            // configuration before importing the map. This is required by the
+            // T265 map API and avoids opening a second USB handle.
+            const rs2::pipeline_profile resolved_profile = rs_config.resolve(pipeline);
+            const rs2::device resolved_device = resolved_profile.get_device();
+            map_pose_sensor.reset(new rs2::pose_sensor(
+                resolved_device.first<rs2::pose_sensor>()));
+            if (!*map_pose_sensor) {
+                throw std::runtime_error("T265 pose sensor is unavailable for configuration");
+            }
+        }
+        if (configure_pose_options) {
+            for (int i = 0; i < 5; ++i) {
+                std::ostringstream data;
+                data << "{\"name\":\"" << pose_option_names[i] << "\"";
+                if (map_pose_sensor->supports(pose_options[i])) {
+                    const float before = map_pose_sensor->get_option(pose_options[i]);
+                    if (pose_option_values[i] >= 0)
+                        map_pose_sensor->set_option(pose_options[i], static_cast<float>(pose_option_values[i]));
+                    const float after = map_pose_sensor->get_option(pose_options[i]);
+                    data << ",\"supported\":true,\"before\":" << before << ",\"after\":" << after;
+                    std::cerr << "[T265 OPTION] " << pose_option_names[i] << '=' << after << '\n';
+                } else {
+                    data << ",\"supported\":false";
+                    if (pose_option_values[i] >= 0)
+                        throw std::runtime_error(std::string("T265 does not support requested ") + pose_option_names[i]);
+                }
+                data << '}';
+                event_log.write("t265_debug_option", data.str());
+            }
+        }
+        if (t265_map.enabled) {
+
+            auto set_map_option = [&](rs2_option option, float value, const char *name) {
+                if (!map_pose_sensor->supports(option)) {
+                    throw std::runtime_error(std::string("T265 does not support ") + name);
+                }
+                map_pose_sensor->set_option(option, value);
+                std::ostringstream data;
+                data << "{\"name\":\"" << name << "\",\"value\":" << value << "}";
+                event_log.write("t265_map_option", data.str());
+            };
+            set_map_option(RS2_OPTION_ENABLE_MAPPING, 1.0f, "enable_mapping");
+            set_map_option(RS2_OPTION_ENABLE_RELOCALIZATION, 1.0f,
+                           "enable_relocalization");
+            // An explicit setting also applies when importing a map.
+            set_map_option(RS2_OPTION_ENABLE_POSE_JUMPING,
+                           options.pose_jumping_override >= 0
+                               ? static_cast<float>(options.pose_jumping_override) : 0.0f,
+                           "enable_pose_jumping");
+            if (map_pose_sensor->supports(RS2_OPTION_ENABLE_MAP_PRESERVATION)) {
+                map_pose_sensor->set_option(RS2_OPTION_ENABLE_MAP_PRESERVATION, 0.0f);
+                event_log.write("t265_map_option",
+                                "{\"name\":\"enable_map_preservation\",\"value\":0}");
+            }
+
+            const std::vector<std::uint8_t> map_bytes =
+                read_binary_file(options.t265_map_path);
+            if (!map_pose_sensor->import_localization_map(map_bytes)) {
+                throw std::runtime_error(
+                    "T265 rejected localization map: " + options.t265_map_path);
+            }
+            t265_map.imported = true;
+            event_log.write(
+                "t265_map_imported",
+                "{\"path\":\"" + json_escape(options.t265_map_path) +
+                "\",\"size_bytes\":" + std::to_string(map_bytes.size()) + "}");
+            map_pose_sensor->set_notifications_callback(
+                [&](const rs2::notification &notification) {
+                    std::ostringstream data;
+                    data << "{\"category\":\"" << notification.get_category()
+                         << "\",\"description\":\""
+                         << json_escape(notification.get_description())
+                         << "\",\"timestamp\":" << notification.get_timestamp()
+                         << ",\"serialized\":\""
+                         << json_escape(notification.get_serialized_data()) << "\"}";
+                    event_log.write("t265_notification", data.str());
+                    if (notification.get_category() ==
+                        RS2_NOTIFICATION_CATEGORY_POSE_RELOCALIZATION) {
+                        const std::uint64_t count =
+                            relocalization_event_count.fetch_add(1) + 1;
+                        const std::uint64_t timestamp = monotonic_ns();
+                        relocalized.store(true);
+                        event_log.write(
+                            "t265_relocalized",
+                            "{\"event_count\":" + std::to_string(count) +
+                            ",\"timestamp_monotonic_ns\":" +
+                            std::to_string(timestamp) + "}");
+                    }
+                });
+        }
+        if (options.debug_fresh_session) {
+            if (!map_pose_sensor->supports(RS2_OPTION_ENABLE_MAP_PRESERVATION))
+                throw std::runtime_error("SDK does not support disabling map preservation for debug A/B");
+            map_pose_sensor->set_option(RS2_OPTION_ENABLE_MAP_PRESERVATION, 0.f);
+            event_log.write("debug_map_preservation", "{\"value\":0,\"clean_fusion_state_verified\":false}");
+        }
+        if (!options.debug_wheel_socket.empty()) {
+            // Same resolved pose sensor, BEFORE start. Never a second SDK process.
+            debug_wheel->configure(*map_pose_sensor, options.debug_wheel_config);
+            event_log.write("t265_wheel_dependencies",options.debug_wheel_synthetic
+                ? "{\"sources\":[\"synthetic_test_fixture\"],\"independent_reference\":false}"
+                : "{\"sources\":[\"measured_wheel_feedback\",\"primary_gyro_rate\"],\"independent_reference\":false}");
+        }
+        } catch (const rs2::error &) {
+            throw;
+        } catch (const std::exception &error) {
+            // Only SDK initialization is contained here. Programming errors in
+            // unrelated control/pose processing still reach the outer handler.
+            if (!options.experimental_robust_localization) throw;
+            throw T265Unavailable(std::string("SDK initialization failed: ") + error.what());
+        }
+        DebugPoseQueue evidence_pose_queue;
+        std::unique_ptr<omni::DebugFisheyeEvidence> fisheye;
+        rs2::pipeline_profile active_profile;
+        // Destroy this guard BEFORE callback targets on every exit/exception.
+        std::unique_ptr<DebugPipelineGuard> debug_pipeline_guard;
+        if(!options.debug_test_session.empty() || debug_wheel || raw_imu_log.enabled())
+            debug_pipeline_guard.reset(new DebugPipelineGuard{pipeline,debug_wheel.get()});
+        const bool debug_pose_callbacks=!options.debug_test_session.empty() || raw_imu_log.enabled();
+        if(!options.debug_fisheye_output.empty()) {
+            fisheye.reset(new omni::DebugFisheyeEvidence(options.debug_fisheye_output,
+                options.debug_fisheye_request,options.debug_test_session));
+        }
+        if(debug_pose_callbacks) {
+            // v2.50 sync poll aggregates video at video rate. The callback gives
+            // unsynchronized Pose independently, preserving its native cadence.
+            active_profile=pipeline.start(rs_config,[&](rs2::frame frame){
+                if(auto pose=frame.as<rs2::pose_frame>())evidence_pose_queue.push(pose);
+                else if (auto motion = frame.as<rs2::motion_frame>()) {
+                    if (!raw_imu_log.enabled()) return;
+                    try {
+                        const auto type = motion.get_profile().stream_type();
+                        if (type != RS2_STREAM_GYRO && type != RS2_STREAM_ACCEL) return;
+                        const auto xyz = motion.get_motion_data();
+                        bool have_temperature = false; double temperature = 0.;
+                        try {
+                            if (motion.supports_frame_metadata(RS2_FRAME_METADATA_TEMPERATURE)) {
+                                temperature = motion.get_frame_metadata(RS2_FRAME_METADATA_TEMPERATURE);
+                                have_temperature = true;
+                            }
+                        } catch (const rs2::error &) { raw_imu_log.read_error(); }
+                        raw_imu_log.submit(imu_run, type == RS2_STREAM_GYRO, motion.get_frame_number(),
+                            motion.get_timestamp(), static_cast<int>(motion.get_frame_timestamp_domain()),
+                            xyz.x, xyz.y, xyz.z, have_temperature, temperature);
+                    } catch (const rs2::error &) { raw_imu_log.read_error(); }
+                }
+                else if(fisheye) {
+                    if(auto frames=frame.as<rs2::frameset>())fisheye->offer(frames,monotonic_ns());
+                }
+            });
+        } else active_profile=pipeline.start(rs_config);
+        // An actual start identity, not a claim that firmware state was reset.
+        sdk_device_session_id = std::to_string(::getpid()) + ":" + std::to_string(monotonic_ns());
+        consumed_attach_generation = sdk_attach_generation.load();
+        publish_sdk_availability(true, "pipeline_started");
+        if(debug_wheel)debug_wheel->start(); // Same SDK owner process, independent of Pose/GUI/disk loops.
+        if (map_pose_sensor) {
+            const float pose_jumping = map_pose_sensor->get_option(RS2_OPTION_ENABLE_POSE_JUMPING);
+            event_log.write("t265_pose_jumping_final",
+                            "{\"value\":" + std::to_string(pose_jumping) + "}");
+            std::cerr << "[T265 OPTION FINAL] enable_pose_jumping=" << pose_jumping << '\n';
+            for (int i = 0; i < 5; ++i) {
+                if (!map_pose_sensor->supports(pose_options[i])) continue;
+                std::ostringstream data;
+                data << "{\"name\":\"" << pose_option_names[i]
+                     << "\",\"requested\":" << pose_option_values[i]
+                     << ",\"value\":" << map_pose_sensor->get_option(pose_options[i]) << '}';
+                event_log.write("t265_pose_option_final", data.str());
+            }
+        }
+        event_log.write(
+            "pipeline_started",
+            "{\"t265_map_enabled\":" +
+            std::string(t265_map.enabled ? "true" : "false") + "}");
+        if(!options.debug_test_session.empty() || raw_imu_log.enabled()) {
+            omni::DebugWheelInput::Json actual{{"session_id",options.debug_test_session},{"pid",::getpid()},
+                {"sdk_device_session_id",sdk_device_session_id},{"imu_sdk_run",imu_run},
+                {"raw_imu_csv",options.raw_imu_csv_path},{"raw_imu_used_for_control",false},
+                {"serial",serial},{"firmware",device_info(active_profile.get_device(),RS2_CAMERA_INFO_FIRMWARE_VERSION)},
+                {"librealsense_compile_time",RS2_API_VERSION_STR},{"librealsense_api_version",rs2_get_api_version(nullptr)},
+                {"device_boot_epoch",nullptr},{"clean_fusion_state_verified",false}};
+            actual["profiles"]=omni::DebugWheelInput::Json::array();
+            for(const auto &profile:active_profile.get_streams()) {
+                omni::DebugWheelInput::Json stream{{"stream",rs2_stream_to_string(profile.stream_type())},
+                    {"index",profile.stream_index()},{"fps",profile.fps()},{"format",rs2_format_to_string(profile.format())}};
+                if(auto video=profile.as<rs2::video_stream_profile>()) {stream["width"]=video.width();stream["height"]=video.height();}
+                if (auto motion = profile.as<rs2::motion_stream_profile>()) {
+                    stream["units"] = profile.stream_type() == RS2_STREAM_GYRO ? "rad/s" : "m/s^2";
+                    stream["axes"] = "SDK motion sensor axes, not body/field axes";
+                    try {
+                        const auto intr = motion.get_motion_intrinsics();
+                        stream["intrinsics"] = {{"data",omni::DebugWheelInput::Json::array()},
+                            {"noise_variances",std::vector<float>(intr.noise_variances,intr.noise_variances+3)},
+                            {"bias_variances",std::vector<float>(intr.bias_variances,intr.bias_variances+3)}};
+                        for (const auto &row : intr.data)
+                            stream["intrinsics"]["data"].push_back(std::vector<float>(row,row+4));
+                        const auto ext = profile.get_extrinsics_to(active_profile.get_stream(RS2_STREAM_POSE));
+                        stream["extrinsics_to_pose"] = {
+                            {"rotation_column_major",std::vector<float>(ext.rotation,ext.rotation+9)},
+                            {"translation_m",std::vector<float>(ext.translation,ext.translation+3)}};
+                    } catch (const rs2::error &error) { stream["calibration_read_error"] = error.what(); }
+                }
+                actual["profiles"].push_back(stream);
+            }
+            event_log.write("actual_sdk_session",actual.dump());
+        }
+
+        omni::T265FieldProjector projector(config);
+        if (!pose_publisher) pose_publisher.reset(new DebugPosePublisher(options.debug_pose_socket));
+        omni::T265YawSynchronizer yaw_synchronizer;
+        omni::OmniEncoderIntegrator encoder_integrator(config);
+        omni::PlanarEkf filter;
+        omni::PlanarOdometry odometry;
+        WheelDebugState wheel_debug;
+        omni::T265FieldPose latest_t265;
+        std::string wheel_gate = options.uart_path.empty()
+            ? "uart_disabled"
+            : (options.ignore_encoders ? "t265_only" : "no_baseline");
+        std::uint64_t wheel_accepted = 0;
+        std::uint64_t wheel_rejected = 0;
+        bool have_first_pose = false;
+        bool encoder_yaw_initialized = false;
+        double previous_encoder_field_yaw_rad = 0.0;
+        bool t265_update_accepted = false;
+        std::uint8_t previous_tracker_confidence = 0;
+        auto first_pose_time = std::chrono::steady_clock::now();
+        auto next_output = first_pose_time;
+        const auto output_period = options.output_rate_hz > 0.0
+            ? std::chrono::duration<double>(1.0 / options.output_rate_hz)
+            : std::chrono::duration<double>(0.0);
+        auto next_pose_tx = first_pose_time;
+        const auto pose_tx_period = options.tx_rate_hz > 0.0
+            ? std::chrono::duration<double>(1.0 / options.tx_rate_hz)
+            : std::chrono::duration<double>(0.0);
+        std::uint8_t pose_tx_sequence = 0;
+        std::uint64_t pose_tx_frames = 0;
+        std::uint64_t pose_tx_errors = 0;
+        bool previous_navigation_command_active = false;
+        bool previous_navigation_wheel_primary = false;
+        double navigation_wheel_progress_m = 0.0;
+        bool t265_position_corrected = true;
+        double active_t265_position_multiplier = 1.0;
+        auto next_navigation_position_correction = first_pose_time;
+        bool map_startup_ready = !t265_map.enabled;
+        bool map_startup_failed = false;
+        t265_map.startup_ready = map_startup_ready;
+        const auto map_wait_start = std::chrono::steady_clock::now();
+        bool map_confidence_stable = false;
+        auto map_confidence_stable_start = map_wait_start;
+        auto last_pose_frame_time = map_wait_start;
+        bool have_pose_frame_number = false;
+        unsigned long long last_pose_frame_number = 0;
+        omni::T265RawPose previous_debug_pose;
+        bool have_previous_debug_pose = false;
+        auto fail_map_startup = [&](bool frame_timeout, double wait_ms,
+                                    std::uint8_t tracker_confidence,
+                                    std::uint8_t mapper_confidence,
+                                    const std::string &reason) {
+            t265_map.event_count = relocalization_event_count.load(
+                std::memory_order_relaxed);
+            t265_map.relocalized = relocalized.load(
+                std::memory_order_relaxed);
+            map_startup_failed = true;
+            t265_map.timeout = !frame_timeout;
+            t265_map.frame_timeout = frame_timeout;
+            t265_map.error = reason;
+            const std::string event_name = frame_timeout
+                ? "t265_map_pose_frame_timeout"
+                : "t265_map_relocalization_timeout";
+            event_log.write(
+                event_name,
+                "{\"wait_ms\":" + std::to_string(wait_ms) +
+                ",\"reason\":\"" + json_escape(reason) + "\"}");
+            write_map_status_json(
+                options.output_path, t265_map, config,
+                tracker_confidence, mapper_confidence);
+            std::cerr << "[T265 MAP] " << reason << " after "
+                      << wait_ms / 1000.0 << " s\n";
+        };
+        if (t265_map.enabled) {
+            write_map_status_json(options.output_path, t265_map, config);
+        }
+        std::cerr << "[RUN] field +X right, +Y up; yaw is counter-clockwise from +X\n";
+        while (running.load(std::memory_order_relaxed) && !g_stop) {
+            if (options.experimental_robust_localization && options.duration_sec > 0 &&
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - service_started).count() >= options.duration_sec)
+                break;
+            if (options.experimental_robust_localization && g_sdk_retry) {
+                publish_sdk_availability(false, "explicit_SIGUSR1_restart");
+                throw T265Unavailable("explicit SIGUSR1 requested one SDK restart");
+            }
+            if (options.experimental_robust_localization && sdk_device_removed.load()) {
+                publish_sdk_availability(false, "T265 USB device removed");
+                throw T265Unavailable("T265 USB device removed");
+            }
+            rs2::frameset frames;
+            rs2::pose_frame pose_frame{rs2::frame{}};
+            std::chrono::steady_clock::time_point callback_received{};
+            bool have_frames = false;
+            try {
+                if(debug_pose_callbacks) {
+                    DebugPoseQueue::Sample sample;
+                    have_frames=evidence_pose_queue.pop(sample);
+                    if(have_frames) {pose_frame=sample.frame;callback_received=sample.received;}
+                } else {
+                    have_frames = pipeline.poll_for_frames(&frames);
+                    if(have_frames)pose_frame=frames.get_pose_frame();
+                }
+            } catch (const rs2::error &error) {
+                if (options.experimental_robust_localization)
+                    publish_sdk_availability(false, error.what());
+                event_log.write(
+                    "t265_frame_poll_failed",
+                    "{\"error\":\"" + json_escape(error.what()) + "\"}");
+                if (t265_map.enabled && !map_startup_ready) {
+                    const double wait_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - map_wait_start).count();
+                    fail_map_startup(
+                        true, wait_ms, 0, 0,
+                        std::string("T265 frame polling failed: ") + error.what());
+                }
+                throw;
+            }
+            if (!have_frames) {
+                if (t265_map.enabled && !map_startup_ready) {
+                    const double wait_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - map_wait_start).count();
+                    const double pose_age_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - last_pose_frame_time).count();
+                    t265_map.last_pose_age_ms = pose_age_ms;
+                    if (pose_age_ms >= options.frame_timeout_sec * 1000.0) {
+                        fail_map_startup(
+                            true, wait_ms, 0, 0,
+                            "no T265 Pose frame received during map startup");
+                        break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            if (!pose_frame) {
+                if (t265_map.enabled && !map_startup_ready) {
+                    const double wait_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - map_wait_start).count();
+                    const double pose_age_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - last_pose_frame_time).count();
+                    t265_map.last_pose_age_ms = pose_age_ms;
+                    if (pose_age_ms >= options.frame_timeout_sec * 1000.0) {
+                        fail_map_startup(
+                            true, wait_ms, 0, 0,
+                            "T265 frames contain no Pose stream during map startup");
+                        break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            const auto frame_number = pose_frame.get_frame_number();
+            if (have_pose_frame_number && frame_number == last_pose_frame_number) continue;
+            last_pose_frame_number = frame_number;
+            have_pose_frame_number = true;
+            const auto timestamp_domain = pose_frame.get_frame_timestamp_domain();
+            const bool host_clock_timestamp = timestamp_domain == RS2_TIMESTAMP_DOMAIN_GLOBAL_TIME ||
+                                              timestamp_domain == RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME;
+            const auto capture_conversion_monotonic_ns=monotonic_ns();
+            const double host_time_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const double capture_age_ms = host_clock_timestamp
+                ? host_time_ms - pose_frame.get_timestamp() : std::numeric_limits<double>::infinity();
+            const rs2_pose pose = pose_frame.get_pose_data();
+            const auto t265_received = debug_pose_callbacks ? callback_received : std::chrono::steady_clock::now();
+            last_pose_frame_time = t265_received;
+            t265_map.last_pose_age_ms = 0.0;
+            ++t265_map.pose_frame_count;
+            if (t265_map.pose_frame_count == 1) {
+                t265_map.first_pose_wait_ms =
+                    std::chrono::duration<double, std::milli>(
+                        t265_received - map_wait_start).count();
+                event_log.write(
+                    "t265_first_pose_frame",
+                    "{\"wait_ms\":" +
+                    std::to_string(t265_map.first_pose_wait_ms) + "}");
+            }
+            omni::T265RawPose raw;
+            raw.translation_m[0] = pose.translation.x;
+            raw.translation_m[1] = pose.translation.y;
+            raw.translation_m[2] = pose.translation.z;
+            raw.velocity_mps[0] = pose.velocity.x;
+            raw.velocity_mps[1] = pose.velocity.y;
+            raw.velocity_mps[2] = pose.velocity.z;
+            raw.rotation_xyzw[0] = pose.rotation.x;
+            raw.rotation_xyzw[1] = pose.rotation.y;
+            raw.rotation_xyzw[2] = pose.rotation.z;
+            raw.rotation_xyzw[3] = pose.rotation.w;
+            raw.angular_velocity_radps[0] = pose.angular_velocity.x;
+            raw.angular_velocity_radps[1] = pose.angular_velocity.y;
+            raw.angular_velocity_radps[2] = pose.angular_velocity.z;
+            raw.timestamp_s = pose_frame.get_timestamp() * 0.001;
+            raw.tracker_confidence = pose.tracker_confidence;
+            raw.mapper_confidence = pose.mapper_confidence;
+            if (raw_pose_log.enabled()) {
+                raw_pose_csv << std::setprecision(17)
+                    << std::chrono::duration_cast<std::chrono::nanoseconds>(t265_received.time_since_epoch()).count()
+                    << ',' << frame_number << ',' << pose_frame.get_timestamp() << ','
+                    << static_cast<int>(timestamp_domain) << ',' << capture_age_ms;
+                for (double v : raw.translation_m) raw_pose_csv << ',' << v;
+                for (double v : raw.velocity_mps) raw_pose_csv << ',' << v;
+                for (double v : raw.rotation_xyzw) raw_pose_csv << ',' << v;
+                for (double v : raw.angular_velocity_radps) raw_pose_csv << ',' << v;
+                raw_pose_csv << ',' << static_cast<unsigned>(raw.tracker_confidence)
+                             << ',' << static_cast<unsigned>(raw.mapper_confidence)
+                             << ',' << monotonic_ns() << ',' << evidence_pose_queue.dropped_.load() << '\n';
+                raw_pose_log.submit(raw_pose_csv.str());raw_pose_csv.str("");
+            }
+            if (options.pose_jumping_override >= 0) {
+                if (have_previous_debug_pose) {
+                    const double dt = raw.timestamp_s - previous_debug_pose.timestamp_s;
+                    double residual_squared = 0.0;
+                    double displacement_squared = 0.0;
+                    for (int i = 0; i < 3; ++i) {
+                        const double displacement = raw.translation_m[i] - previous_debug_pose.translation_m[i];
+                        const double predicted = 0.5 * (raw.velocity_mps[i] +
+                            previous_debug_pose.velocity_mps[i]) * dt;
+                        residual_squared += (displacement - predicted) * (displacement - predicted);
+                        displacement_squared += displacement * displacement;
+                    }
+                    const double residual = std::sqrt(residual_squared);
+                    // Diagnostics only: preserve the raw pose and existing
+                    // estimator/control paths; do not invent a fixed position.
+                    if (dt > 0.050 || (dt > 0.0 && dt <= 0.020 && residual > 0.050)) {
+                        std::ostringstream data;
+                        data << "{\"t265_timestamp_s\":" << std::setprecision(15) << raw.timestamp_s
+                             << ",\"dt_s\":" << dt
+                             << ",\"displacement_m\":" << std::sqrt(displacement_squared)
+                             << ",\"velocity_residual_m\":" << residual
+                             << ",\"tracker_confidence\":" << static_cast<unsigned>(raw.tracker_confidence)
+                             << ",\"mapper_confidence\":" << static_cast<unsigned>(raw.mapper_confidence) << '}';
+                        event_log.write(dt > 0.050 ? "t265_pose_gap" : "t265_position_discontinuity", data.str());
+                    }
+                }
+                previous_debug_pose = raw;
+                have_previous_debug_pose = true;
+            }
+            t265_map.event_count = relocalization_event_count.load(
+                std::memory_order_relaxed);
+            t265_map.relocalized = relocalized.load(
+                std::memory_order_relaxed);
+            if (t265_map.enabled && !map_startup_ready) {
+                const double wait_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - map_wait_start).count();
+                if (t265_map.relocalized && raw.tracker_confidence >= 2) {
+                    if (!map_confidence_stable) {
+                        map_confidence_stable = true;
+                        map_confidence_stable_start =
+                            std::chrono::steady_clock::now();
+                    }
+                } else {
+                    map_confidence_stable = false;
+                }
+                const double stable_ms = map_confidence_stable
+                    ? std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        map_confidence_stable_start).count()
+                    : 0.0;
+                if (t265_map.relocalized && raw.tracker_confidence >= 2 &&
+                    stable_ms >= 500.0) {
+                    map_startup_ready = true;
+                    t265_map.startup_ready = true;
+                    t265_map.relocalization_wait_ms = wait_ms;
+                    event_log.write(
+                        "t265_map_startup_ready",
+                        "{\"relocalization_wait_ms\":" +
+                        std::to_string(wait_ms) + "}");
+                } else if (wait_ms >= options.relocalization_timeout_sec * 1000.0) {
+                    fail_map_startup(
+                        false, wait_ms, raw.tracker_confidence,
+                        raw.mapper_confidence,
+                        "POSE_RELOCALIZATION was not received before timeout");
+                    break;
+                } else {
+                    // Do not initialize the production field origin or EKF
+                    // from an un-relocalized pose.
+                    continue;
+                }
+            }
+            // Keep the raw untracked packet above, without binding a permanent
+            // ground plane from an SDK attitude that has not tracked yet. The
+            // experimental wheel-only path already runs while this is absent.
+            if (options.experimental_robust_localization && !projector.initialized() &&
+                raw.tracker_confidence == 0) continue;
+            latest_t265 = projector.project(raw);
+            if(!options.debug_pose_socket.empty()) {
+                const auto receive_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(t265_received.time_since_epoch()).count();
+                const double estimate=static_cast<double>(capture_conversion_monotonic_ns)-capture_age_ms*1e6;
+                const bool mapped=std::isfinite(estimate)&&estimate>=0;
+                const auto sample_ns=mapped ? static_cast<std::int64_t>(estimate) : receive_ns;
+                omni::DebugWheelInput::Json packet{{"schema",1},{"session_id",options.debug_test_session},
+                    {"sdk_device_session_id",sdk_device_session_id},{"frame_number",frame_number},
+                    {"timestamp_monotonic_ns",sample_ns},{"receive_monotonic_ns",receive_ns},
+                    {"capture_timestamp_ms",pose_frame.get_timestamp()},{"timestamp_domain",static_cast<int>(timestamp_domain)},
+                    {"time_basis",mapped?"SDK_host_clock_mapped_estimate":"host_receive"},
+                    {"x_m",latest_t265.pose.x_m},{"y_m",latest_t265.pose.y_m},{"yaw_rad",latest_t265.pose.yaw_rad},
+                    {"forward_mps",latest_t265.body_forward_velocity_mps},{"left_mps",latest_t265.body_left_velocity_mps},
+                    {"vx_local_mps",latest_t265.vx_local_mps},{"vy_local_mps",latest_t265.vy_local_mps},
+                    {"yaw_rate_radps",latest_t265.gyro_yaw_rate_radps},{"tracker_confidence",raw.tracker_confidence},
+                    {"mapper_confidence",raw.mapper_confidence},{"travel_from_start_m",latest_t265.travel_from_origin_m},
+                    {"time_qualified",false}};
+                if (options.experimental_robust_localization)
+                    packet["rotation_xyzw"] = omni::DebugWheelInput::Json::array({
+                        raw.rotation_xyzw[0], raw.rotation_xyzw[1], raw.rotation_xyzw[2], raw.rotation_xyzw[3]});
+                pose_publisher->send(packet);
+            }
+            yaw_synchronizer.update(steady_time_s(t265_received), latest_t265);
+
+            if (!filter.initialized() && latest_t265.tracker_confidence > 0) {
+                filter.initialize(latest_t265.pose);
+                odometry.initialize(latest_t265.pose);
+                first_pose_time = std::chrono::steady_clock::now();
+                next_output = first_pose_time;
+                next_pose_tx = first_pose_time;
+                have_first_pose = true;
+                previous_tracker_confidence = latest_t265.tracker_confidence;
+            }
+            if (!filter.initialized()) continue;
+
+            const auto now = std::chrono::steady_clock::now();
+            const bool navigation_active =
+                navigation_command_active.load(std::memory_order_relaxed);
+            const std::uint8_t active_navigation_code =
+                navigation_command_code.load(std::memory_order_relaxed);
+            const std::uint16_t active_navigation_remaining_mm =
+                navigation_remaining_mm.load(std::memory_order_relaxed);
+            const std::uint16_t active_navigation_heading_cdeg =
+                navigation_heading_cdeg.load(std::memory_order_relaxed);
+            if (navigation_active && !previous_navigation_command_active) {
+                navigation_wheel_progress_m = 0.0;
+            }
+            previous_navigation_command_active = navigation_active;
+
+            wheel_debug.updated_this_pose = false;
+            wheel_debug.accepted_this_pose = false;
+            wheel_debug.rejected_this_pose = false;
+
+            for (const TimedEncoderFrame &timed : encoder_queue.drain()) {
+                wheel_debug.have_latest_frame = true;
+                wheel_debug.latest_frame = timed.frame;
+                wheel_debug.latest_frame_ns = steady_time_ns(timed.received);
+                omni::WheelIncrement increment;
+                std::string integration_reason;
+                if (!encoder_integrator.update(timed.frame, increment, integration_reason)) {
+                    if (integration_reason == "baseline") {
+                        double baseline_yaw_rad = 0.0;
+                        if (yaw_synchronizer.yaw_at(
+                                steady_time_s(timed.received), baseline_yaw_rad)) {
+                            // Anchor the heading at the same timestamp as the
+                            // encoder baseline so the first accepted interval
+                            // does not lose its T265 yaw delta.
+                            previous_encoder_field_yaw_rad = baseline_yaw_rad;
+                            encoder_yaw_initialized = true;
+                        } else {
+                            encoder_yaw_initialized = false;
+                        }
+                    } else if (integration_reason == "counter_reset" ||
+                               integration_reason == "invalid_encoder" ||
+                               integration_reason == "invalid_dt") {
+                        // The next valid ODOM frame starts a new translation
+                        // interval, so do not bridge its heading from an old
+                        // encoder timestamp.
+                        encoder_yaw_initialized = false;
+                    }
+                    wheel_gate = integration_reason;
+                    wheel_debug.rejected_this_pose = true;
+                    continue;
+                }
+                const omni::WheelGateReason gate =
+                    omni::evaluate_wheel_gate(config, latest_t265, increment);
+                wheel_gate = omni::wheel_gate_reason_name(gate);
+                const double wheel_kinematic_yaw_rad = increment.yaw_rad;
+                const double encoder_time_s = steady_time_s(timed.received);
+                double t265_yaw_at_increment_rad = 0.0;
+                const bool use_synchronized_t265_yaw = yaw_synchronizer.yaw_at(
+                    encoder_time_s, t265_yaw_at_increment_rad);
+                double gyro_yaw_delta_rad = 0.0;
+                if (use_synchronized_t265_yaw) {
+                    if (!encoder_yaw_initialized) {
+                        previous_encoder_field_yaw_rad = t265_yaw_at_increment_rad;
+                        encoder_yaw_initialized = true;
+                    }
+                    // This is the difference between T265-timeline headings
+                    // at two consecutive F407 ODOM receive times. It replaces
+                    // the old latest-rate * F407-dt calculation.
+                    gyro_yaw_delta_rad = omni::wrap_angle(
+                        t265_yaw_at_increment_rad -
+                        previous_encoder_field_yaw_rad);
+                    increment.field_yaw_rad = previous_encoder_field_yaw_rad +
+                        0.5 * gyro_yaw_delta_rad;
+                    increment.field_yaw_valid = true;
+                    increment.yaw_rad = gyro_yaw_delta_rad;
+                    previous_encoder_field_yaw_rad += gyro_yaw_delta_rad;
+                } else {
+                    // If the T265 timeline is unavailable, retain the raw
+                    // F407 kinematic yaw for this diagnostic increment rather
+                    // than inventing a heading from an unrelated timebase.
+                    encoder_yaw_initialized = false;
+                    increment.field_yaw_rad = 0.0;
+                    increment.field_yaw_valid = false;
+                }
+                const omni::WheelIncrement fusion_increment =
+                    omni::apply_encoder_fusion_weight(
+                        increment, config.encoder_fusion_weight);
+                wheel_debug.have_latest_increment = true;
+                wheel_debug.latest_increment = increment;
+                wheel_debug.latest_wheel_kinematic_yaw_rad = wheel_kinematic_yaw_rad;
+                wheel_debug.latest_gyro_yaw_delta_rad = gyro_yaw_delta_rad;
+                wheel_debug.latest_t265_yaw_at_increment_rad =
+                    use_synchronized_t265_yaw ? increment.field_yaw_rad : 0.0;
+                wheel_debug.latest_increment_yaw_synchronized =
+                    use_synchronized_t265_yaw;
+                wheel_debug.latest_increment_uses_gyro =
+                    use_synchronized_t265_yaw;
+                wheel_debug.latest_update_ns = wheel_debug.latest_frame_ns;
+                wheel_debug.updated_this_pose = true;
+                // Keep this raw encoder-only trajectory even when the same
+                // increment is rejected by the EKF safety gate. The rejected
+                // status is logged separately so drift and gating can be
+                // diagnosed from one run.
+                odometry.integrate(increment);
+                ++wheel_debug.odom_updates;
+                const double wheel_speed = std::hypot(
+                    increment.forward_velocity_mps,
+                    increment.left_velocity_mps);
+                const double t265_speed = std::hypot(
+                    latest_t265.body_forward_velocity_mps,
+                    latest_t265.body_left_velocity_mps);
+                const bool near_navigation_target = navigation_active &&
+                    active_navigation_remaining_mm <=
+                        static_cast<std::uint16_t>(
+                            std::lround(config.navigation_near_target_m * 1000.0));
+                const bool near_target_slip = near_navigation_target &&
+                    wheel_speed >= config.navigation_slip_wheel_speed_mps &&
+                    t265_speed <= config.navigation_slip_t265_speed_mps;
+                const bool navigation_encoder_override = navigation_active &&
+                    !near_navigation_target &&
+                    latest_t265.mapper_confidence == 0 &&
+                    gate == omni::WheelGateReason::VelocityMismatch;
+                if (near_target_slip) {
+                    wheel_gate = "navigation_near_target_slip";
+                    wheel_debug.rejected_this_pose = true;
+                    wheel_debug.latest_increment_accepted = false;
+                    ++wheel_rejected;
+                } else if (gate == omni::WheelGateReason::Accepted ||
+                           navigation_encoder_override) {
+                    if (navigation_encoder_override) {
+                        wheel_gate = "navigation_encoder_override";
+                    }
+                    if (navigation_active &&
+                        config.navigation_distance_compensation_enabled &&
+                        !options.ignore_encoders && !options.t265_only_output) {
+                        // Distance compensation uses the T265 heading at the
+                        // middle of this encoder interval and the raw
+                        // three-wheel translation. It does not depend on the
+                        // EKF's weighted 2D pose or on the latest loop pose.
+                        const double t265_yaw = increment.field_yaw_valid
+                            ? increment.field_yaw_rad : latest_t265.pose.yaw_rad;
+                        const double t265_c = std::cos(t265_yaw);
+                        const double t265_s = std::sin(t265_yaw);
+                        const double t265_field_dx =
+                            t265_c * increment.forward_m - t265_s * increment.left_m;
+                        const double t265_field_dy =
+                            t265_s * increment.forward_m + t265_c * increment.left_m;
+                        const double command_heading = omni::radians(
+                            static_cast<double>(active_navigation_heading_cdeg) * 0.01);
+                        const double progress =
+                            t265_field_dx * std::cos(command_heading) +
+                            t265_field_dy * std::sin(command_heading);
+                        navigation_wheel_progress_m += progress;
+                    }
+                    if (!options.t265_only_output) {
+                        filter.predict(fusion_increment, config);
+                    }
+                    wheel_debug.accepted_this_pose = true;
+                    wheel_debug.latest_increment_accepted = true;
+                    wheel_debug.latest_accepted_update_ns = wheel_debug.latest_frame_ns;
+                    ++wheel_accepted;
+                } else {
+                    wheel_debug.rejected_this_pose = true;
+                    wheel_debug.latest_increment_accepted = false;
+                    ++wheel_rejected;
+                }
+            }
+
+            const std::uint64_t fusion_now_ns = monotonic_ns();
+            const bool accepted_wheel_fresh =
+                wheel_debug.latest_accepted_update_ns > 0 &&
+                age_ms(fusion_now_ns, wheel_debug.latest_accepted_update_ns) <=
+                    static_cast<double>(config.uart_stale_ms);
+            const bool navigation_wheel_primary =
+                omni::navigation_wheel_primary_enabled(
+                    navigation_active, !options.ignore_encoders && !options.t265_only_output,
+                    accepted_wheel_fresh, config.encoder_fusion_weight);
+            const bool navigation_distance_valid = navigation_active &&
+                config.navigation_distance_compensation_enabled &&
+                !options.ignore_encoders && !options.t265_only_output && accepted_wheel_fresh;
+            if (navigation_wheel_primary && !previous_navigation_wheel_primary) {
+                next_navigation_position_correction = now;
+            }
+            previous_navigation_wheel_primary = navigation_wheel_primary;
+
+            double innovation_m = 0.0;
+            active_t265_position_multiplier = 1.0;
+            t265_position_corrected = true;
+            if (navigation_wheel_primary) {
+                const double configured_multiplier =
+                    latest_t265.mapper_confidence == 0
+                        ? std::max(
+                            config.navigation_t265_position_sigma_multiplier,
+                            config.mapper_zero_position_sigma_multiplier)
+                        : config.navigation_t265_position_sigma_multiplier;
+                active_t265_position_multiplier =
+                    omni::weighted_t265_sigma_multiplier(
+                        configured_multiplier, config.encoder_fusion_weight);
+                // Full wheel weight preserves the original downsampled
+                // wheel-primary behaviour. Any reduced encoder weight keeps
+                // T265 position correction at every pose frame.
+                t265_position_corrected = config.encoder_fusion_weight < 0.999 ||
+                    now >= next_navigation_position_correction;
+                if (t265_position_corrected) {
+                    const auto period = std::chrono::duration<double>(
+                        1.0 / config.navigation_t265_position_correction_rate_hz);
+                    next_navigation_position_correction = now +
+                        std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+                }
+            }
+            if (options.ignore_encoders || options.t265_only_output) {
+                const omni::Pose2d before_t265 = filter.pose();
+                innovation_m = std::hypot(
+                    latest_t265.pose.x_m - before_t265.x_m,
+                    latest_t265.pose.y_m - before_t265.y_m);
+                if (latest_t265.tracker_confidence > 0) {
+                    // T265-only means exactly that: no EKF blending or NAV
+                    // downweighting. Follow every valid projected pose 1:1.
+                    filter.initialize(latest_t265.pose);
+                    t265_update_accepted = true;
+                    wheel_gate = "t265_only_100pct";
+                } else {
+                    t265_update_accepted = false;
+                    wheel_gate = "t265_lost";
+                }
+            } else if (!navigation_wheel_primary && previous_tracker_confidence == 0 &&
+                latest_t265.tracker_confidence > 0 && have_first_pose) {
+                // After a complete visual tracking outage, T265 is the primary
+                // absolute source. Re-anchor instead of permanently rejecting a
+                // legitimate reacquisition farther than the normal jump gate.
+                filter.initialize(latest_t265.pose);
+                t265_update_accepted = true;
+                wheel_gate = "t265_reacquired";
+            } else {
+                t265_update_accepted = filter.correct_t265(
+                    latest_t265, config, &innovation_m,
+                    active_t265_position_multiplier,
+                    t265_position_corrected);
+            }
+            previous_tracker_confidence = latest_t265.tracker_confidence;
+            if (!t265_update_accepted && innovation_m > config.maximum_t265_innovation_m) {
+                wheel_gate = "t265_jump_rejected";
+            }
+
+            const double elapsed = std::chrono::duration<double>(now - first_pose_time).count();
+            if (have_first_pose && options.duration_sec > 0.0 && elapsed >= options.duration_sec) {
+                break;
+            }
+            const omni::Pose2d fused = filter.pose();
+            const omni::Pose2d odom = odometry.pose();
+            const bool odom_available = wheel_debug.odom_updates > 0;
+            const double fused_odom_delta_m = odom_available
+                ? std::hypot(fused.x_m - odom.x_m, fused.y_m - odom.y_m) : -1.0;
+            const double fused_odom_yaw_delta_deg = odom_available
+                ? omni::degrees(omni::wrap_angle(fused.yaw_rad - odom.yaw_rad)) : 0.0;
+            const char *quality = quality_name(
+                latest_t265.tracker_confidence,
+                latest_t265.mapper_confidence,
+                t265_update_accepted);
+            const std::int64_t last_ns = last_uart_ns.load(std::memory_order_relaxed);
+            const std::uint64_t sample_ns = monotonic_ns();
+            const bool uart_fresh = !options.uart_path.empty() && last_ns > 0 &&
+                static_cast<std::int64_t>(sample_ns) - last_ns <=
+                    static_cast<std::int64_t>(config.uart_stale_ms) * 1000000LL;
+
+            if (options.dynamic_pose_socket.empty() && uart && options.tx_rate_hz > 0.0 && now >= next_pose_tx) {
+                next_pose_tx = now +
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(pose_tx_period);
+                const long x_mm_long = std::lround(fused.x_m * 1000.0);
+                const long y_mm_long = std::lround(fused.y_m * 1000.0);
+                double heading_deg = std::fmod(omni::degrees(fused.yaw_rad), 360.0);
+                if (heading_deg < 0.0) heading_deg += 360.0;
+
+                omni::FusedPoseFrame tx;
+                tx.sequence = pose_tx_sequence++;
+                tx.x_mm = static_cast<std::int16_t>(std::max<long>(
+                    std::numeric_limits<std::int16_t>::min(),
+                    std::min<long>(std::numeric_limits<std::int16_t>::max(), x_mm_long)));
+                tx.y_mm = static_cast<std::int16_t>(std::max<long>(
+                    std::numeric_limits<std::int16_t>::min(),
+                    std::min<long>(std::numeric_limits<std::int16_t>::max(), y_mm_long)));
+                tx.heading_cdeg = static_cast<std::uint16_t>(
+                    std::lround(heading_deg * 100.0)) % 36000u;
+                const bool obstacle_gate = wheel_gate == "startup_obstacle" ||
+                                           wheel_gate == "corner_obstacle";
+                const bool inside_field = std::fabs(fused.x_m) <= config.field_half_m &&
+                                          std::fabs(fused.y_m) <= config.field_half_m;
+                // Pure T265 and official-input paths share the reviewed
+                // adoption policy. Disabling wheel input must not restore a
+                // hidden 250ms pose-age gate. Explicit legacy fusion keeps
+                // its old branch; no extra clock is read on the direct path.
+                const bool source_fresh = options.t265_only_output ||
+                    !options.wheel_feedback_socket.empty() ||
+                    (std::isfinite(capture_age_ms) && capture_age_ms >= -50.0 &&
+                     capture_age_ms + std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - t265_received).count() <= 250.0);
+                tx.status = omni::t265_pose_status(t265_update_accepted,
+                                                   latest_t265.tracker_confidence, source_fresh);
+                if (uart_fresh && config.encoder_fusion_weight > 0.0 &&
+                    wheel_gate == "accepted") tx.status |= omni::kPoseWheelActive;
+                if (obstacle_gate) tx.status |= omni::kPoseObstacleGate;
+                if (uart_fresh) tx.status |= omni::kPoseOdomFresh;
+                if (inside_field) tx.status |= omni::kPoseInsideField;
+                const unsigned sigma_cm = std::min<unsigned>(
+                    15u, static_cast<unsigned>(std::lround(filter.position_sigma_m() * 100.0)));
+                tx.confidence_and_sigma = static_cast<std::uint8_t>(
+                    (sigma_cm << 4) |
+                    ((static_cast<unsigned>(latest_t265.mapper_confidence) & 0x03u) << 2) |
+                    (static_cast<unsigned>(latest_t265.tracker_confidence) & 0x03u));
+                const auto bytes = omni::build_fused_pose_frame(tx);
+                std::lock_guard<omni::PriorityInheritanceMutex> lock(uart_tx_mutex);
+                if (uart->write_all(bytes.data(), bytes.size(), 50)) {
+                    ++pose_tx_frames;
+                } else {
+                    ++pose_tx_errors;
+                }
+            }
+
+            if (csv_log.enabled()) {
+                const bool have_increment = wheel_debug.have_latest_increment;
+                const bool have_frame = wheel_debug.have_latest_frame;
+                const double odom_yaw_rate_radps = have_increment &&
+                    wheel_debug.latest_increment.dt_s > 0.0
+                    ? wheel_debug.latest_increment.yaw_rad /
+                        wheel_debug.latest_increment.dt_s : 0.0;
+                csv << std::fixed << std::setprecision(9)
+                    << sample_ns << ',' << elapsed << ',' << raw.timestamp_s << ','
+                    << raw.translation_m[0] << ',' << raw.translation_m[1] << ','
+                    << raw.translation_m[2] << ',' << raw.velocity_mps[0] << ','
+                    << raw.velocity_mps[1] << ',' << raw.velocity_mps[2] << ','
+                    << raw.rotation_xyzw[0] << ',' << raw.rotation_xyzw[1] << ','
+                    << raw.rotation_xyzw[2] << ',' << raw.rotation_xyzw[3] << ','
+                    << raw.angular_velocity_radps[0] << ','
+                    << raw.angular_velocity_radps[1] << ','
+                    << raw.angular_velocity_radps[2] << ','
+                    << latest_t265.forward_world[0] << ','
+                    << latest_t265.forward_world[1] << ','
+                    << latest_t265.forward_world[2] << ','
+                    << latest_t265.left_world[0] << ','
+                    << latest_t265.left_world[1] << ','
+                    << latest_t265.left_world[2] << ','
+                    << omni::degrees(latest_t265.raw_chassis_yaw_rad) << ','
+                    << omni::degrees(latest_t265.relative_yaw_rad) << ','
+                    << latest_t265.pose.x_m << ',' << latest_t265.pose.y_m << ','
+                    << omni::degrees(latest_t265.pose.yaw_rad) << ','
+                    << latest_t265.tracking_origin_pose.x_m << ','
+                    << latest_t265.tracking_origin_pose.y_m << ','
+                    << latest_t265.tracking_origin_delta_forward_m << ','
+                    << latest_t265.tracking_origin_delta_left_m << ','
+                    << latest_t265.unscaled_robot_center_delta_forward_m << ','
+                    << latest_t265.unscaled_robot_center_delta_left_m << ','
+                    << latest_t265.robot_center_delta_forward_m << ','
+                    << latest_t265.robot_center_delta_left_m << ','
+                    << latest_t265.translation_scale << ','
+                    << (latest_t265.translation_scale_enabled ? 1 : 0) << ','
+                    << latest_t265.camera_offset_forward_m << ','
+                    << latest_t265.camera_offset_left_m << ','
+                    << latest_t265.body_forward_velocity_mps << ','
+                    << latest_t265.body_left_velocity_mps << ','
+                    << omni::degrees(latest_t265.yaw_rate_radps) << ','
+                    << omni::degrees(latest_t265.gyro_yaw_rate_radps) << ','
+                    << omni::degrees(latest_t265.gyro_relative_yaw_rad) << ','
+                    << (latest_t265.gyro_yaw_rate_valid ? 1 : 0) << ','
+                    << omni::degrees(latest_t265.gyro_pose_sync_error_rad) << ','
+                    << latest_t265.travel_from_origin_m << ','
+                    << fused.x_m << ',' << fused.y_m << ','
+                    << omni::degrees(fused.yaw_rad) << ','
+                    << odom.x_m << ',' << odom.y_m << ','
+                    << omni::degrees(odom.yaw_rad) << ',' << odometry.travel_m() << ','
+                    << (have_increment
+                            ? wheel_debug.latest_increment.forward_velocity_mps : 0.0)
+                    << ','
+                    << (have_increment
+                            ? wheel_debug.latest_increment.left_velocity_mps : 0.0)
+                    << ',' << omni::degrees(odom_yaw_rate_radps) << ','
+                    << fused_odom_delta_m << ',' << fused_odom_yaw_delta_deg << ','
+                    << (odom_available ? latest_t265.pose.x_m - odom.x_m : 0.0) << ','
+                    << (odom_available ? latest_t265.pose.y_m - odom.y_m : 0.0) << ','
+                    << (odom_available
+                            ? std::hypot(latest_t265.pose.x_m - odom.x_m,
+                                         latest_t265.pose.y_m - odom.y_m) : -1.0) << ','
+                    << (odom_available
+                            ? omni::degrees(omni::wrap_angle(
+                                latest_t265.pose.yaw_rad - odom.yaw_rad)) : 0.0) << ','
+                    << (have_increment ? wheel_debug.latest_increment.forward_m : 0.0)
+                    << ',' << (have_increment ? wheel_debug.latest_increment.left_m : 0.0)
+                    << ',' << config.encoder_fusion_weight
+                    << ',' << (have_increment
+                            ? wheel_debug.latest_increment.forward_m *
+                                config.encoder_fusion_weight : 0.0)
+                    << ',' << (have_increment
+                            ? wheel_debug.latest_increment.left_m *
+                                config.encoder_fusion_weight : 0.0)
+                    << ',' << (have_increment
+                            ? omni::degrees(wheel_debug.latest_wheel_kinematic_yaw_rad) : 0.0)
+                    << ',' << (have_increment
+                            ? omni::degrees(wheel_debug.latest_gyro_yaw_delta_rad) : 0.0)
+                    << ',' << (have_increment &&
+                                      wheel_debug.latest_increment_yaw_synchronized
+                            ? omni::degrees(wheel_debug.latest_t265_yaw_at_increment_rad) : 0.0)
+                    << ',' << (have_increment &&
+                                      wheel_debug.latest_increment_yaw_synchronized ? 1 : 0)
+                    << ',' << (have_increment
+                            ? omni::degrees(wheel_debug.latest_increment.yaw_rad) : 0.0)
+                    << ',' << (have_increment ? wheel_debug.latest_increment.dt_s : 0.0)
+                    << ',' << (have_increment
+                            ? static_cast<unsigned>(wheel_debug.latest_increment.sequence_step)
+                            : 0u)
+                    << ',' << (have_frame
+                            ? static_cast<unsigned>(wheel_debug.latest_frame.sequence) : 0u)
+                    << ',' << (have_frame ? wheel_debug.latest_frame.position[0] : 0u)
+                    << ',' << (have_frame ? wheel_debug.latest_frame.position[1] : 0u)
+                    << ',' << (have_frame ? wheel_debug.latest_frame.position[2] : 0u)
+                    << ',' << (have_frame
+                            ? static_cast<unsigned>(wheel_debug.latest_frame.sample_period_ms)
+                            : 0u)
+                    << ',' << (have_frame
+                            ? static_cast<unsigned>(wheel_debug.latest_frame.status) : 0u)
+                    << ',' << (wheel_debug.updated_this_pose ? 1 : 0)
+                    << ',' << (wheel_debug.accepted_this_pose ? 1 : 0)
+                    << ',' << (wheel_debug.rejected_this_pose ? 1 : 0)
+                    << ',' << (wheel_debug.latest_increment_accepted ? 1 : 0)
+                    << ',' << wheel_gate << ',' << wheel_accepted << ',' << wheel_rejected
+                    << ',' << wheel_debug.odom_updates << ','
+                    << age_ms(sample_ns, wheel_debug.latest_frame_ns) << ','
+                    << age_ms(sample_ns, wheel_debug.latest_update_ns) << ','
+                    << static_cast<unsigned>(latest_t265.tracker_confidence) << ','
+                    << static_cast<unsigned>(latest_t265.mapper_confidence) << ','
+                    << (t265_update_accepted ? 1 : 0) << ','
+                    << (t265_position_corrected ? 1 : 0) << ','
+                    << active_t265_position_multiplier << ',' << innovation_m << ','
+                    << filter.position_sigma_m() << ','
+                    << omni::degrees(filter.yaw_sigma_rad()) << ',' << quality << ','
+                    << (t265_map.enabled ? 1 : 0) << ','
+                    << (t265_map.imported ? 1 : 0) << ','
+                    << (t265_map.relocalized ? 1 : 0) << ','
+                    << (t265_map.startup_ready ? 1 : 0) << ','
+                    << t265_map.event_count << ','
+                    << t265_map.relocalization_wait_ms << ','
+                    << t265_map.first_pose_wait_ms << ','
+                    << t265_map.last_pose_age_ms << ','
+                    << t265_map.pose_frame_count << ','
+                    << (t265_map.timeout ? 1 : 0) << ','
+                    << (t265_map.frame_timeout ? 1 : 0) << ','
+                    << (navigation_active ? 1 : 0) << ','
+                    << (navigation_wheel_primary ? 1 : 0) << ','
+                    << (navigation_distance_valid ? 1 : 0) << ','
+                    << (config.navigation_distance_compensation_enabled ? 1 : 0) << ','
+                    << static_cast<unsigned>(active_navigation_code) << ','
+                    << active_navigation_remaining_mm << ','
+                    << active_navigation_heading_cdeg << ','
+                    << navigation_wheel_progress_m << ','
+                    << navigation_wheel_progress_m << ',' << frame_number << ','
+                    << static_cast<int>(timestamp_domain) << ',' << capture_age_ms << ','
+                    << std::chrono::duration_cast<std::chrono::nanoseconds>(t265_received.time_since_epoch()).count() << ','
+                    << latest_t265.up_world[0] << ',' << latest_t265.up_world[1] << ','
+                    << latest_t265.up_world[2] << '\n';
+                csv_log.submit(csv.str());csv.str("");
+            }
+            if (options.output_rate_hz > 0.0 && now < next_output) continue;
+            if (options.output_rate_hz > 0.0) {
+                next_output = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(output_period);
+            }
+
+            const std::uint64_t uart_frames = live_uart_frames.load(std::memory_order_relaxed);
+            const std::uint64_t crc_errors = live_crc_errors.load(std::memory_order_relaxed);
+            const std::uint64_t sequence_gaps = live_sequence_gaps.load(std::memory_order_relaxed);
+            // Capture this Pose's plain values and timestamp. Formatting and
+            // I/O run on the writers, never borrowing the next mutable Pose.
+            const auto snapshot_ns = monotonic_ns();
+            const auto encoder_fusion_weight = config.encoder_fusion_weight;
+            const auto distance_compensation_enabled = config.navigation_distance_compensation_enabled;
+            if (match_recording || !dynamic_relay) raw_snapshot.submit([=] {
+                return pose_snapshot_json(snapshot_ns, fused, latest_t265, filter, odometry,
+                              wheel_debug, quality,
+                              wheel_gate, uart_fresh, wheel_accepted, wheel_rejected,
+                              uart_frames, crc_errors, sequence_gaps,
+                              pose_tx_frames, pose_tx_errors,
+                              navigation_active, navigation_wheel_primary,
+                              navigation_distance_valid,
+                              distance_compensation_enabled,
+                              active_navigation_code,
+                              active_navigation_remaining_mm,
+                              active_navigation_heading_cdeg,
+                              navigation_wheel_progress_m,
+                              t265_position_corrected,
+                              active_t265_position_multiplier,
+                              innovation_m,
+                              encoder_fusion_weight,
+                              t265_map);
+            });
+
+            pose_stdout.submit([=] {
+                std::ostringstream line;
+                line << std::fixed << std::setprecision(3)
+                      << "POSE t=" << elapsed
+                      << " field=(" << fused.x_m << ',' << fused.y_m << ')'
+                      << " yaw=" << std::setprecision(1) << omni::degrees(fused.yaw_rad)
+                      << "deg conf=" << static_cast<unsigned>(latest_t265.tracker_confidence)
+                      << '/' << static_cast<unsigned>(latest_t265.mapper_confidence)
+                      << " wheel=" << wheel_gate
+                      << " uart=" << (uart_fresh ? "fresh" : "stale")
+                      << " tx=" << pose_tx_frames << '/' << pose_tx_errors
+                      << " nav=" << (navigation_active
+                              ? (navigation_wheel_primary ? "wheel_primary" : "t265_primary")
+                              : "normal")
+                      << " ew=" << std::setprecision(2)
+                      << encoder_fusion_weight
+                      << " wprog=" << std::setprecision(3)
+                      << navigation_wheel_progress_m << "m"
+                      << " t265pos=" << (t265_position_corrected ? "correct" : "yaw_only")
+                      << " x" << std::setprecision(1)
+                      << active_t265_position_multiplier
+                      << " sigma=" << std::setprecision(3) << filter.position_sigma_m() << "m\n";
+                return line.str();
+            });
+        }
+
+        if(debug_pipeline_guard)debug_pipeline_guard->stop();
+        else pipeline.stop();
+        running.store(false, std::memory_order_relaxed);
+        if (uart_thread.joinable()) uart_thread.join();
+        if (relay_thread.joinable()) relay_thread.join();
+        test_uart_relay.reset();
+        stm_status_writer->close();
+        csv_log.close();raw_pose_log.close();raw_imu_log.close();uart_raw_log.close();
+        raw_snapshot.close();
+        pose_stdout.close();
+        event_log.write("diagnostic_csv_status", "{\"localization_dropped_rows\":" +
+            std::to_string(csv_log.dropped()) + ",\"localization_io_failed\":" +
+            (csv_log.failed() ? "true" : "false") + ",\"raw_pose_dropped_rows\":" +
+            std::to_string(raw_pose_log.dropped()) + ",\"raw_pose_io_failed\":" +
+            (raw_pose_log.failed() ? "true" : "false") + ",\"raw_imu_samples\":" +
+            std::to_string(raw_imu_log.samples()) + ",\"raw_imu_dropped_rows\":" +
+            std::to_string(raw_imu_log.dropped()) + ",\"raw_imu_read_errors\":" +
+            std::to_string(raw_imu_log.read_errors()) + ",\"raw_imu_io_failed\":" +
+            (raw_imu_log.failed() ? "true" : "false") + ",\"raw_json_write_errors\":" +
+            std::to_string(raw_snapshot.errors()) + ",\"uart_raw_dropped_rows\":"+std::to_string(uart_raw_log.dropped())+
+            ",\"uart_raw_io_failed\":"+(uart_raw_log.failed()?"true":"false")+",\"raw_json_coalesced\":" +
+            std::to_string(raw_snapshot.coalesced()) + ",\"pose_stdout_write_errors\":" +
+            std::to_string(pose_stdout.errors()) + ",\"pose_stdout_coalesced\":" +
+            std::to_string(pose_stdout.coalesced()) + "}");
+        if (!options.motion_feedback_socket.empty()) {
+            const auto &s = motion_feedback_tap->stats(); // UART publisher is joined.
+            event_log.write("motion_feedback_tap_status", "{\"eligible_frames\":" +
+                std::to_string(s.eligible_frames) + ",\"sent_frames\":" +
+                std::to_string(s.sent_frames) + ",\"dropped_frames\":" +
+                std::to_string(s.dropped_frames) + ",\"filtered_frames\":" +
+                std::to_string(s.filtered_frames) + ",\"send_errors\":" +
+                std::to_string(s.send_errors) + ",\"connection_error\":" +
+                std::to_string(s.connection_error) + ",\"last_error\":" +
+                std::to_string(s.last_error) + ",\"connected\":" +
+                (s.connected ? "true" : "false") + "}");
+        }
+        event_log.close();
+        std::cerr << "[SUMMARY] wheel accepted=" << wheel_accepted
+                  << " rejected=" << wheel_rejected
+                  << " UART frames=" << final_parser_stats.frames_ok
+                  << " crc_errors=" << final_parser_stats.crc_errors
+                  << " sequence_gaps=" << final_parser_stats.sequence_gaps
+                  << " pose_tx=" << pose_tx_frames
+                  << " pose_tx_errors=" << pose_tx_errors
+                  << " relay_tx=" << relay_tx_frames.load(std::memory_order_relaxed)
+                  << " relay_tx_errors=" << relay_tx_errors.load(std::memory_order_relaxed)
+                  << " status_frames=" << final_parser_stats.status_frames
+                  << " status_write_errors="
+                  << stm_status_writer->errors()
+                  << " status_snapshots_coalesced=" << stm_status_writer->coalesced()
+                  << " queue_dropped=" << encoder_queue.dropped()
+                  << " event_log_io_failed=" << event_log.failed()
+                  << " event_log_dropped=" << event_log.dropped() << '\n';
+        return map_startup_failed ? 4 : EXIT_SUCCESS;
+        };
+        while (true) {
+        consumed_attach_generation = sdk_attach_generation.load();
+        std::string sdk_failure;
+        try {
+            return run_sdk();
+        } catch (const rs2::error &error) {
+            if (!options.experimental_robust_localization) throw;
+            sdk_failure = std::string(error.what()) + " (" + error.get_failed_function() + ")";
+        } catch (const T265Unavailable &error) {
+            if (!options.experimental_robust_localization) throw;
+            sdk_failure = error.what();
+        }
+        if (debug_wheel) debug_wheel->stop();
+        {
+            rs2::device release_after_unlock;
+            {
+                std::lock_guard<std::mutex> lock(sdk_device_mutex);
+                release_after_unlock = sdk_watched_device;
+                sdk_watched_device = rs2::device();
+            }
+            // The final SDK device release can join its own threads. Keep it
+            // outside the mutex that the device-change callback also uses.
+        }
+        publish_sdk_availability(false, sdk_failure);
+        event_log.write("t265_sdk_unavailable", omni::DebugWheelInput::Json{
+            {"reason", sdk_failure}, {"uart_owner_retained", bool(uart)},
+            {"pose_fabricated", false}, {"automatic_retry_trigger", "actual_T200_attach_once"},
+            {"timer_retries", false}, {"USB_reset_requested", false},
+            {"device_event_errors",sdk_device_event_errors.load()},
+            {"experimental_robust_localization", true}}.dump());
+        std::cerr << "[T265 UNAVAILABLE] " << sdk_failure
+                  << "; experimental UART/relay service continues without fabricated Pose\n";
+        std::string retry_reason;
+        while (running.load(std::memory_order_relaxed) && !g_stop) {
+            if (options.duration_sec > 0 && std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - service_started).count() >= options.duration_sec) break;
+            if (g_sdk_retry) { g_sdk_retry = 0; retry_reason = "explicit_SIGUSR1"; break; }
+            if (sdk_attach_generation.load() > consumed_attach_generation) {
+                retry_reason = "actual_T200_attach"; break;
+            }
+            std::unique_lock<std::mutex> lock(sdk_device_mutex);
+            // The idle timeout bounds signal/shutdown handling. It performs no
+            // USB query, reset, measurement-age test or automatic retry.
+            sdk_event_ready.wait_for(lock,std::chrono::milliseconds(25),[&] {
+                return sdk_attach_generation.load() > consumed_attach_generation || g_sdk_retry || g_stop || !running.load();
+            });
+        }
+        if (retry_reason.empty()) break;
+        event_log.write("t265_sdk_reopen_requested",omni::DebugWheelInput::Json{
+            {"reason",retry_reason},{"attach_generation",sdk_attach_generation.load()},
+            {"UART_owner_preserved",bool(uart)},{"field_reference_preserved",true},
+            {"one_attempt_per_trigger",true}}.dump());
+        if (debug_wheel) debug_wheel->prepare_sdk_restart();
+        }
+        running.store(false, std::memory_order_relaxed);
+        if (uart_thread.joinable()) uart_thread.join();
+        if (relay_thread.joinable()) relay_thread.join();
+        test_uart_relay.reset();
+        stm_status_writer->close();
+        return EXIT_SUCCESS;
+    } catch (const rs2::error &error) {
+        running.store(false, std::memory_order_relaxed);
+        if (uart_thread.joinable()) uart_thread.join();
+        if (relay_thread.joinable()) relay_thread.join();
+        test_uart_relay.reset();
+        if(debug_wheel)debug_wheel->stop();
+        std::cerr << "[RS2 ERROR] " << error.what() << " ("
+                  << error.get_failed_function() << ' ' << error.get_failed_args() << ")\n";
+        return 3;
+    } catch (const std::exception &error) {
+        running.store(false, std::memory_order_relaxed);
+        if (uart_thread.joinable()) uart_thread.join();
+        if (relay_thread.joinable()) relay_thread.join();
+        test_uart_relay.reset();
+        if(debug_wheel)debug_wheel->stop();
+        std::cerr << "[ERROR] " << error.what() << '\n';
+        return 1;
+    }
+}

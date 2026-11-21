@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from protocol import (  # noqa: E402
+    CARGO_MIXED_MATERIAL,
+    CMD_CARGO_AUDIT,
+    CMD_VALID,
+    CargoAuditPayload,
+    FRAME_SIZE,
+    crc16_modbus,
+    mission_frame,
+)
+
+
+def test_bulldozer_step_contract_roundtrips_without_legacy_flag_aliases():
+    from obstacle_route import ObstacleRoute
+    from protocol import CMD_BULLDOZER_STEP
+    for side in ('red', 'blue'):
+        route = ObstacleRoute(side, (1,), ('green_supply',), 'material', (-.15, .54),
+                              (-.15, .54), ('danger_cyan',), 'sweep')
+        for index in range(len(route.steps)):
+            route.index = index
+            payload = route.payload(0, .5, pose_valid=True)
+            flags = 1 | (8 if side == 'red' else 0) | (int(route.step) << 4)
+            packet = mission_frame(7, CMD_BULLDOZER_STEP, flags, *payload)
+            assert packet[4] == 0x14 and packet[5] == flags
+            assert int.from_bytes(packet[6:8], 'big', signed=True) == payload[0]
+            assert int.from_bytes(packet[8:10], 'big', signed=True) == payload[1]
+            assert int.from_bytes(packet[10:12], 'big') == payload[2]
+            assert int.from_bytes(packet[12:14], 'little') == crc16_modbus(packet[2:12])
+    for flags, args in ((0xE9, (0,0,36000)), (0x0B, (0,0,0)),
+                        (0x19, (201,0,0)), (0x59, (10,0,9000))):
+        try:
+            mission_frame(1, CMD_BULLDOZER_STEP, flags, *args)
+        except ValueError:
+            continue
+        raise AssertionError('invalid new step request accepted')
+
+
+def test_same_side_blue_release_reason_is_not_a_motion_or_lift_angle():
+    import pytest
+    from protocol import CMD_RELEASE_BOTH, CMD_RED_SIDE, RELEASE_SAME_SIDE_BLUE
+    for side in (0,CMD_RED_SIDE):
+        frame=mission_frame(7,CMD_RELEASE_BOTH,CMD_VALID|side,0,0,RELEASE_SAME_SIDE_BLUE)
+        assert frame[6:10]==bytes(4) and int.from_bytes(frame[10:12],'big')==1
+        assert int.from_bytes(frame[12:14],'little')==crc16_modbus(frame[2:12])
+        assert mission_frame(7,CMD_RELEASE_BOTH,CMD_VALID|side)[10:12]==bytes(2)
+    for flags,a,b in [(0,0,0),(1,300,0),(1,0,9000),(1|64,0,0)]:
+        with pytest.raises(ValueError):mission_frame(7,CMD_RELEASE_BOTH,flags,a,b,RELEASE_SAME_SIDE_BLUE)
+
+
+def main() -> None:
+    from protocol import CMD_APPROACH_TARGET, CMD_APPROACH_RANGE, CMD_DISTANCE_VALID, CMD_RED_SIDE, CMD_CLUSTER_TARGET
+    flags = CMD_VALID | CMD_APPROACH_RANGE | CMD_DISTANCE_VALID | CMD_RED_SIDE | CMD_CLUSTER_TARGET
+    for distance in (0, 2500):
+        request = mission_frame(3, CMD_APPROACH_TARGET, flags, distance, 10500, 0)
+        assert int.from_bytes(request[6:8], "big") == distance
+        assert int.from_bytes(request[8:10], "big") == 10500 and request[10:12] == b"\0\0"
+    for distance, pitch, extra in ((-1,10500,0),(2501,12000,0),(100,14000,0),(100,10500,2)):
+        try:
+            mission_frame(3, CMD_APPROACH_TARGET, flags | extra, distance, pitch, 0)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid range request accepted")
+    packet = mission_frame(7, CMD_CARGO_AUDIT, CMD_VALID, 1, 6, 0x1234)
+    assert len(packet) == FRAME_SIZE
+    assert packet[:4] == bytes((0xA3, 0xB3, 0x18, 7))
+    assert packet[4] == CMD_CARGO_AUDIT
+    expected = crc16_modbus(packet[2:12])
+    assert packet[12:14] == expected.to_bytes(2, "little")
+    assert packet[-1] == 0xC3
+
+    audit = CargoAuditPayload(
+        left_class="mixed_material",
+        right_class="danger_cyan",
+        left_count=2,
+        right_count=1,
+        total_count=3,
+        danger_present=True,
+        stable=True,
+        audit_id=9,
+    )
+    audit_packet = audit.frame(8)
+    assert audit_packet[4] == CMD_CARGO_AUDIT
+    assert audit_packet[6] == CARGO_MIXED_MATERIAL
+    assert audit_packet[7] == 4
+    assert audit_packet[8] == 0x06  # left=2, right=1
+    assert audit_packet[9] & (1 << 1)  # danger flag
+    assert audit_packet[9] & (1 << 4)  # stable flag
+    assert audit_packet[10] == 9
+    assert audit_packet[11] == 3
+    print("competition protocol PASS")
+
+
+if __name__ == "__main__":
+    main()
+
+
+def test_empty_body_move_extension_keeps_field_translation_and_chassis_heading_separate():
+    from protocol import CMD_BULLDOZER_STEP, command_context_frame
+    for flags,u in ((0xD9,27000),(0xD1,9000),(0xD9,28200)):
+        packet=mission_frame(9,CMD_BULLDOZER_STEP,flags,100,-9000,u)
+        assert packet[4:6]==bytes((0x14,flags))
+        assert int.from_bytes(packet[6:8],'big',signed=True)==100
+        assert int.from_bytes(packet[8:10],'big',signed=True)==-9000
+        assert int.from_bytes(packet[10:12],'big')==u
+        assert packet[12:14]==crc16_modbus(packet[2:12]).to_bytes(2,'little')
+        assert command_context_frame(9,11,12,0)[3]==packet[3]
+
+
+def test_attack_back_150_keeps_legacy_record_encoding_and_opponent_heading():
+    from protocol import CMD_BULLDOZER_STEP, command_context_frame
+    for flags, heading in ((0xF9, 27000), (0xF1, 9000)):
+        packet = mission_frame(7, CMD_BULLDOZER_STEP, flags, -150, 0, heading)
+        assert int.from_bytes(packet[6:8], 'big', signed=True) == -150
+        for frame in (packet, command_context_frame(7, 10, 100, 0)):
+            assert frame[12:14] == crc16_modbus(frame[2:12]).to_bytes(2,'little')
+        for a,b,u in ((0,0,heading),(100,0,heading),(-200,0,heading),
+                      (-100,1,heading),(-100,0,(heading+18000)%36000)):
+            try:
+                mission_frame(7, CMD_BULLDOZER_STEP, flags, a, b, u)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('variable distance or wrong finite-back payload accepted')
+
+
+def test_attack_turn_heading_extension_keeps_old_sweep_turns_fixed():
+    from protocol import CMD_BULLDOZER_STEP
+    for flags in (0xE9,0xE1):
+        for heading in (0,7450,12981,25448,27000,30981,35999):
+            packet=mission_frame(9,CMD_BULLDOZER_STEP,flags,0,0,heading)
+            assert int.from_bytes(packet[10:12],'big')==heading
+            assert packet[12:14]==crc16_modbus(packet[2:12]).to_bytes(2,'little')
+        for a,b,u in ((1,0,27000),(0,1,9000),(0,0,36000)):
+            try: mission_frame(9,CMD_BULLDOZER_STEP,flags,a,b,u)
+            except ValueError: pass
+            else: raise AssertionError('invalid turn payload accepted')
+    for flags,heading in ((0x09,0),(0x01,18000),(0x49,9000),(0x41,27000)):
+        mission_frame(1,CMD_BULLDOZER_STEP,flags,0,0,heading)
+        try: mission_frame(1,CMD_BULLDOZER_STEP,flags,0,0,(heading+100)%36000)
+        except ValueError: pass
+        else: raise AssertionError('old sweep turn was widened')
+
+
+def test_reused_post_grab_audit_flag_only_extends_stage_nav():
+    from protocol import CMD_NAVIGATE_WAYPOINT, CMD_REUSE_POST_GRAB_AUDIT, CMD_STAGE_ONLY, CMD_DISTANCE_VALID
+    for red in (0,8):
+        flags = CMD_VALID | CMD_STAGE_ONLY | CMD_DISTANCE_VALID | CMD_REUSE_POST_GRAB_AUDIT | red
+        for distance in (0,245):
+            packet = mission_frame(9, CMD_NAVIGATE_WAYPOINT, flags, distance, 0, 27000)
+            assert packet[5] == flags and packet[12:14] == crc16_modbus(packet[2:12]).to_bytes(2,'little')
+        for bad_flags in (flags & ~CMD_STAGE_ONLY, flags & ~CMD_DISTANCE_VALID):
+            try:
+                mission_frame(9, CMD_NAVIGATE_WAYPOINT, bad_flags, 245, 0, 27000)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("audit reuse outside STAGE NAV accepted")
+
+
+def test_first_green_core_conflict_is_negative_metadata_with_unchanged_real_counts():
+    from dataclasses import replace
+    from protocol import AUDIT_FIRST_GREEN_CORE_CONFLICT, AUDIT_STABLE
+    plain=CargoAuditPayload(right_class="green_supply",right_count=1,total_count=1,stable=True,audit_id=9)
+    conflict=replace(plain,first_green_core_conflict=True)
+    old,new=plain.frame(7),conflict.frame(7)
+    for i in (6,7,8,10,11):
+        assert old[i] == new[i]
+    assert new[9] == old[9] | AUDIT_FIRST_GREEN_CORE_CONFLICT
+    assert new[12:14] == crc16_modbus(new[2:12]).to_bytes(2,'little')
+    assert plain.semantic_signature != conflict.semantic_signature
+    placeholder=CargoAuditPayload(first_green_core_conflict=True).frame(8)
+    assert placeholder[6:9] == bytes(3) and placeholder[11] == 0
+    assert placeholder[9] & AUDIT_FIRST_GREEN_CORE_CONFLICT and not placeholder[9] & AUDIT_STABLE
+
+
+def test_near_claw_separation_flag_has_no_transport_or_motion_payload():
+    from protocol import CMD_DISPERSE_PILE,CMD_DISPERSE_NEAR_KEEP,CMD_SIDE_VALID,CMD_TARGET_RIGHT
+    for side in (0,CMD_TARGET_RIGHT):
+        frame=mission_frame(4,CMD_DISPERSE_PILE,1|CMD_DISPERSE_NEAR_KEEP|CMD_SIDE_VALID|side)
+        assert frame[4]==0x10 and frame[5]&0x10 and frame[6:12]==bytes(6)
+    for flags,args in ((1|CMD_DISPERSE_NEAR_KEEP,(0,0,0)),
+                       (1|CMD_DISPERSE_NEAR_KEEP|CMD_SIDE_VALID,(1,0,0))):
+        try:mission_frame(4,CMD_DISPERSE_PILE,flags,*args)
+        except ValueError:pass
+        else:raise AssertionError('invalid near-claw separation payload')
+
+
+def test_closed_deflect_wire_phases_and_invalid_aliases():
+    import pytest
+    from protocol import CMD_CLOSED_DEFLECT
+    for side in (0,8):
+        for flags,args in ((3,(0,12000,9000)),(0x11,(300,3500,9000)),
+                           (0x17,(300,-3500,27000)),(0x23,(70,9000,9000))):
+            packet=mission_frame(7,CMD_CLOSED_DEFLECT,flags|side,*args)
+            assert packet[4]==0x15 and packet[2]==0x18
+            assert int.from_bytes(packet[12:14],'little')==crc16_modbus(packet[2:12])
+    for flags,args in ((1,(0,12000,9000)),(0x21,(70,9000,9000)),(0x31,(0,0,0)),
+                       (0x11,(300,0,9000)),(0x11,(2501,3500,9000)),(0x91,(300,3500,9000))):
+        with pytest.raises(ValueError):
+            mission_frame(7,CMD_CLOSED_DEFLECT,flags,*args)
+
+
+def test_closed_deflect_direction_uses_rectangle_and_reverse_pre_yaw():
+    from closed_deflect import choose_plan
+    # Facing +X: own zone above is left -> pull right -> pre-turn left.
+    assert choose_plan('red',(0.,0.),0.,100).pre_yaw_cdeg==3500
+    assert choose_plan('blue',(0.,0.),0.,100).pre_yaw_cdeg==-3500
+    # In front/behind, prefer nearer outer X edge, not fixed side colour.
+    for side,yaw in [('red',90.),('blue',270.)]:
+        left=choose_plan(side,(-.2,0.),yaw,100)
+        right=choose_plan(side,(.2,0.),yaw,100)
+        assert left.pre_yaw_cdeg==-right.pre_yaw_cdeg
+        assert not left.end_at_original
+        behind=choose_plan(side,(0.,0.),yaw+180.,100)
+        assert behind.end_at_original
+
+
+def test_confirmed_load_reuse_align_has_explicit_flag_and_no_audit_payload():
+    from protocol import CMD_ALIGN_SAFE_ZONE, CMD_REUSE_CONFIRMED_LOAD, CMD_USE_FINAL_HEADING
+    for side, heading in ((8,9000),(0,27000)):
+        flags = CMD_VALID | side | CMD_USE_FINAL_HEADING | CMD_REUSE_CONFIRMED_LOAD
+        packet = mission_frame(7,CMD_ALIGN_SAFE_ZONE,flags,0,0,heading)
+        assert packet[5] == flags and packet[6:10] == bytes(4)
+        for bad_flags,a,b,u in ((flags|64,0,0,heading),(flags,1,0,heading),
+                                (flags,0,14000,heading),(flags,0,0,(heading+18000)%36000)):
+            try:
+                mission_frame(7,CMD_ALIGN_SAFE_ZONE,bad_flags,a,b,u)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('invalid reuse ALIGN accepted')
+
+
+def test_station_only_turn_modes_have_strict_payload_and_preserve_legacy():
+    import pytest
+    from protocol import mission_frame,CMD_BULLDOZER_STEP,crc16_modbus
+    for side in (0,8):
+        for mode in (1,2,3):
+            for direction in (-1,1):
+                frame=mission_frame(7,CMD_BULLDOZER_STEP,0xe1|side,mode,direction,18000)
+                assert len(frame)==15 and int.from_bytes(frame[12:14],'little')==crc16_modbus(frame[2:12])
+        assert mission_frame(0,CMD_BULLDOZER_STEP,0xe1|side,0,0,9000)
+        for mode,direction in [(0,1),(1,0),(2,2),(3,2),(4,1),(-1,-1)]:
+            with pytest.raises(ValueError):mission_frame(0,CMD_BULLDOZER_STEP,0xe1|side,mode,direction,0)
+        with pytest.raises(ValueError):mission_frame(0,CMD_BULLDOZER_STEP,0x01|side,1,1,0)
+
+
+def test_finals_lift_filter_commands_are_disabled():
+    import pytest
+    from protocol import (
+        CMD_DISPERSE_PILE, CMD_KEEP_ORANGE, CMD_ORANGE_CORE_FILTER, CMD_ORANGE_GATE_FILTER,
+        CMD_RELEASE_BOTH, CMD_RELEASE_LEFT, CMD_RELEASE_RIGHT, CMD_SIDE_VALID,
+    )
+
+    for command in (CMD_DISPERSE_PILE, CMD_RELEASE_LEFT, CMD_RELEASE_RIGHT, CMD_RELEASE_BOTH):
+        flags = CMD_VALID
+        if command == CMD_DISPERSE_PILE:
+            flags |= CMD_SIDE_VALID | CMD_KEEP_ORANGE
+        mission_frame(1, command, flags, 0, 0, 0)
+        with pytest.raises(ValueError):
+            mission_frame(1, command, flags, 0, 0, 8200)
+    for command, flags, a, b, u in (
+        (CMD_ORANGE_GATE_FILTER, CMD_VALID | CMD_SIDE_VALID, 100, 8600, 27000),
+        (CMD_ORANGE_CORE_FILTER, CMD_VALID, -100, 8600, 8200),
+    ):
+        with pytest.raises(ValueError):
+            mission_frame(1, command, flags, a, b, u)

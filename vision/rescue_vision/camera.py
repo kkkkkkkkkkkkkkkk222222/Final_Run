@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from glob import glob
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+try:
+    import gi
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+except (ImportError, ValueError) as exc:
+    raise RuntimeError(
+        "缺少GStreamer Python绑定，请安装python3-gi和gir1.2-gstreamer-1.0"
+    ) from exc
+
+
+@dataclass(frozen=True)
+class CameraFrame:
+    frame_id: int
+    image: np.ndarray
+    published_ns: int
+    pixel_format: str = "bgr"
+
+
+class CameraDecoderError(RuntimeError):
+    """JPU initialization or decoding failed, independently of capture."""
+
+
+def resolve_camera_device(requested: str, *, prefer_stable: bool = False) -> str:
+    """Use a stable UVC video-index0 link if /dev/videoN was renumbered."""
+    if requested == "auto":
+        requested = ""
+    if requested:
+        path = Path(requested)
+        if path.exists():
+            if prefer_stable and not path.is_symlink():
+                for directory in ("by-id", "by-path"):
+                    for link in sorted(glob(f"/dev/v4l/{directory}/*-video-index0")):
+                        if Path(link).resolve() == path.resolve():
+                            return link
+            return requested
+        if prefer_stable and requested.startswith(("/dev/v4l/by-id/", "/dev/v4l/by-path/")):
+            raise FileNotFoundError(f"摄像头节点不存在：{requested}")
+    candidates = sorted(link for link in glob("/dev/v4l/by-id/*-video-index0") if Path(link).exists())
+    if len(candidates) == 1:
+        print(f"摄像头节点 {requested or 'auto'} 不存在，自动使用 {candidates[0]}", file=sys.stderr)
+        return candidates[0]
+    if not candidates:
+        raise RuntimeError(f"摄像头节点不存在：{requested or 'auto'}，且未找到video-index0设备")
+    raise RuntimeError(
+        f"摄像头节点不存在：{requested or 'auto'}；检测到多个摄像头，请明确指定：{candidates}")
+
+
+class LatestFrameCamera:
+    def __init__(self, device: str, width: int, height: int, fps: int,
+                 decoder: str = "jpu", decode_fps: float = 60.0,
+                 output_format: str = "bgr", *, use_source_timestamp: bool = False,
+                 enable_auto_exposure: bool = False) -> None:
+        Gst.init(None)
+        self.width = width
+        self.height = height
+        self.decoder = decoder
+        self.decode_fps = decode_fps
+        self.output_format = output_format
+        self.use_source_timestamp = use_source_timestamp
+        self._lock = threading.Lock()
+        self._latest: Optional[CameraFrame] = None
+        self._decoded = 0
+        self._captured = 0
+        self._compressed = None
+        self._worker_error: Optional[str] = None
+        self._running = False
+        self._decode_thread: Optional[threading.Thread] = None
+        self._jpu = None
+        self._start_ns = time.monotonic_ns()
+        if decoder not in ("jpu", "software"):
+            raise ValueError("decoder must be jpu or software")
+        if output_format not in ("bgr", "nv12"):
+            raise ValueError("output_format must be bgr or nv12")
+        if decoder != "jpu" and output_format != "bgr":
+            raise ValueError("NV12 output currently requires the JPU decoder")
+        source = (
+            f"v4l2src name=vision_source device={device} io-mode=mmap do-timestamp=true ! "
+            f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+            "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
+        )
+        if decoder == "jpu":
+            description = source + "appsink name=vision_sink emit-signals=true max-buffers=1 drop=true sync=false"
+        else:
+            description = source + (
+                "jpegparse ! jpegdec idct-method=ifast ! videoconvert ! video/x-raw,format=BGR ! "
+                "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
+                "appsink name=vision_sink emit-signals=true max-buffers=1 drop=true sync=false"
+            )
+        self.pipeline = Gst.parse_launch(description)
+        if enable_auto_exposure:
+            controls = Gst.Structure.new_empty("controls")
+            controls.set_value("auto_exposure", 3)  # UVC aperture priority uses automatic exposure.
+            self.pipeline.get_by_name("vision_source").set_property("extra-controls", controls)
+        self.sink = self.pipeline.get_by_name("vision_sink")
+        self.sink.connect("new-sample", self._on_sample)
+        self.bus = self.pipeline.get_bus()
+
+    def _on_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+        buffer = sample.get_buffer()
+        captured_ns = time.monotonic_ns()
+        if self.use_source_timestamp and buffer.pts != Gst.CLOCK_TIME_NONE:
+            # v4l2src timestamps survive JPEG decode and inference. Convert pipeline
+            # running time to host monotonic time, including time spent in queues.
+            clock = sink.get_clock()
+            pts = sample.get_segment().to_running_time(Gst.Format.TIME, buffer.pts)
+            if clock is not None and pts != Gst.CLOCK_TIME_NONE:
+                queued_ns = clock.get_time() - sink.get_base_time() - pts
+                if 0 <= queued_ns < captured_ns:
+                    captured_ns -= queued_ns
+        ok, mapping = buffer.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.ERROR
+        try:
+            if self.decoder == "jpu":
+                compressed = bytes(mapping.data)
+                with self._lock:
+                    self._captured += 1
+                    self._compressed = (self._captured, compressed, captured_ns)
+                return Gst.FlowReturn.OK
+            expected = self.width * self.height * 3
+            if mapping.size < expected:
+                return Gst.FlowReturn.ERROR
+            image = np.frombuffer(mapping.data, np.uint8, expected)
+            image = image.reshape(self.height, self.width, 3).copy()
+        finally:
+            buffer.unmap(mapping)
+        with self._lock:
+            self._decoded += 1
+            self._latest = CameraFrame(self._decoded, image, captured_ns, "bgr")
+        return Gst.FlowReturn.OK
+
+    def _jpu_decode_loop(self) -> None:
+        from .jpu import JpuDecodeTimeout
+
+        last_captured = 0
+        consecutive_timeouts = 0
+        period = 1.0 / max(self.decode_fps, 1.0)
+        next_decode = time.perf_counter()
+        try:
+            while self._running:
+                now = time.perf_counter()
+                if now < next_decode:
+                    time.sleep(min(next_decode - now, 0.002))
+                    continue
+                next_decode = now + period
+                with self._lock:
+                    packet = self._compressed
+                if packet is None or packet[0] == last_captured:
+                    time.sleep(0.0005)
+                    continue
+                captured_id, jpeg, captured_ns = packet
+                try:
+                    image = (
+                        self._jpu.decode_nv12(jpeg)
+                        if self.output_format == "nv12"
+                        else self._jpu.decode(jpeg)
+                    )
+                    consecutive_timeouts = 0
+                except JpuDecodeTimeout:
+                    consecutive_timeouts += 1
+                    last_captured = captured_id
+                    if consecutive_timeouts <= 5:
+                        continue
+                    raise RuntimeError("JPU连续5帧输出超时")
+                last_captured = captured_id
+                with self._lock:
+                    self._decoded += 1
+                    self._latest = CameraFrame(
+                        self._decoded, image, captured_ns, self.output_format
+                    )
+        except Exception as error:
+            with self._lock:
+                self._worker_error = str(error)
+            self._running = False
+
+    def start(self) -> None:
+        try:
+            if self.decoder == "jpu":
+                try:
+                    from .jpu import JpuDecoder
+                    self._jpu = JpuDecoder(self.width, self.height)
+                except Exception as error:
+                    raise CameraDecoderError(f"JPU初始化失败：{error}") from error
+                self._running = True
+                self._decode_thread = threading.Thread(
+                    target=self._jpu_decode_loop, name="jpu-latest-frame", daemon=True)
+                self._decode_thread.start()
+            result = self.pipeline.set_state(Gst.State.PLAYING)
+            if result != Gst.StateChangeReturn.FAILURE:
+                result, _, _ = self.pipeline.get_state(5 * Gst.SECOND)
+            if result == Gst.StateChangeReturn.FAILURE:
+                # READY -> NULL flushes the bus; retain the original message first.
+                raise RuntimeError(self._stream_error() or "GStreamer未能启动摄像头管线")
+        except Exception:
+            self.stop()
+            raise
+
+    def latest(self) -> Optional[CameraFrame]:
+        with self._lock:
+            return self._latest
+
+    def decoded_count(self) -> int:
+        with self._lock:
+            return self._decoded
+
+    def captured_count(self) -> int:
+        with self._lock:
+            return self._captured if self.decoder == "jpu" else self._decoded
+
+    def _stream_error(self) -> Optional[str]:
+        message = self.bus.pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
+        if message is None:
+            return None
+        if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            return f"GStreamer错误：{error}; {debug}"
+        return "摄像头流结束"
+
+    def poll_error(self) -> Optional[RuntimeError]:
+        stream_error = self._stream_error()
+        if stream_error is not None:
+            return RuntimeError(stream_error)
+        with self._lock:
+            if self._worker_error:
+                return CameraDecoderError(f"JPU错误：{self._worker_error}")
+        return None
+
+    def check_error(self) -> Optional[str]:
+        error = self.poll_error()
+        return str(error) if error is not None else None
+
+    def stop(self) -> None:
+        self._running = False
+        self.pipeline.set_state(Gst.State.NULL)
+        self.pipeline.get_state(2 * Gst.SECOND)
+        if self._decode_thread is not None:
+            if self._decode_thread.ident is not None:
+                self._decode_thread.join(timeout=2.0)
+            self._decode_thread = None
+        if self._jpu is not None:
+            self._jpu.close()
+            self._jpu = None

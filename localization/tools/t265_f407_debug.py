@@ -1,0 +1,710 @@
+#!/usr/bin/env python3
+"""Capture and analyze T265 versus the F407 three-wheel odometry interface.
+
+The live mode deliberately does not send TYPE=0x11/0x12/0x18 frames.  It
+starts the already-tested upper-computer localizer with zero encoder fusion,
+while still listening to F407 TYPE=0x15 odometry and TYPE=0x18 motion-status frames.
+The localizer's full-rate CSV is retained for every run and can be analyzed
+again without hardware.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import re
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LOCALIZATION_ROOT = PROJECT_ROOT / "localization"
+DEFAULT_LOCALIZER = LOCALIZATION_ROOT / "build" / "t265_omni_localizer"
+DEFAULT_CONFIG = LOCALIZATION_ROOT / "config" / "localization.example.conf"
+DEFAULT_RUN_ROOT = PROJECT_ROOT / "rescue_map" / "runtime" / "history" / "t265_f407_debug"
+
+PROTOCOL = {
+    "uart": "USART3 via RDK /dev/ttyS1",
+    "baud": 115200,
+    "frame_bytes": 15,
+    "frame_head": "A3 B3",
+    "frame_tail": "C3",
+    "crc": "CRC-16/Modbus over TYPE..P7, little-endian CRC",
+    "odom_type": "0x15",
+    "motion_command_type": "0x17",
+    "motion_status_type": "0x18",
+    "m1": "right wheel",
+    "m2": "left wheel",
+    "m3": "rear wheel",
+    "encoder_sign": [-1, -1, -1],
+    "sample_period": "F407 encoder sample/control period, normally 10 ms",
+}
+
+
+def finite(value: float | None) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def number(row: dict[str, str], key: str, default: float = math.nan) -> float:
+    try:
+        return float(row.get(key, ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def integer(row: dict[str, str], key: str, default: int = 0) -> int:
+    value = number(row, key, math.nan)
+    return default if not math.isfinite(value) else int(round(value))
+
+
+def wrap_degrees(value: float) -> float:
+    return (value + 180.0) % 360.0 - 180.0
+
+
+def read_rows(csv_path: Path) -> list[dict[str, str]]:
+    with csv_path.open("r", encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def read_events(csv_path: Path) -> list[dict[str, Any]]:
+    events_path = csv_path.parent / "events.jsonl"
+    if not events_path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        try:
+            value = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    return events
+
+
+def find_csv(path: Path) -> tuple[Path, Path | None]:
+    if path.is_file():
+        return path, path.parent if path.name.endswith(".csv") else None
+    csv_path = path / "localization_debug.csv"
+    if not csv_path.exists():
+        matches = sorted(path.glob("*.csv"))
+        if matches:
+            csv_path = matches[0]
+    if not csv_path.exists():
+        raise FileNotFoundError(f"未找到定位CSV：{path}")
+    return csv_path, path
+
+
+def write_debug_config(source: Path, target: Path, start_zone: int | None = None,
+                       *, center_origin: bool = False,
+                       start_heading_offset_deg: float | None = None,
+                       camera_robot_forward_axis: str | None = None,
+                       camera_robot_up_axis: str | None = None,
+                       encoder_to_robot_yaw_deg: float | None = None,
+                       camera_offset_forward_m: float | None = None,
+                       camera_offset_left_m: float | None = None,
+                       unit_translation_scale: bool = False) -> None:
+    """Keep wheel samples enabled while making their EKF weight exactly zero."""
+    lines = source.read_text(encoding="utf-8").splitlines()
+    replacements = {
+        "encoder_fusion_weight": "encoder_fusion_weight = 0.0",
+        "navigation_distance_compensation_enabled":
+            "navigation_distance_compensation_enabled = false",
+        "startup_wheel_disable_distance_m": "startup_wheel_disable_distance_m = 0.0",
+        "corner_exclusion_inner_m": "corner_exclusion_inner_m = 2.0",
+    }
+    if unit_translation_scale:
+        replacements.update(t265_translation_scale_enabled="t265_translation_scale_enabled = false",
+                            t265_translation_scale="t265_translation_scale = 1.000")
+    if start_zone is not None:
+        if start_zone not in (1, 2, 3, 4):
+            raise ValueError("start_zone must be in 1..4")
+        replacements["start_zone"] = f"start_zone = {start_zone}"
+    if center_origin:
+        replacements["start_center_m"] = "start_center_m = 0.0"
+    if start_heading_offset_deg is not None:
+        replacements["start_heading_offset_deg"] = f"start_heading_offset_deg = {start_heading_offset_deg}"
+    if camera_robot_forward_axis is not None:
+        replacements["camera_robot_forward_axis"] = f"camera_robot_forward_axis = {camera_robot_forward_axis}"
+    if camera_robot_up_axis is not None:
+        replacements["camera_robot_up_axis"] = f"camera_robot_up_axis = {camera_robot_up_axis}"
+    if encoder_to_robot_yaw_deg is not None:
+        replacements["encoder_to_robot_yaw_deg"] = f"encoder_to_robot_yaw_deg = {encoder_to_robot_yaw_deg}"
+    if camera_offset_forward_m is not None:
+        replacements["camera_offset_forward_m"] = f"camera_offset_forward_m = {camera_offset_forward_m}"
+    if camera_offset_left_m is not None:
+        replacements["camera_offset_left_m"] = f"camera_offset_left_m = {camera_offset_left_m}"
+    seen: set[str] = set()
+    output: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        replaced = False
+        for key, replacement in replacements.items():
+            if stripped.startswith(f"{key} ") or stripped.startswith(f"{key}="):
+                output.append(replacement)
+                seen.add(key)
+                replaced = True
+                break
+        if not replaced:
+            output.append(line)
+    for key, replacement in replacements.items():
+        if key not in seen:
+            output.append(replacement)
+    target.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
+def initial_reference(
+    first: dict[str, str], offset_forward: float, offset_left: float
+) -> dict[str, Any]:
+    yaw_deg = number(first, "t265_yaw_deg")
+    raw_x = number(first, "tracking_origin_x_m")
+    raw_y = number(first, "tracking_origin_y_m")
+    center_x = number(first, "t265_x_m")
+    center_y = number(first, "t265_y_m")
+    if not all(math.isfinite(value) for value in (yaw_deg, raw_x, raw_y, center_x, center_y)):
+        return {"available": False}
+    yaw = math.radians(yaw_deg)
+    expected_x = math.cos(yaw) * offset_forward - math.sin(yaw) * offset_left
+    expected_y = math.sin(yaw) * offset_forward + math.cos(yaw) * offset_left
+    observed_x = raw_x - center_x
+    observed_y = raw_y - center_y
+    return {
+        "available": True,
+        "start_yaw_deg": yaw_deg,
+        "observed_tracking_origin_minus_robot_center_m": {
+            "x": observed_x,
+            "y": observed_y,
+            "norm": math.hypot(observed_x, observed_y),
+        },
+        "expected_rotated_offset_m": {
+            "x": expected_x,
+            "y": expected_y,
+            "norm": math.hypot(expected_x, expected_y),
+        },
+        "error_m": math.hypot(observed_x - expected_x, observed_y - expected_y),
+    }
+
+
+def rotation_check(
+    rows: list[dict[str, str]], offset_forward: float, offset_left: float
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    usable = [
+        row for row in rows
+        if math.isfinite(number(row, "relative_yaw_deg"))
+        and math.isfinite(number(row, "tracking_origin_delta_forward_m"))
+        and math.isfinite(number(row, "robot_center_delta_forward_m"))
+    ]
+    for target in (90.0, 180.0, 270.0, 360.0):
+        if not usable:
+            result.append({"target_deg": target, "available": False})
+            continue
+        row = min(
+            usable,
+            key=lambda item: abs(abs(number(item, "relative_yaw_deg")) - target),
+        )
+        yaw_deg = number(row, "relative_yaw_deg")
+        yaw_error = abs(abs(yaw_deg) - target)
+        if yaw_error > max(6.0, target * 0.05):
+            result.append({
+                "target_deg": target,
+                "available": False,
+                "reason": "capture_did_not_reach_target_yaw",
+                "nearest_relative_yaw_deg": yaw_deg,
+            })
+            continue
+        yaw = math.radians(yaw_deg)
+        expected_forward = (
+            math.cos(yaw) * offset_forward
+            - math.sin(yaw) * offset_left
+            - offset_forward
+        )
+        expected_left = (
+            math.sin(yaw) * offset_forward
+            + math.cos(yaw) * offset_left
+            - offset_left
+        )
+        raw_forward = number(row, "tracking_origin_delta_forward_m")
+        raw_left = number(row, "tracking_origin_delta_left_m")
+        corrected_forward = number(row, "robot_center_delta_forward_m")
+        corrected_left = number(row, "robot_center_delta_left_m")
+        result.append({
+            "target_deg": target,
+            "available": True,
+            "actual_relative_yaw_deg": yaw_deg,
+            "target_yaw_error_deg": yaw_error,
+            "raw_tracking_origin_delta_m": {
+                "forward": raw_forward,
+                "left": raw_left,
+            },
+            "expected_pure_rotation_delta_m": {
+                "forward": expected_forward,
+                "left": expected_left,
+            },
+            "raw_arc_error_m": math.hypot(
+                raw_forward - expected_forward, raw_left - expected_left
+            ),
+            "corrected_robot_center_norm_m": math.hypot(
+                corrected_forward, corrected_left
+            ),
+        })
+    return result
+
+
+def fit_wheel_to_t265(rows: list[dict[str, str]], max_yaw_deg: float | None) -> dict[str, Any]:
+    """Fit T265 body increments = A * raw F407 wheel increments.
+
+    A diagonal value near 1 means scale agreement.  A large off-diagonal
+    value means cross-axis rotation or wheel-order/sign error.  This uses only
+    frames where the F407 increment passed the upper-computer gate and avoids
+    changing any live calibration.
+    """
+    samples: list[tuple[float, float, float, float]] = []
+    for index in range(1, len(rows)):
+        row = rows[index]
+        previous = rows[index - 1]
+        if integer(row, "wheel_update_this_pose") != 1:
+            continue
+        if integer(row, "wheel_update_accepted") != 1:
+            continue
+        wheel_forward = number(row, "odom_increment_forward_m")
+        wheel_left = number(row, "odom_increment_left_m")
+        yaw_step = number(row, "odom_increment_yaw_deg")
+        if not all(math.isfinite(value) for value in (wheel_forward, wheel_left, yaw_step)):
+            continue
+        if max_yaw_deg is not None and abs(yaw_step) > max_yaw_deg:
+            continue
+        if math.hypot(wheel_forward, wheel_left) < 1e-5:
+            continue
+        current_x = number(row, "t265_x_m")
+        current_y = number(row, "t265_y_m")
+        previous_x = number(previous, "t265_x_m")
+        previous_y = number(previous, "t265_y_m")
+        current_yaw = number(row, "t265_yaw_deg")
+        previous_yaw = number(previous, "t265_yaw_deg")
+        if not all(math.isfinite(value) for value in (
+            current_x, current_y, previous_x, previous_y, current_yaw, previous_yaw
+        )):
+            continue
+        yaw_mid = math.radians(previous_yaw + 0.5 * wrap_degrees(current_yaw - previous_yaw))
+        field_x = current_x - previous_x
+        field_y = current_y - previous_y
+        t265_forward = math.cos(yaw_mid) * field_x + math.sin(yaw_mid) * field_y
+        t265_left = -math.sin(yaw_mid) * field_x + math.cos(yaw_mid) * field_y
+        samples.append((wheel_forward, wheel_left, t265_forward, t265_left))
+
+    if len(samples) < 3:
+        return {"available": False, "samples": len(samples)}
+
+    xx00 = sum(sample[0] * sample[0] for sample in samples)
+    xx01 = sum(sample[0] * sample[1] for sample in samples)
+    xx11 = sum(sample[1] * sample[1] for sample in samples)
+    determinant = xx00 * xx11 - xx01 * xx01
+    if abs(determinant) < 1e-12:
+        return {"available": False, "samples": len(samples), "reason": "insufficient_direction_excitation"}
+
+    inv00 = xx11 / determinant
+    inv01 = -xx01 / determinant
+    inv11 = xx00 / determinant
+    b_f0 = sum(sample[0] * sample[2] for sample in samples)
+    b_f1 = sum(sample[1] * sample[2] for sample in samples)
+    b_l0 = sum(sample[0] * sample[3] for sample in samples)
+    b_l1 = sum(sample[1] * sample[3] for sample in samples)
+    matrix = [
+        [inv00 * b_f0 + inv01 * b_f1, inv01 * b_f0 + inv11 * b_f1],
+        [inv00 * b_l0 + inv01 * b_l1, inv01 * b_l0 + inv11 * b_l1],
+    ]
+    residuals = []
+    for wheel_forward, wheel_left, t265_forward, t265_left in samples:
+        predicted_forward = matrix[0][0] * wheel_forward + matrix[0][1] * wheel_left
+        predicted_left = matrix[1][0] * wheel_forward + matrix[1][1] * wheel_left
+        residuals.append(math.hypot(predicted_forward - t265_forward,
+                                    predicted_left - t265_left))
+    return {
+        "available": True,
+        "samples": len(samples),
+        "t265_body_from_wheel_body_matrix": matrix,
+        "rmse_m": math.sqrt(sum(value * value for value in residuals) / len(residuals)),
+        "max_residual_m": max(residuals),
+        "interpretation": {
+            "forward_scale": matrix[0][0],
+            "left_scale": matrix[1][1],
+            "forward_from_left_cross_axis": matrix[0][1],
+            "left_from_forward_cross_axis": matrix[1][0],
+        },
+    }
+
+
+def action_measurements(csv_path: Path, rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Compare settled operator measurements per action; never infer ground truth.
+
+    Coordinates of displacement measurements are the body's axes at action
+    start. Relative yaw is unwrapped, so +/-360 does not collapse to zero.
+    """
+    path = csv_path.parent / "ground_truth.jsonl"
+    if not path.is_file():
+        return []
+    events = read_events(csv_path)
+    starts = {e.get("test_id"): e for e in events
+              if e.get("event", "").endswith("_start") and e.get("test_id", 0) > 0}
+    result = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        measurement = json.loads(line)
+        start = starts.get(measurement.get("test_id"))
+        if start is None:
+            continue
+        first_ns = start["timestamp_monotonic_ns"]
+        entry_ns = measurement["timestamp_monotonic_ns"]
+        last_ns = measurement.get("measurement_end_monotonic_ns")
+        endpoint = measurement.get("endpoint_reference", "legacy_input_time_no_settled_mark")
+        end_snapshot = measurement.get("localization",{})
+        if last_ns is None:
+            markers = [e for e in events if e.get("event") == "manual_settled_reference_mark" and
+                       e.get("test_id") == measurement["test_id"] and first_ns <= e["timestamp_monotonic_ns"] <= entry_ns]
+            if markers:
+                marker = markers[-1]
+                last_ns = marker["timestamp_monotonic_ns"]
+                end_snapshot = marker.get("localization",{})
+                endpoint = "recovered_existing_M_mark"
+            else:
+                last_ns = entry_ns
+        start_sample_ns = start.get("localization",{}).get("timestamp_monotonic_ns",first_ns)
+        end_sample_ns = end_snapshot.get("timestamp_monotonic_ns",last_ns)
+        if not first_ns <= last_ns <= entry_ns:
+            continue
+        if not isinstance(start_sample_ns,int) or not 0 < start_sample_ns <= first_ns:
+            start_sample_ns = first_ns
+        if not isinstance(end_sample_ns,int) or not 0 < end_sample_ns <= last_ns:
+            end_sample_ns = last_ns
+        before = [r for r in rows if integer(r,"timestamp_monotonic_ns") <= start_sample_ns]
+        end = [r for r in rows if integer(r,"timestamp_monotonic_ns") <= end_sample_ns]
+        if not before or not end:
+            continue
+        a, b = before[-1], end[-1]
+        yaw = math.radians(number(a,"t265_yaw_deg"))
+        dx = number(b,"t265_x_m")-number(a,"t265_x_m")
+        dy = number(b,"t265_y_m")-number(a,"t265_y_m")
+        estimate = {"forward_mm": 1000*(math.cos(yaw)*dx+math.sin(yaw)*dy),
+                    "left_mm": 1000*(-math.sin(yaw)*dx+math.cos(yaw)*dy),
+                    "turn_deg_unwrapped": number(b,"relative_yaw_deg")-number(a,"relative_yaw_deg")}
+        params = measurement.get("test_parameters", {})
+        target = {"turn_deg_unwrapped": params.get("turn_deg_target")}
+        if "direction_deg_target" in params:
+            direction = math.radians(params["direction_deg_target"])
+            target.update(forward_mm=params["distance_mm_target"]*math.cos(direction),
+                          left_mm=params["distance_mm_target"]*math.sin(direction))
+        samples = [r for r in rows if first_ns <= integer(r,"timestamp_monotonic_ns") <= last_ns]
+        errors = {k: finite(v-measurement[k]) for k,v in estimate.items() if measurement.get(k) is not None}
+        action_errors = {k: measurement[k]-v for k,v in target.items()
+                         if v is not None and measurement.get(k) is not None}
+        raw_dx = number(b,"tracking_origin_x_m")-number(a,"tracking_origin_x_m")
+        raw_dy = number(b,"tracking_origin_y_m")-number(a,"tracking_origin_y_m")
+        raw_delta = {"forward_mm":finite(1000*(math.cos(yaw)*raw_dx+math.sin(yaw)*raw_dy)),
+                     "left_mm":finite(1000*(-math.sin(yaw)*raw_dx+math.cos(yaw)*raw_dy))}
+        result.append({"test_id": measurement["test_id"], "reference": measurement.get("reference"),
+            "measurement_entry_ns": entry_ns, "measurement_end_ns": last_ns,
+            "endpoint_reference": endpoint,
+            "raw_tracking_origin_delta": raw_delta,
+            "start_sample_ns": integer(a,"timestamp_monotonic_ns"),
+            "end_sample_ns": integer(b,"timestamp_monotonic_ns"),
+            "start_sample_age_ms": (first_ns-integer(a,"timestamp_monotonic_ns"))/1e6,
+            "end_sample_age_ms": (last_ns-integer(b,"timestamp_monotonic_ns"))/1e6,
+            "target_not_truth": target, "independent_measurement": measurement,
+            "t265_centre_delta": estimate, "t265_minus_measurement": errors,
+            "physical_motion_minus_command": action_errors,
+            "minimum_tracker_confidence": min((integer(r,"tracker_confidence") for r in samples), default=None),
+            "interpretation": "operator-reference comparison, not automatic accuracy acceptance; inspect drift/jumps and reference uncertainty"})
+    return result
+
+
+def analyze(csv_path: Path, output_path: Path | None, trial: str,
+            offset_forward: float, offset_left: float, *, fit_wheel: bool = True) -> dict[str, Any]:
+    rows = read_rows(csv_path)
+    if not rows:
+        raise RuntimeError(f"CSV没有数据：{csv_path}")
+    first = rows[0]
+    last = rows[-1]
+    first_pose = (number(first, "t265_x_m"), number(first, "t265_y_m"))
+    last_pose = (number(last, "t265_x_m"), number(last, "t265_y_m"))
+    first_odom = (number(first, "odom_x_m"), number(first, "odom_y_m"))
+    last_odom = (number(last, "odom_x_m"), number(last, "odom_y_m"))
+    t265_delta = (last_pose[0] - first_pose[0], last_pose[1] - first_pose[1])
+    odom_delta = (last_odom[0] - first_odom[0], last_odom[1] - first_odom[1])
+    start_yaw = math.radians(number(first, "t265_yaw_deg", 0.0))
+    t265_body_delta = (
+        math.cos(start_yaw) * t265_delta[0] + math.sin(start_yaw) * t265_delta[1],
+        -math.sin(start_yaw) * t265_delta[0] + math.cos(start_yaw) * t265_delta[1],
+    )
+    selected_yaw_limit = 8.0 if trial == "linear" else None
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "source_csv": str(csv_path),
+        "trial": trial,
+        "protocol": PROTOCOL,
+        "rows": len(rows),
+        "elapsed_s": finite(number(last, "elapsed_s") - number(first, "elapsed_s")),
+        "camera_offset_m": {
+            "forward": offset_forward,
+            "left": offset_left,
+        },
+        "initial_reference_check": initial_reference(first, offset_forward, offset_left),
+        "rotation_check": rotation_check(rows, offset_forward, offset_left),
+        "trajectory": {
+            "t265_field_delta_m": {"x": t265_delta[0], "y": t265_delta[1]},
+            "t265_start_body_delta_m": {
+                "forward": t265_body_delta[0], "left": t265_body_delta[1]
+            },
+            "wheel_odom_field_delta_m": {"x": odom_delta[0], "y": odom_delta[1]},
+            "t265_vs_wheel_end_error_m": math.hypot(
+                t265_delta[0] - odom_delta[0], t265_delta[1] - odom_delta[1]
+            ),
+            "t265_travel_m": number(last, "t265_travel_m"),
+            "wheel_odom_travel_m": number(last, "odom_travel_m"),
+        },
+        "wheel_to_t265_fit": (fit_wheel_to_t265(rows, selected_yaw_limit) if fit_wheel
+                              else {"available": False, "reason": "mount_validation_no_scale_fit"}),
+        "action_measurements": action_measurements(csv_path, rows),
+        "interface_observation": {
+            "valid_encoder_updates": sum(
+                1 for row in rows if integer(row, "wheel_update_this_pose") == 1
+            ),
+            "accepted_encoder_updates": sum(
+                1 for row in rows if integer(row, "wheel_update_accepted") == 1
+            ),
+            "wheel_odom_updates_last": integer(last, "wheel_odom_updates"),
+            "last_wheel_status": integer(last, "wheel_status"),
+            "last_wheel_sequence": integer(last, "wheel_frame_sequence"),
+        },
+        "events": read_events(csv_path),
+    }
+    metadata_path = csv_path.parent / "metadata.json"
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("mode") == "interactive_f407_motion_debug":
+                result["protocol"] = metadata["protocol"]
+                result["effective_config"] = metadata.get("effective_config", {})
+        except (OSError, ValueError, KeyError, AttributeError):
+            pass
+    if output_path is not None:
+        output_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return result
+
+
+def print_report(result: dict[str, Any]) -> None:
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def safe_label(label: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", label.strip())
+    return cleaned or "manual"
+
+
+def run_capture(args: argparse.Namespace) -> int:
+    if not args.localizer.exists():
+        raise FileNotFoundError(f"定位可执行文件不存在：{args.localizer}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"{timestamp}_{safe_label(args.label)}"
+    run_dir = args.output_root / base_name
+    suffix = 1
+    while run_dir.exists():
+        run_dir = args.output_root / f"{base_name}_{suffix:02d}"
+        suffix += 1
+    run_dir.mkdir(parents=True, exist_ok=False)
+    config_path = run_dir / "localization.conf"
+    csv_path = run_dir / "localization_debug.csv"
+    json_path = run_dir / "localization_result.json"
+    status_path = run_dir / "stm32_status.json"
+    log_path = run_dir / "localizer.log"
+    analysis_path = run_dir / "analysis.json"
+    command = [
+        str(args.localizer),
+        "--config", str(config_path),
+        "--output", str(json_path),
+        "--csv", str(csv_path),
+        "--rate", str(args.rate),
+        "--tx-rate", "0",
+        "--stm-status", str(status_path),
+    ]
+    if not args.no_uart:
+        command += ["--uart", args.uart, "--baud", str(args.baud)]
+    if args.serial:
+        command += ["--serial", args.serial]
+    if args.duration > 0.0:
+        command += ["--duration", str(args.duration)]
+    write_debug_config(args.config, config_path)
+    metadata = {
+        "schema_version": 1,
+        "created_local": datetime.now().isoformat(timespec="seconds"),
+        "label": args.label,
+        "trial": args.trial,
+        "command": command,
+        "listen_only": True,
+        "f407_interface": PROTOCOL,
+        "upper_repository": "danmo-teng/shijue_fangan",
+        "lower_repository": "gandizm/F407-Rescue-Robot@9774dac (feat/uart-motion-debug)",
+        "files": {
+            "localization_config": config_path.name,
+            "csv": csv_path.name,
+            "localization_json": json_path.name,
+            "stm_status_json": status_path.name,
+            "localizer_log": log_path.name,
+            "analysis_json": analysis_path.name,
+        },
+    }
+    (run_dir / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"日志目录：{run_dir}")
+    print("监听模式：不发送 TYPE=0x11/0x12/0x18，不启动 F407 任务；轮式样本保留但融合权重为0")
+    print("执行：" + " ".join(command))
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=str(LOCALIZATION_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                print(line, end="")
+                log.write(line)
+                log.flush()
+        except KeyboardInterrupt:
+            print("\n收到停止信号，正在结束定位采集…")
+            process.send_signal(signal.SIGINT)
+        finally:
+            try:
+                process.wait(timeout=8.0)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=3.0)
+    if csv_path.exists():
+        result = analyze(csv_path, analysis_path, args.trial,
+                         args.offset_forward, args.offset_left)
+        print_report(result)
+    return int(process.returncode or 0)
+
+
+def arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="T265/F407三轮里程计只监听调试程序")
+    parser.add_argument("--analyze", type=Path, help="分析已有CSV或一次运行日志目录")
+    parser.add_argument("--wheel-gyro-residual", type=Path, metavar="SESSION",
+                        help="仅离线分析F405 07/08轮式与主gyro区间残差，不连接设备")
+    parser.add_argument("--wheel-gyro-output", type=Path, metavar="OUTDIR",
+                        help="将离线残差JSON/CSV导出到原日志目录之外；省略则只输出stdout")
+    parser.add_argument("--motion-response-analyze", type=Path, metavar="SESSION",
+                        help="仅离线导出原始SDK/07/08及主机接收时钟相对响应，不连接设备")
+    parser.add_argument("--motion-response-output", type=Path, metavar="OUTDIR",
+                        help="响应JSON及原始量CSV写到原会话之外；省略仅stdout摘要")
+    parser.add_argument("--motion-source-review", type=Path, metavar="SESSION",
+                        help="仅离线比较gyro对齐/因果预测、SDK速度与轮式传播，不接入正式定位")
+    parser.add_argument("--motion-source-output", type=Path, metavar="OUTDIR",
+                        help="候选比较JSON/CSV写到原会话之外；省略仅stdout摘要")
+    parser.add_argument("--review-gyro-phase-ms", type=float,
+                        help="仅候选离线比较，默认28ms；不是运行补偿或新鲜度门")
+    parser.add_argument("--wheel-arm-m", type=float,
+                        help="离线轮式旋转有效力臂，默认0.13m（不是轮半径，未标定，不写配置）")
+    parser.add_argument("--localizer", type=Path, default=DEFAULT_LOCALIZER)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_RUN_ROOT)
+    parser.add_argument("--uart", default="/dev/ttyS1")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--no-uart", action="store_true", help="只采集T265，不打开F407串口")
+    parser.add_argument("--serial", help="T265 serial number")
+    parser.add_argument("--duration", type=float, default=0.0)
+    parser.add_argument("--rate", type=float, default=10.0,
+                        help="JSON/stdout rate; CSV仍按T265全速率保存")
+    parser.add_argument("--label", default="manual")
+    parser.add_argument("--trial", choices=("unknown", "still", "rotate", "linear", "combined"),
+                        default="unknown")
+    parser.add_argument("--offset-forward", type=float,
+                        help="分析偏置；默认读取本轮localization.conf")
+    parser.add_argument("--offset-left", type=float,
+                        help="分析偏置；默认读取本轮localization.conf")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = arguments()
+    if args.motion_source_review:
+        if args.analyze or args.wheel_gyro_residual or args.motion_response_analyze or args.wheel_gyro_output or args.motion_response_output:
+            raise ValueError('--motion-source-review is a separate offline mode')
+        from motion_source_review import review_session, export_review
+        result=review_session(args.motion_source_review,
+            gyro_phase_ms=28. if args.review_gyro_phase_ms is None else args.review_gyro_phase_ms,
+            arm_m=.115 if args.wheel_arm_m is None else args.wheel_arm_m)
+        if args.motion_source_output:export_review(args.motion_source_review,args.motion_source_output,result)
+        print(json.dumps(result[0],ensure_ascii=False,indent=2,allow_nan=False))
+        return 0
+    if args.motion_source_output or args.review_gyro_phase_ms is not None:
+        raise ValueError('--motion-source-output/--review-gyro-phase-ms require --motion-source-review')
+    if args.motion_response_analyze:
+        if args.analyze or args.wheel_gyro_residual or args.wheel_gyro_output or args.wheel_arm_m is not None:
+            raise ValueError('--motion-response-analyze is a separate offline mode')
+        from wheel_gyro_residual import analyze_motion_response, export_motion_response
+        result, signals = analyze_motion_response(args.motion_response_analyze)
+        if args.motion_response_output:
+            export_motion_response(args.motion_response_analyze,args.motion_response_output,result,signals)
+        print(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False))
+        return 0
+    if args.motion_response_output:raise ValueError('--motion-response-output requires --motion-response-analyze')
+    if args.wheel_gyro_residual:
+        if args.analyze:raise ValueError('--wheel-gyro-residual and --analyze are separate offline modes')
+        from wheel_gyro_residual import analyze_session, export_report
+        result, rows = analyze_session(args.wheel_gyro_residual,
+            .13 if args.wheel_arm_m is None else args.wheel_arm_m)
+        if args.wheel_gyro_output:
+            export_report(args.wheel_gyro_residual,args.wheel_gyro_output,result,rows)
+        print(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False))
+        return 0
+    if args.wheel_gyro_output:raise ValueError('--wheel-gyro-output requires --wheel-gyro-residual')
+    if args.wheel_arm_m is not None:raise ValueError('--wheel-arm-m requires --wheel-gyro-residual')
+    config_path = args.config
+    if args.analyze:
+        csv_path, run_dir = find_csv(args.analyze)
+        config_path = csv_path.parent / "localization.conf"
+    # Match the C++ constructor only if an old capture has no saved value.
+    offsets = {"camera_offset_forward_m": -0.0296, "camera_offset_left_m": -0.0301}
+    if config_path.exists():
+        for line in config_path.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                key, value = (part.strip() for part in line.split("=", 1))
+                if key in offsets:
+                    offsets[key] = float(value)
+    if args.offset_forward is None:
+        args.offset_forward = offsets["camera_offset_forward_m"]
+    if args.offset_left is None:
+        args.offset_left = offsets["camera_offset_left_m"]
+    if args.analyze:
+        output = None if run_dir is None else run_dir / "analysis.json"
+        print_report(analyze(csv_path, output, args.trial,
+                             args.offset_forward, args.offset_left))
+        return 0
+    if args.duration < 0.0 or args.rate < 0.0:
+        raise ValueError("duration和rate不能为负数")
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    return run_capture(args)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)

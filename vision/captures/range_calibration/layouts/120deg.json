@@ -1,0 +1,15 @@
+{
+  "pitch_label_deg": 120,
+  "width": 1280,
+  "height": 1024,
+  "boundaries_y": [
+    0,
+    73,
+    217,
+    381,
+    580,
+    1024
+  ],
+  "measured": false,
+  "purpose": "view partitions only; not a measured distance calibration"
+}

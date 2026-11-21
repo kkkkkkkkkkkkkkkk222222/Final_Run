@@ -1,0 +1,132 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d64e94d..ef0927e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -53,7 +53,8 @@ set_target_properties(${firmware_target} PROPERTIES
+     OUTPUT_NAME "${F405_PROFILE}"
+     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+ if(F405_PROFILE STREQUAL "FinalRun")
+-    target_compile_definitions(${firmware_target} PRIVATE APP_ENABLE_POST_GRAB_FILTER=0)
++    target_compile_definitions(${firmware_target} PRIVATE
++        APP_ENABLE_POST_GRAB_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1)
+     add_custom_target(FinalRun DEPENDS ${firmware_target})
+ endif()
+
+diff --git a/Main/Inc/app_config.h b/Main/Inc/app_config.h
+index fdc338b..4772605 100644
+--- a/Main/Inc/app_config.h
++++ b/Main/Inc/app_config.h
+@@ -674,6 +674,9 @@
+ #ifndef APP_ENABLE_POST_GRAB_FILTER
+ #define APP_ENABLE_POST_GRAB_FILTER       1
+ #endif
++#ifndef APP_FINALS_DELIVERY_CONFIRMATION
++#define APP_FINALS_DELIVERY_CONFIRMATION  0
++#endif
+ /* Temporary lift position for filtering and orange/core separation. */
+ #define APP_LIFT_FIRST_GREEN_FILTER_ANGLE 82U
+ #define APP_SINGLE_CARGO_FILTER_BACK_SPEED_MM_S 250.0f
+diff --git a/Main/Inc/vision.h b/Main/Inc/vision.h
+index d698c94..3b2e6ca 100644
+--- a/Main/Inc/vision.h
++++ b/Main/Inc/vision.h
+@@ -141,6 +141,7 @@
+ #define VISION_APPROACH_RANGE_ZONE_VIEW 3U
+ #define VISION_APPROACH_ORANGE_TOP_VIEW 4U
+ #define VISION_SEPARATION_ORANGE_CORE_82 8200U
++#define VISION_TASK_COMPLETE_UNCONFIRMED 1U
+ #define VISION_RELEASE_SAME_SIDE_BLUE      1U
+ #define VISION_PRE_GRAB_ADVANCE_MM      50U
+ #define VISION_MODE_APPROACH_RANGE_WAIT 52U
+diff --git a/Main/Src/Task.c b/Main/Src/Task.c
+index 5dd924d..31d071d 100644
+--- a/Main/Src/Task.c
++++ b/Main/Src/Task.c
+@@ -378,7 +378,8 @@ static bool delivery_enter_active;
+ typedef enum {
+   DELIVERY_FINISH_NONE = 0,
+   DELIVERY_FINISH_COMPLETE,
+-  DELIVERY_FINISH_FRONT_TIMEOUT
++  DELIVERY_FINISH_FRONT_TIMEOUT,
++  DELIVERY_FINISH_UNCONFIRMED
+ } DeliveryFinishReason;
+ static struct {
+   bool active;
+@@ -4719,6 +4720,12 @@ static bool task_delivery_is_finishing(void)
+   return delivery.active && delivery.finish != DELIVERY_FINISH_NONE;
+ }
+
++static bool task_delivery_has_host_finish(void)
++{
++  return delivery.finish == DELIVERY_FINISH_COMPLETE ||
++         delivery.finish == DELIVERY_FINISH_UNCONFIRMED;
++}
++
+ static void task_delivery_account_front_time(uint32_t now_ms)
+ {
+   if (!delivery.front_budget_active) { return; }
+@@ -4760,11 +4767,13 @@ static void task_finish_delivery_exit(uint32_t now_ms)
+ {
+   /* Called only after the original Claw_Open reports its mechanical finish. */
+   if (state != TASK_OPEN_FOR_RAM && state != TASK_RAM_VERIFY) { return; }
+-  /* Legacy delivery parity applies until an explicit station direction wins. */
+-  if (!search_direction_latched) {
+-    search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
++  if (!APP_FINALS_DELIVERY_CONFIRMATION || delivery.finish == DELIVERY_FINISH_COMPLETE) {
++    /* Legacy parity applies until an explicit station direction wins. */
++    if (!search_direction_latched) {
++      search_yaw_direction = first_delivery_done ? -search_yaw_direction : 1;
++    }
++    first_delivery_done = true;
+   }
+-  first_delivery_done = true;
+   task_bulldozer_clear_load();
+   safe_enter_resume_mm = safe_enter_resume_push_ms = 0U;
+   task_enter(TASK_EXIT_SAFE_ZONE, now_ms);
+@@ -4773,7 +4782,7 @@ static void task_finish_delivery_exit(uint32_t now_ms)
+ static void task_process_delivery_open(const VisionMissionCommand *command,
+                                        uint32_t now_ms)
+ {
+-  const uint8_t owner_opcode = delivery.finish == DELIVERY_FINISH_COMPLETE ?
++  const uint8_t owner_opcode = task_delivery_has_host_finish() ?
+       VISION_CMD_TASK_COMPLETE : VISION_CMD_ENTER_SAFE_ZONE;
+   const bool local_finish_owned = task_delivery_is_finishing() &&
+       accepted_context.valid && !accepted_context.cancelled &&
+@@ -4812,7 +4821,8 @@ static void task_process_delivery_verify(
+     task_status.motors_active = false;
+     return;
+   }
+-  if (command->command == VISION_CMD_TASK_COMPLETE) {
++  if (command->command == VISION_CMD_TASK_COMPLETE &&
++      (!APP_FINALS_DELIVERY_CONFIRMATION || task_delivery_has_host_finish())) {
+     task_finish_delivery_exit(now_ms);
+   }
+ }
+@@ -7481,7 +7491,9 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
+     task_status.acknowledged_sequence = command->sequence;
+     command_accepted = true;
+     delivery.active = true;
+-    delivery.finish = DELIVERY_FINISH_COMPLETE;
++    delivery.finish = APP_FINALS_DELIVERY_CONFIRMATION &&
++        command->heading_cdeg == VISION_TASK_COMPLETE_UNCONFIRMED ?
++        DELIVERY_FINISH_UNCONFIRMED : DELIVERY_FINISH_COMPLETE;
+     delivery.front_budget_active = false;
+     Motor_Stop();
+     task_status.motors_active = false;
+@@ -8059,10 +8071,15 @@ static void task_accept_mission(VisionData *vision, uint32_t now_ms)
+     /* The original context checks above handle ordering and rollover. Only a
+      * new completion of this ENTER may take ownership; late COMPLETE cannot
+      * overwrite a locally latched timeout or an already accepted completion. */
++    const bool unconfirmed = APP_FINALS_DELIVERY_CONFIRMATION &&
++        incoming.heading_cdeg == VISION_TASK_COMPLETE_UNCONFIRMED;
+     if (new_target || !accepted_context.valid ||
+         !task_side_flag_valid(incoming.flags) ||
+         incoming.flags != (VISION_CMD_VALID | (incoming.flags & VISION_CMD_RED_SIDE)) ||
+-        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 || incoming.heading_cdeg != 0U ||
++        incoming.target_x_mm != 0 || incoming.target_y_mm != 0 ||
++        (incoming.heading_cdeg != 0U && !unconfirmed) ||
++        (!new_action && APP_FINALS_DELIVERY_CONFIRMATION &&
++         unconfirmed != (delivery.finish == DELIVERY_FINISH_UNCONFIRMED)) ||
+         (new_action && (accepted_context.opcode != VISION_CMD_ENTER_SAFE_ZONE ||
+                         delivery.finish != DELIVERY_FINISH_NONE))) goto rejected;
+   }

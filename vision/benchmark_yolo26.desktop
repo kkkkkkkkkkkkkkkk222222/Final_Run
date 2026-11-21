@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=决赛-YOLO26-640实时测速
+Comment=11月9日新模型，复用正式比赛视觉进程与跟踪ROI，预热5秒、测量60秒
+Exec=/home/sunrise/RDK_X5/finals/vision/benchmark_yolo26_launcher.sh
+Icon=applications-engineering
+Terminal=true
+StartupNotify=true
+Categories=Development;

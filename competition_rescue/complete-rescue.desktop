@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=决赛-正式比赛
+Comment=RDK X5 complete rescue competition flow
+Exec=/home/sunrise/RDK_X5/finals/competition_rescue/desktop_launcher.sh
+Terminal=true
+Categories=Utility;

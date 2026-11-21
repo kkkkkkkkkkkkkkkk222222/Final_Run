@@ -1,0 +1,68 @@
+cmake_minimum_required(VERSION 3.10)
+
+project(t265_omni_localization LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Same extraction decisions, NumPy RNG/sort and caller-provided NumPy SVD.
+# Streaming scores avoid an N*H temporary; CDLL releases the GIL for C++ work.
+add_library(lidar_geometry SHARED src/lidar_geometry.cpp src/lidar_line_extraction.cpp src/lidar_reader.cpp)
+target_include_directories(lidar_geometry PRIVATE include)
+target_compile_options(lidar_geometry PRIVATE -O3 -ffp-contract=off)
+
+set(REALSENSE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
+    "Directory containing third_party/librealsense and build-250")
+set(REALSENSE_INCLUDE_DIR "${REALSENSE_ROOT}/third_party/librealsense/include")
+set(REALSENSE_LIBRARY "${REALSENSE_ROOT}/build-250/librealsense/librealsense2.so.2.50.0")
+
+if(NOT EXISTS "${REALSENSE_INCLUDE_DIR}/librealsense2/rs.hpp")
+    message(FATAL_ERROR "librealsense headers not found: ${REALSENSE_INCLUDE_DIR}")
+endif()
+if(NOT EXISTS "${REALSENSE_LIBRARY}")
+    message(FATAL_ERROR "official librealsense 2.50 library not found: ${REALSENSE_LIBRARY}")
+endif()
+# The measured-input/control loop owns its native thread; Python only invokes
+# low-frequency reference/geometry operations through this narrow C ABI.
+add_library(motion_runtime SHARED src/motion_runtime.cpp src/motion_source_native.cpp)
+target_include_directories(motion_runtime PRIVATE include
+    "${REALSENSE_ROOT}/third_party/librealsense/third-party")
+target_compile_options(motion_runtime PRIVATE -O3 -ffp-contract=off)
+target_link_libraries(motion_runtime PRIVATE pthread)
+add_library(omni_localization_core
+    src/config.cpp
+    src/f407_protocol.cpp
+    src/f405_telemetry.cpp
+    src/fusion.cpp
+    src/operator_uart.cpp
+    src/test_uart_relay.cpp
+    src/serial_port.cpp)
+target_include_directories(omni_localization_core PUBLIC include)
+target_link_libraries(omni_localization_core PUBLIC pthread)
+
+add_library(debug_wheel_input src/debug_wheel_input.cpp src/f405_wheel_measurements.cpp src/debug_fisheye_evidence.cpp src/dynamic_pose_relay.cpp)
+target_include_directories(debug_wheel_input PUBLIC include "${REALSENSE_INCLUDE_DIR}"
+    "${REALSENSE_ROOT}/third_party/librealsense/third-party")
+target_link_libraries(debug_wheel_input PUBLIC omni_localization_core "${REALSENSE_LIBRARY}")
+add_executable(t265_omni_localizer src/main.cpp)
+add_dependencies(t265_omni_localizer lidar_geometry motion_runtime)
+target_include_directories(t265_omni_localizer PRIVATE "${REALSENSE_INCLUDE_DIR}")
+target_link_libraries(t265_omni_localizer PRIVATE
+    omni_localization_core debug_wheel_input "${REALSENSE_LIBRARY}")
+set_target_properties(t265_omni_localizer PROPERTIES
+    BUILD_RPATH "${REALSENSE_ROOT}/build-250/librealsense"
+    INSTALL_RPATH "${REALSENSE_ROOT}/build-250/librealsense")
+
+option(BUILD_TESTING "Build protocol and fusion tests" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(test_omni_localization tests/test_omni_localization.cpp)
+    target_link_libraries(test_omni_localization PRIVATE omni_localization_core debug_wheel_input motion_runtime)
+    add_test(NAME omni_localization_tests COMMAND test_omni_localization)
+    add_executable(test_f407_mission_protocol
+        firmware/f407_mission_protocol.c
+        tests/test_f407_mission_protocol.c)
+    target_include_directories(test_f407_mission_protocol PRIVATE firmware)
+    add_test(NAME f407_mission_protocol_tests COMMAND test_f407_mission_protocol)
+endif()

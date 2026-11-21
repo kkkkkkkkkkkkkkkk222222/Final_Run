@@ -1,0 +1,300 @@
+# F407 MG310 与完整比赛上位机同步
+
+## 2026-10-21：777acad 定距接近、累计两帧与运输分离续送
+
+以9d5e021增量适配`777acadbd0e0c70f8830d21a5b767162e43ed2dc`的UPPER_RANGE_SORT_HANDOFF_20261019.md；没有覆盖旧成果。
+用户追加授权了独立测距标定画面程序；没有新增自动测试程序，必要检查扩展既有测试文件。
+
+- 搜索120°/105°由下位机执行。普通/聚集mode52优先于context_pending处理，收到该状态后记录采集时间/帧号下限；只有之后的新图及当前角度实测分段有效才发请求。像素APP及扫障42/44保持各自语义。
+- COMMAND=9，VALID|APPROACH_RANGE(bit6)|DISTANCE_VALID(bit4)|阵营及原CLUSTER_TARGET；距离0..2500mm、俯仰10500/12000、aux=0。同task只分配一次新action，接受后包括mode53/视觉缺失时重发原距离、角度、动作与来源帧，不当剩余距离发送。人工PAUSE保留；24/3恢复先于旧命令等待处理。
+- 对准后测距按用户指定的目标中心Y分段，不用旧单应矩阵。105°/120°独立表并校验分辨率、相机安装描述、零点含义。表中advance_mm为实测车体应走距离，已扣除夹爪入口偏移和预留补进余量。未标定/越界/缺图不发送0mm；只有实测0才合法。
+- 140°准备之后补进为200mm/s、最多200mm，由下位机控制。无上位机计时估算行程或重复APP重置额度。
+- 无观察撤销STABLE/pending授权，保留同阶段500ms内样本和侧票；必须再收到新图才能恢复授权。有效帧采集间隔至少100ms；矛盾签名、相机阶段改变及机械分离重置。扫障和mode51同样撤销授权，50已提交闭爪结果仍保留。
+- mode48合法审核还必须用新鲜位姿核对实际目标半区；错误半区通过完整方向flags的STAGE NAV先转向再直行，重新48/ALIGN。mode48可靠非法非空走带侧DISPERSE，清旧pending、投送框和投送视觉证据；同task/预算保留。35后新审核21→合法GRAB→23复审→22→重新导航实际载荷预备点→48→ALIGN→ENTER，不复用旧ENTER。
+- DISPERSE等待保持同一命令/flags，不替换为扫障式HOLD。两次分离、额外夹紧10°，本地60mm直退及30°/45°曲线以实际完成状态为准；上位机不另发角度或横移。
+
+保留橙色49/23/50/22、扫障角色、单件/首件、mode48/51、缺pending出口、投送计数/TASK_COMPLETE、T265侧装外参与纯定位、原始编码器、PID及15字节同SEQ配对。没有新增通用ESCAPE或永久故障策略。
+
+### 标定画面与数据录入
+
+先停止比赛程序，避免占用同一摄像头；让下位机/人工将视觉相机固定在105°，运行：
+
+```bash
+cd /home/sunrise/RDK_X5/shijue_fangan
+python3 vision/calibrate_range_view.py --pitch 105 --bands 5
+```
+
+2026-11-05界面更新：默认5个不等宽区域，上窄下宽，仅为方便调整的初值，不代表等地面距离或测距标定。拖动内部横线（或右侧粗把手）调整；空格冻结后仍可拖动。分区从上到下编号，原始坐标1280×1024，内部线不能相互跨越。
+
+1/2切换105°/120°标签并恢复实时画面，两角度保留各自修改；标签不控制舵机、不证明实物已到对应角度。S保存当前角度的分区设置，同时保存带框/中心点/分区线的截图和JSON；Q退出。未保存的修改显示UNSAVED，须按S保存。下次启动自动读取vision/captures/range_calibration/layouts/105deg.json或120deg.json；--output改变目录时，分区也保存在该目录的layouts中。--bands仍可指定分区数，保存设置只在数量和分辨率相符时采用。
+
+分区设置本身不含距离、标记measured=false，不自动写入正式approach_range.json。2026-11-05已将用户提供的距离与实际保存分界写入正式表；105°B1/B2为用户指定暂用值，详见[当前分区距离表](APPROACH_RANGE_20261105.md)。以后只拖动/保存标定画面不会自动更改正式表。
+
+逐区记录Y_MIN、Y_MAX和ADVANCE_MM（从当前车体位置到夹爪入口前保留补进余量所需的实际前进距离）。将实测值通过已有标定入口录入：
+
+```text
+python3 vision/calibrate_ground.py --range-pitch 105 --range-camera-mount "本次相机安装及测量零点描述" --range-band Y_MIN:Y_MAX:ADVANCE_MM [--range-band ...]
+```
+
+这是参数格式，不含示例假距离。120°另执行一次；默认两角度保存同一vision/config/approach_range.json，按角度隔离。表中保存像素基准bbox_center、分辨率和measured_chassis_travel_to_claw_entry零点，不采用相机斜距。重启上位机加载该表。当前正式表已录入本次用户数据；以上实测录入命令会将整个角度标为measured=true，不能用来把105°B1/B2暂用值冒充实测。
+
+### 必要检查及部署
+
+复用原test_protocol.py验证编码边界；原test_state_machine.py验证52/53锁定、缺图累计/旧图不能恢复、mode48分离同预算及错误半区重导航；原test_runner.py验证同SEQ、同task新action一次、52/53重发不更新载荷及标定隔离。另做Python语法及标定画面--help检查。没有开启相机/BPU实跑，没有烧录或实车验证。
+
+改动文件：competition_rescue/{protocol.py,state_machine.py,run_competition_rescue.py,README.md,tests/test_protocol.py,tests/test_state_machine.py,tests/test_runner.py}；vision/{calibrate_ground.py,calibrate_range_view.py,rescue_vision/localizer.py}；rescue_map/field_model.py；本文。
+上位机更新codex/gamepad-teleop并在两角度实测表有效后重启原比赛入口；本轮不需重编译定位程序。F407使用777acad的NormalRun，烧录build/NormalRun/WWW.elf。expected_lower_firmware更新为功能基线，actual仍未确认。两端软件和实测标定必须一起部署；只更新软件、没有距离表时mode52不会盲走。
+
+## 2026-10-17：cef1d9c 初次空爪慢爬、普通多件分离及日志隔离
+
+上位机基于c84d77e增量修改，配套下位机功能提交`cef1d9ccc5bac3d4106fcce418899aad6ec61c63`。
+交接文件`docs/UPPER_C84D77E_CEF1D9C_SYNC_20261017.md`在下位机后续文档提交中，已读取核对；没有回套旧补丁。
+
+- capture_decision只对当前命令自带payload记录线上签名，否则为null并保留raw_audit；不调用依赖selected_batch的编码函数。合法命令先发布，诊断异常局部隔离，diagnostic_error_count累加、错误提示每2秒限频，真正规划/发布异常仍保留原处理。
+- 初次mode21/38真实纯空爪（非抓后/分离复核、尚未实际分离）保持CAPTURE_AUDIT，发送不同新帧及两帧STABLE，不创建recheck_empty_to_search。F407普通/聚集慢爬均200mm/s、同目标累计最多300mm；上位机不计时推算行程或重发APP重置额度。发现物块后正常审核，原15/17秒出口保持。
+- 普通mode21多件且有可靠候选时参与现有两帧侧票，走disperse_reaudit非聚集握手，READY之后发SIDE_VALID曲线分离；不等待mode37。绿色最多侧、侧票签名、pending组成检查及keep_count保留。
+- mode21/35/37/38中，具有不同track、不同框、至少两次检测命中的已知未截断目标，可保留真实多件重叠审核；最终动作仍要求不同采集帧、间隔100ms及READY。mode23/45/48、未知、未确认目标及截断仍限制；截断缺陷优先于重叠，不被覆盖。INITIAL_STASH真实非空及mode43角色保留。
+- 单帧复用ROI比例和overall纳入结果；诊断JSON使用实际事件变化/周期判据，不再被重复output.event每周期触发。原ROI明细、采集时间、阶段耗时保留。
+
+保留两帧、两次分离、10°夹紧、橙色23→49→23→50→22、mode48/51、缺pending出口、投送计数、TASK_COMPLETE、T265外参/纯定位及串口配对。125/130°无新增等待，140°250ms准备保持；核心额外50mm仍180mm/s，轮速/航向/视觉PID不改。
+
+实际修改文件：competition_rescue/{run_competition_rescue.py,state_machine.py,capture_roi.py,README.md,tests/test_runner.py,tests/test_state_machine.py}、rescue_map/field_model.py及本文。必要检查复用原测试文件，覆盖空批次日志/写盘异常不中断发布、初次空爪、普通混合侧曲线、分阶段重叠及截断优先级、伤员pending与mode51；没有新测试程序或实车动作。
+
+部署：停止旧上位机进程，更新codex/gamepad-teleop后从原桌面比赛入口重启加载ROI；无需重编译定位程序。下位机烧录cef1d9c或包含其功能的后续版本的NormalRun（build/NormalRun/WWW.elf）。expected_lower_firmware只是配套基线，实际烧录提交/模式仍须操作者确认，编译成功不代表已烧录。原日志和用户文件保留。
+
+## 2026-10-16：4385b0d ROI与曲线分离增量
+
+上位机以`81879e0`为基线；核对下位机`4385b0d66bd305b1f4a16b3ae89982e178a049d1`的
+`docs/UPPER_TOTAL_SYNC_20261016.md`（行为基线647457f）。未套旧补丁，未更改下位机。
+本节覆盖以下历史夹紧档位及速度参数描述。
+
+- ROI仍用原标定多边形、坐标尺度、底部中心和60%比例。仅不合格爪外框/边缘框被排除，不否决其他清楚物块；合格额外框全部计数。缺图、黑图、过曝、相机未就绪和未标定仍为无观察；入爪截断及无法辨认遮挡不伪造成合法单件。INITIAL_STASH、mode43及正式全爪清单角色保持。
+- 逐侧真实组成仅用于本地选侧；已知绿色+橙色混合可受控分离，线上仍是非法混合，不改写成绿色，不拆MIXED_MATERIAL。危险及真正未知仍不可用。
+- 绿色最多侧优先，相等保持锁定侧，再比较无关物块数量；当前线上审核签名变化重建侧票，pending的侧组成变化重新审核。两帧及100ms间隔不变。
+- 当前审核同步保留侧及件数，曲线发SIDE_VALID，保留右侧加TARGET_RIGHT；可靠选侧不被FIRST_GREEN_BUMP覆盖。实际接受才计数，观察转向不计数，最多两次。
+- 保留125°/130°原地对准及140°250ms准备，普通mode21以180mm/s、聚集mode38以200mm/s由F407慢爬；CLAW_VISIBLE不是入爪结论，先STABLE再READY/VALID。
+- 保留橙色23→49→23→50→22、mode48、15/17秒出口、mode51、投送计数、首件单件及配对。T265外参、纯定位与原始编码器换算不改。
+
+下位机参数仅记录，不在上位机叠加控制：车头视觉PID 0.18/0/0.0025，俯仰PID 0.55/0.00875/0.00168、限速45°/s；轮速5/0.12/0、直行航向PI 2.2/0.005不在本轮调整。夹紧统一额外10°；搜索/返中心转向200mm/s、默认定角250mm/s均为轮端速度。MG310为1061.268计数、70mm轮径、慢衰减、60%PWM。开局后退→原地180°→开爪→前进，不恢复边走边转。
+
+日志：capture_decision变化触发、最大2Hz；同类等待事件最多每2秒重记。记录ROI入选/排除原因和比例、采集时间、真实组成、线上签名、STABLE、侧别、曲线/观察分支、次数、task/action及匹配拒绝。沿用检测日志采样频率记录视觉阶段耗时，不延长旧证据寿命。
+
+必要检查复用现有test_runner.py、test_state_machine.py，覆盖ROI不再整幅否决、额外物块计数、黑图无观察、已知混合不运输、绿色最多侧、侧票变化、曲线标志/次数、限频日志及原伤员/mode51/返中心。未新增测试程序，未进行实车运行，不宣称实际恢复/动作效果已验证。
+
+部署：停止旧比赛进程，上位机更新codex/gamepad-teleop并重启原桌面入口以重新加载ROI（多边形未改），无需重编译定位程序。F407应使用4385b0d的NormalRun，烧录build/NormalRun/WWW.elf；实际烧录状态尚未确认，编译成功不代表烧录成功。保留现有运行日志、用户日志压缩包及vision/456。
+
+## 2026-10-16：5443ca3 两帧审核、两次分离与删除ESCAPE
+
+上位机基于`codex/gamepad-teleop@e01ffb9`增量修改，下位机核对提交为
+`5443ca39deb0fc591ca6360ffcd4a991b4986818`。参考其增量补丁后继续清理遗留实现，未重套旧补丁。
+本节覆盖下文历史三帧、三次分离及自动ESCAPE描述；mode51恢复参考仍是三个T265位姿包。
+
+- 删除自动脱困函数、命令生成器、专用状态/配置/完成等待及诊断字段；12与31保留废弃编号，不发送或等待ESCAPE。
+- 所有货物审核及保留侧均为两个不同采集帧，间隔与跨度至少100ms；先STABLE后当前上下文READY/VALID，同帧不计数、不续期。
+- 审核相机稳定等待250ms，ROI统一60%，框间遮挡阈值85%；缺图/黑图/过曝/未标定/裁切检查及实际数量保留。
+- 分离最多两次，接受才计数，单侧RELEASE→YIELD合计一次。首次后继续候选侧复核，第二次后合法可运输；非法则释放，mode47交接返中心。返中心完成才清预算，保留同task。
+- 返中心80mm锁定到达，之后保持D=0等待新鲜mode3，跨中心抖动不再重新计算返航转向；新返航任务才重置。
+- 伤员23→49→23→50→22、mode48、扫障、首件/单件、计数/TASK_COMPLETE、mode51、T265纯定位、运动极性、1061.268及配对协议保持。下位机轮缘速度80/75/60 mm/s不转成上位机角速度。
+
+必要检查：修改Python语法、已有返中心/分离/伤员pending/mode51及runner拒绝恢复用例；未新增测试程序，未做实车测试。
+实际烧录提交与模式尚未确认。配套固件应为上述提交的NormalRun。
+部署：停止旧比赛进程，更新`codex/gamepad-teleop`后从原桌面比赛入口重新启动；本次仅Python/配置/文档修改，不需重编译定位程序。现场ROI坐标不变，只同步重叠门槛。
+
+
+## 2026-10-16：可恢复等待与分离预算（覆盖旧永久锁存要求）
+
+下位机基线为`87aaba26f2c028680027b54df08d6ba825b047e9`，上位机在`0247bdd`
+之上增量适配。执行时仍需确认实际烧录提交及模式；编译或Git版本不代表已烧录。
+本节覆盖10月15日“所有运行故障均需人工重启、上位机永久锁存”的描述。
+T265单源输出、+x/-y、后20mm/右70mm、比例关闭、轮式仅参考及既有运动极性保持。
+
+- NormalRun的新鲜mode51优先于旧context_pending、普通审核超时和故障等待处理。
+  取消未接受请求和旧有限动作等待，保留批次、首件、投送计数、暂存记录和分离预算；
+  记录中断阶段及被中断的扫障目标。mode51不表示SEARCH、完成或空爪。
+- 正式入口默认20Hz发送既有0x16。重复T265帧号不生成新更新，只有有效接受、
+  来源时间可信且年龄不超过250ms的样本可标VALID/GOOD；GOOD还要求tracker>=2。
+  缓存/拒绝/丢失样本不标GOOD，识别/任务帧仍保持原上下文配对。无需校准系统日期，
+  比较的是同一主机时钟域内的帧年龄；未知时间域不冒充新鲜数据。
+- mode51 CLAW_VISIBLE=0：沿接受上下文HOLD，继续位姿流，人工PAUSE保持暂停。
+  CLAW_VISIBLE=1后创建同task的新CARGO_AUDIT action，建立新frame floor；
+  真实图像三帧间隔100ms、跨度200ms，先STABLE再等本次READY/VALID。
+  mode51等待再久也不触发原17秒ABORT或自动丢载；正常审核模式的17秒机制保留。
+- 合法：同task新action发GRAB_CONFIRMED，重新闭爪后进入mode23；伤员可重新走49/23/50。
+  不直接NAV、不补发CORE前探。空爪：必须是实际全零审核且READY已确认，才发送合法H/D的
+  RETURN_CENTER；None、占位或缺图不能触发返中。
+- 非法非空默认保持并重新观察；只有明确放弃请求、新参考和当前稳定非法
+  非空审核确认后才发RELEASE_BOTH，等实际mode24/47后沿原返中路径处理。
+  这不会因超时触发。扫障/投放不自动标完成，不重启旧CLEAR，不重复增加已有批次的投送计数。
+- mode51新请求明确拒绝后，在原task重建新帧审核；不靠换task_id试探。故障位消失但
+  没有mode51或新参考/新审核，不恢复旧动作。显式STOP/ABORT和真实持续故障仍保持停止语义。
+
+普通DISPERSE/RELEASE拒绝核对fresh、task_id、rejected_action_id及尚未接受，撤销等待并
+重新审核；拒绝不计次数，已接受动作不因视觉变化重启。分离发生后保持原task和总次数，
+换track/换侧/换档不清零；无法继续原上下文时先返中心。仅在RETURN_CENTER已接受且下位机
+实际进入SEARCH时清理物理预算，失败堆避让记录另行保留。合法16位action rollover保留；
+没有FFFF接受证据时，不通过新task伪造rollover来清预算。
+
+MotionDebug发生IMU异常后不自动续跑。等待采样恢复、STOP且车静止，再通过既有下位机
+调试入口发送RESET建立新的F407局部零参考；不会恢复真实绝对角度，也不重置T265地图。
+上位机协议工具兼容既有RESET_ODOM(0x05)，不额外增加地图按键或界面操作。
+0x1A不能确认FIFO恢复细节，需看程序器IMU_RECOVERY ACTIVE/UNCERTAIN/COUNT和FIFO文本诊断。
+Gamepad不改轴符号：按下位机要求先发送关闭使能且三轴为0的新帧，再由操作员重新使能。
+
+协议缺口：0x17/0x1A没有mode51细分进入原因、IMU恢复计数或远端分离次数。
+上位机记录“mode51通知”和原阶段，不编造FIFO根因或从故障码推断预算。
+原进程内保留已观察到的接受次数；软件重启后无法凭现有状态包完整重建历史预算。
+
+### 本轮部署和必要验收
+
+退出旧入口，拉取`codex/gamepad-teleop`并重新编译`t265_omni_localizer`，启动正式入口
+`competition_rescue/run_competition_map.sh`。下位机须配套上述提交的NormalRun；不能只刷
+新下位机后用不认识51的旧上位机投入比赛。调试地图对应MotionDebug，实际烧录信息通过
+既有`--actual-lower-firmware`、`--actual-lower-mode`记录，默认unconfirmed。
+
+只复用现有检查程序，不新增测试程序、不改下位机仓库或协议帧长度。按用户随后要求，
+已停止追加验证。当前静态位姿恢复、小距离动作、带物恢复和实际烧录模式均未实车确认，
+不能以已完成的离线检查宣称比赛恢复已验证。
+
+## 2026-10-15：4071c71 增量适配
+
+下位机执行代码基线为`4071c71f0eab3a6a360b8e3d00815bdd6ad25236`；核对时
+远端HEAD `93f7550`只比它增加交接文档。上位机从`79d7dc1`增量适配，不覆盖main，
+不修改下位机仓库。源码版本不代表实机已经烧录，FIFO精度也仍需实测。
+
+### 轮式完整变换与旧日志差异
+
+1. `0x15`原始16位累计计数按回绕求增量；每轮符号-1只乘一次。
+2. 乘`pi * 0.070 / 1061.268`得到轮位移m1/m2/m3，轮序为右前/左前/后。
+3. 定位器与建图工具共用`three_wheel_translation`：
+   `forward=-(m1-m2)/sqrt(3)`，`left=(m1+m2-2*m3)/3`。
+4. 定位器附加旋转`encoder_to_robot_yaw_deg`默认0；建图参考使用上述原生车体轴。
+5. 轮式参考平移按T265航向投影到场地；正式四区航向与起点不变。
+
+`79d7dc1`的旧实现为正号forward再旋转180°，最终forward与新公式一致，left相反。
+旧文档的“实测180°”对应当时未确认烧录版本的测试，不能证明适用于4071c71。
+本次移除这项符号补丁，不修改T265的+x/-y、后20mm/右70mm或位置跳变设置；
+历史日志及其中参数不改写，需用已确认的4071c71分别复核前进和左移。
+若未来启用轮式yaw，公式为`-(m1+m2+m3)/(3R)`；当前`R=0`继续禁用，
+130mm只用于MotionDebug转速协议换算，不能用它自动开启轮式yaw。
+
+### MotionDebug、分离与故障
+
+- MOVE_BODY发送物理前进/左移，左移改为正arg2；逆时针TURN仍取负号。
+  轮缘mm/s仅在协议边界转换一次为0.1度/秒。界面移动范围50～700mm/s；
+  TURN理想执行时间达到10秒时提示可能超时，不改变下位机时限。
+- DONE须同时匹配命令SEQ、opcode、本次发送后时间及1秒内的新鲜状态；
+  FAULT、STOPPED或超过1秒无匹配状态取消自动返航后续段，迟到DONE不能恢复。
+  失联仅表示机械状态未知，不声称下位机已停。正式H/D和Gamepad不套此调试符号。
+  NormalRun与MotionDebug基础极性相同，但转角速度规划不同，不能互相替代精度验收。
+- 分离候选与运输合法性分开：mixed_material须有完整计数及绿色/核心ROI证据、
+  可靠侧别且符合目标角色才可尝试分离；运输仍只允许现有合法单件。
+  这些局部组成只用于分离决策，不改变线上MIXED_MATERIAL类别或审核签名。
+- 保留侧独立使用三个不同图像帧，采集间隔至少100ms；侧别或数量改变重新计数。
+  等ACK时即使全局签名不变，左右分布改变也重新确认。动作接受后保持已选侧。
+- 动作接受才计数；同一堆重新分配任务不清零累计次数。第三轮后仍先审核，
+  合法则运输，非法才执行原双开/后退/mode47返中路径。无新增补退或侧移。
+- 收到真实F407故障后保留任务现场并锁住发送，故障位清零、失联、人工暂停或
+  context_pending都不能自动重发旧动作。人工排查、重新初始化下位机后，按R
+  重新配置并等待新状态/上下文。故障码5不能唯一说明FIFO溢出。
+
+夹紧角度仍由下位机决定：能确认保留侧单件合格为20度档，其余为10度档；
+同侧同档每轮减5度，换侧/换档不清总次数。上位机不推断实际夹角，不改写数量或类别。
+下位机弧线分离按12/16/20度目标、100/130/160mm前段上限、300mm总路径和
+60mm横向预算（预留5mm制动）执行，允许提前完成；上位机只等待mode35/mode30与新图像。
+
+### 已核对保留的流程与协议缺口
+
+伤员为injured_orange：23→49（每爪放松5度，150mm/s有效后退2秒）→23→50→22；
+mode49撤销旧证据并保留伤员角色，mode50保持第二轮pending，22/40缺pending的17秒
+看门狗仍有效。CORE闭爪前50mm推进、扫障独立路径、mode48、先STABLE后READY/VALID、
+线上非法签名、占位证据、危险处理、首件、投送超时和计数均不重写。
+
+FIFO算法与细分故障不在0x1A中；未虚构新二进制字段。当前上位机没有程序器文本IMU
+解析器，不新增另一路串口控制。外部诊断按字段名查看`ALG=FIFO_TS_TRAPZ`及
+IMU_FIFO的PEAK/OVERRUN/FAULTS/MAX_POLL_MS/TEMP_MC；DT_US是硬件样本间隔，
+MAX_POLL_MS是主循环读取间隔。CIRCLES/CAL为程序器文本命令，不是0x19指令。
+T265场地航向与F407 Location航向分属不同参考原点；0x1A不是原始IMU积分角。
+此前提到的动作独立超时、断流重同步、导航净进展判断和NormalRun停车后角速度确认
+仍是建议，本次不等待不存在的新回执或状态。
+
+### 部署记录与最少实车验收
+
+上位机重新编译`localization/build`的`t265_omni_localizer`和`t265_map/build`的
+`t265_map_builder`，退出旧入口再重启，以生成新runtime配置。两种入口可用
+`--actual-lower-firmware <已烧录提交> --actual-lower-mode NormalRun|MotionDebug|Gamepad`
+记录操作员确认的信息，默认unconfirmed；正式session和调试metadata记录上位机提交，
+这些字段不是UART烧录证明。正式比赛用NormalRun，桌面运动实验用MotionDebug。
+
+1. 前进、左移各一小段，确认实车与轮式参考方向一致；逆时针90度检查负TURN编码及匹配DONE。
+2. 单个橙色伤员检查23→49→23→50→22，后退只发生一次，第二轮用新帧，闭爪期间不重审。
+3. 分离动作重发不加次数；第三轮合法可运输，非法经mode47返中，中心新mode3/新视觉才再抓取。
+4. 从已有故障记录或受控维护流程验证提示和停发；故障位清零仍不续跑，重新初始化并R复位后重新握手。
+   不为验收人为制造FIFO溢出或修改运行保护。
+
+仅使用必要编译、语法和现有针对性检查，不新增测试程序，不跑无关整套回归。
+
+### 本次实际修改文件
+
+- 运动解算：`localization/src/fusion.cpp`、`localization/include/fusion.hpp`、
+  `localization/include/config.hpp`、`t265_map/src/t265_map_builder.cpp`。
+- 当前配置：`localization/config/localization.example.conf`、
+  `localization/config/t265_debug_offset_candidate.conf`、
+  `localization/config/t265_debug_offset_scale_candidate.conf`。
+- 调试控制：`localization/tools/f407_motion_protocol.py`、`localization/tools/t265_f407_motion_map.py`。
+- 比赛增量：`competition_rescue/state_machine.py`、`competition_rescue/run_competition_rescue.py`。
+- 会话记录：`rescue_map/field_model.py`、`rescue_map/map_app.py`。
+- 复用既有检查文件：`localization/tests/test_omni_localization.cpp`、
+  `localization/tools/test_f407_motion_protocol.py`、`competition_rescue/tests/test_state_machine.py`、
+  `competition_rescue/tests/test_runner.py`、`rescue_map/tests/test_map_app.py`。
+- 文档：本文件、`docs/t265_f407_center_debug.md`、`docs/t265_side_mount_baseline.md`、
+  `localization/README.md`、`t265_map/README.md`。
+
+## 既有审核机制
+
+上位机定位配置已按 MG310 霍尔版换算：70 mm 轮、13 线四倍频、减速比 20.409，对应
+
+```ini
+wheel_diameter_m = 0.070
+counts_per_wheel_revolution = 1061.268
+```
+
+`localization/build/t265_omni_localizer` 启动时打印 `counts/rev=1061.268`。`TYPE=0x15` 仍传 F407 的原始累计计数；每条里程计算链路仅在原始计数转换为距离时应用一次比例，不能传入已缩放的计数再套比例。正式启动继续使用 T265-only；默认参数、配置模板、当前 runtime 配置和 `t265_map_builder` 的轮式对照换算已同步。历史日志保留当时参数，不能改写。
+
+完整比赛协议已配套 mode49/mode50：mode49 半闭爪后退阶段只发送非 STABLE、frame=0、证据全零的 `CARGO_AUDIT`，保留可确定的角色标志，等待新鲜 mode23 并建立新的 frame floor；第二轮合法审核后在mode50持续发送同一 STABLE 审核，直到当前任务上下文的新鲜 mode22、闭爪和 `AUDIT_READY/AUDIT_VALID` 同时成立，才进入导航。上位机不向 mode49 发送运动或机构命令。
+
+F407 4071c71的PWM上限60%，速度PID为5/0.12/0，直行航向PID为2/0.005/0，
+视觉转向PD为0.45/0.0100。电池经保险丝直接给驱动供电；下位机按12V建模，无实时
+电压补偿，也未自动应用空载标定表。上位机不叠加这些PID，临时磨合脚本不集成进比赛。
+
+历史84b1777交接时公开main为`d3913f4`，2026-10-10更新至`2550025`；当前配套基线
+已更新为上文4071c71的NormalRun，公开源码不能证明实机已烧录。
+
+审核在 mode23、mode48 回到140°且 CLAW_VISIBLE 后观察500ms稳定期，并建立新frame floor。相邻有效采样至少100ms，三帧总跨度至少200ms。普通/核心类别切换、数量、危险/未知/混装变化重计数；左右分布和track变化不单独改变语义。开局藏堆保持任意非空，mode43保持扫障非空。mode50使用已接受的第二轮合法结果等待闭爪完成，不因机械闭爪期间视觉变化重审；mode22或扫障mode40必须匹配当前上下文。
+
+完整空爪画面生成真实空审核；缺图、ROI未标定或不完整、画面近乎全黑/过曝/均匀时，结果为“无法观察”。正式运输mode23/45/48还检查裁切、部分入ROI与明显遮挡。INITIAL_STASH在图像、相机和ROI有效且存在真实ROI内非空检测时，允许多件、混合与重叠堆；mode43只让涉及本次目标的质量问题阻断取障审核，不受无关物资之间的重叠影响。对应占位包的视觉帧号为0，不累计命中。质量检查依据图像和检测框，不能证明所有潜在遮挡均已识别。实际图像使用摄像头采集时间，避免把推理完成时间误当成新证据。
+
+普通审核超过500ms没有新证据时清除旧结果；不可观察画面立即失效。审核 wire mode 的17s期限独立于命中、audit_id、重发和相机摆动；期限到仍未收到恢复状态则记录 `audit_handoff_timeout` 并ABORT。mode24沿原恢复流程等待mode3；mode47沿现有RETURN H/D进入mode17、mode3，不改投送计数。没有增加堵转、反向计数或普通运动无进度的故障锁存。
+
+## 本地三帧与上位机STABLE的先后关系
+
+上位机先独立按采集时间形成三个不同视觉帧、有效采样间隔至少100ms、总跨度至少200ms的稳定证据，并发送STABLE；这一步不以READY为前提。F407还必须收到三个不同audit_id、满足其本地100ms间隔，并收到当前审核的STABLE，才置READY；VALID再检查现有类别、数量和目的地。同帧重发不增加命中或刷新证据时龄。READY未返回时上位机继续处理新帧，过期或不可观察立即撤销旧STABLE。
+
+非法审核按实际序列化字段比较：真实总数、去STABLE后的audit_flags、类别0～6计数直方图，以及数量为0但类别非NONE的类别掩码。左右交换和track变化不影响签名；MIXED_MATERIAL单独计类，不根据未传输的绿色细分计数还原。两位爪侧计数字段维持既有编码，真实total_count不裁剪。开局任意非空和mode43受控非空仍使用各自语义。
+
+## 扫障等待与异常交接
+
+- mode43真实审核及无观察占位保留SWEEP_PICKUP。mode45与扫障后mode23固定原物资目的地，伤员保留DESTINATION_INJURY；不得因眼前类别变化而丢失原角色。
+- 无观察包只保留角色和audit_id元数据，类别、侧计数、总数、危险/未知/混装证据为0，frame=0且无STABLE。它不代表实测空爪。
+- context_pending期间mode43/45及CLEAR_SAFE_ZONE的审核阶段继续消费视觉；明确拒绝只在状态新鲜、task_id和rejected_action_id都匹配时消费。退回42/44后重建frame floor，恢复APP/HOLD查找。
+- 扫障GRAB需要此前实际转发的STABLE包、匹配的已接受审核上下文及READY/VALID。已接受的mode39机械动作只用原接受上下文HOLD心跳等待，不重新请求CLEAR。
+- mode50保存第二轮合法pending及原audit_id/frame，不重新审核。mode22/40交接需要对应pending、匹配上下文、闭爪和READY/VALID；成功交接后保留证据至NAV/ALIGN被下位机观察到，避免下一周期误报缺失。
+- mode50/22/40缺少合法pending时记录missing_committed_audit，不从selected_batch猜载荷。等待F407既有释放恢复；mode22/40下位机15秒仍未交接会放弃，上位机同wire mode17秒仍无恢复则ABORT。批次丢失不会停用此看门狗。
+- 人工PAUSE暂停上位机握手计时，恢复后续计；摄像头恢复暂停仍保留异常握手时限。人工暂停入口为set_paused(..., reason="manual")，相机路径显式标记camera_recovery。通信暂停和现有STOP/ABORT路径保持。
+
+## 同步部署与验证边界
+
+完整比赛请将上位机本分支增量与F407 `255002509144aec510c560a042b29200a70f2ec2` 的NormalRun配套部署，重启定位/串口转发和比赛进程。使用F407已有NormalRun构建配置重新编译、烧录并确认实际提交与模式；T265桌面测试的MotionDebug属于单独运行模式。无需重套旧0007补丁，也没有修改下位机源码或生成补丁。
+
+本次仅做必要针对性检查：独立STABLE/重复帧/失效、49/23/50/22、48及扫障23/40交接、扫障pending/拒绝/42与44恢复、角色占位、非法串口签名、质量筛选、缺失pending及PAUSE/超时恢复；现有协议脚本和Python语法/差异检查通过。未新增测试程序，未运行旧全量回归；尚无此次协议的实车运行日志，图像遮挡启发式和完整比赛仍需配套固件实测。
+
+部署上位机后重新启动启动界面，使其生成本轮 runtime/localization.conf；使用本次重新编译的 localization/build/t265_omni_localizer 和 t265_map/build/t265_map_builder。串口帧类型、同SEQ紧邻配对方式及现有导航速度、路径保持。下位机负责15s审核放弃、半闭爪后退及二次合爪等机械动作，上位机只作审核与交接。

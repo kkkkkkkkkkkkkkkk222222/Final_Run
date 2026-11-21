@@ -1,0 +1,510 @@
+# RDK X5 智能救援YOLO主识别与传统视觉备选系统
+
+本项目使用颜色、轮廓、几何尺寸和多帧跟踪识别：
+
+- `green_supply`：绿色普通物资；
+- `danger_cyan`：浅蓝危险目标，使用更宽松阈值和更快确认；
+- `injured_orange`：橙色伤员；
+- `core_black`：黑色核心物资，额外检查局部对比度及多边形特征；
+- `safe_red`、`safe_blue`：红/蓝安全区；
+- `entrance_purple`：紫色安全区入口。
+
+处理链路：
+
+```text
+MJPEG 1280x1024@180
+  -> 压缩帧单帧泄漏队列（只保留最新帧）
+  -> RDK X5 JPU按60Hz解码JPEG为NV12
+  -> NV12转BGR
+  -> 最新BGR帧
+  -> HSV/Lab分割
+  -> 候选轮廓
+  -> 颜色/形状/尺寸评分
+  -> 地面单应坐标
+  -> 多帧确认
+```
+
+默认阈值只是安全起点，必须用实际比赛物资、相机和照明重新标定。
+
+## 文件说明
+
+```text
+run_editor.py                 可视化阈值编辑器
+run_detector.py               比赛识别入口，默认YOLO
+run_yolo_x5.py                X5 BPU YOLO实时识别核心
+run_traditional_detector.py   原比赛传统视觉备选入口
+calibrate_ground.py           图像到地面毫米坐标标定
+config/rescue_vision.json     全部现场参数
+config/homography.txt         标定后生成
+runtime_result.json           运行时识别结果
+rescue_vision/                识别核心模块
+tests/smoke_test.py           合成图像测试
+```
+
+## 1. 部署
+
+把整个目录复制到板端，例如：
+
+```bash
+scp -r traditional_rescue_vision root@RDK_IP:~/RDK_X5/
+ssh root@RDK_IP
+cd ~/RDK_X5/traditional_rescue_vision
+bash deploy_rdkx5.sh
+```
+
+如果板端已有OpenCV、GStreamer和`python3-gi`，可以跳过安装，只运行：
+
+```bash
+python3 -c 'import cv2,numpy,gi; gi.require_version("Gst","1.0"); from gi.repository import Gst; print("OK")'
+```
+
+## 2. 固定摄像头参数
+
+```bash
+cd ~/RDK_X5/traditional_rescue_vision
+bash set_camera_controls.sh /dev/video0
+```
+
+通过环境变量临时修改：
+
+```bash
+EXPOSURE=15 WHITE_BALANCE=4600 FOCUS=220 bash set_camera_controls.sh /dev/video0
+```
+
+每次改变曝光、白平衡、焦距或补光后，都应重新检查阈值。
+
+## 2.1 训练图片连拍
+
+训练数据采集固定使用摄像头原生`MJPEG 1280x1024@180 FPS`，直接保存相机输出的JPEG，
+不经过缩放或二次压缩：
+
+```bash
+export DISPLAY=:0
+python3 capture_training_burst.py
+```
+
+桌面入口为“比赛摄像头批量拍摄”，重新安装快捷方式：
+
+```bash
+bash /home/sunrise/RDK_X5/shijue_fangan/vision/install_capture_training_desktop.sh
+```
+
+先关闭占用相机的比赛/取景程序，再打开入口。在窗口填写“连续张数”“间隔（秒）”和“起始编号”，
+点击“开始拍摄”。默认20张、间隔0.5秒、从A1开始；从99开始即保存`A99.jpg`、`A100.jpg`，
+第20张为`A118.jpg`，不补零。拍完后起始编号自动续到下一张，也可手动指定，但不覆盖已有图片。
+
+同次启动的多轮拍摄共用`vision/captures/training/session_时间/`，退出后重新启动并拍摄才建立新目录。
+图片直接保存相机原始JPEG，不缩放、不二次压缩、不带预览文字；沿用相机当前曝光、白平衡和焦距。
+`timestamps.csv`继续记录实际帧间隔；设置间隔小于相机帧周期时只选取真实新帧，不复制图片。
+“停止本轮拍摄”停止选帧并保留已采集图片。点击“压缩本次文件夹（ZIP）”可生成同目录旁的ZIP，
+或勾选“退出时压缩”；两者均保留原文件夹，后续继续拍摄后可再次压缩以更新ZIP。
+关闭窗口会保存已采集图片，不继续等待未拍的剩余张数。此采集目录不按运行日志的5次策略自动删除。
+
+CLI仍可设置初始值，例如`--burst-count 20 --interval-ms 500 --start-number 99`。
+桌面界面还需`python3-tk`和`python3-pil.imagetk`（当前RDK已安装）；本工具不加载模型或控制底盘。
+
+## 3. 运行阈值编辑器
+
+### 推荐：SSH Web编辑器
+
+Web编辑器不使用RDK桌面的X11窗口，界面直接显示在调试电脑浏览器中。先在电脑新建带端口转发的SSH连接：
+
+```bash
+ssh -L 8080:127.0.0.1:8080 root@RDK_IP
+```
+
+然后在板端运行：
+
+```bash
+cd /home/sunrise/RDK_X5/traditional_rescue_vision
+python3 web_editor.py --device /dev/video0 --decoder jpu --decode-fps 60
+```
+
+在电脑浏览器打开：
+
+```text
+http://127.0.0.1:8080
+```
+
+如果SSH已经连接，可以在电脑另开终端只建立隧道：
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 root@RDK_IP
+```
+
+Web编辑器提供：
+
+- 宽滑条和可直接输入的数值框；
+- 当前组号、显示名称、内部配置键；
+- 组号和显示名称均可修改（内部配置键保持稳定，避免破坏导航配置）；
+- 鼠标框选目标后自动估算HSV、Lab和形状范围；
+- 每个类别可建立多组参考阈值，例如“正视、侧视、斜视、远距离”；新增参考会复制当前参数，再对新角度框选自动取值；
+- 调试界面只运行当前选中的参考，便于看清该参考是否有效；正式运行时同类别所有参考按“任一通过”合并，并对重复命中去重；
+- 明确显示颜色、形状、毫米尺寸和多帧规则是否生效；
+- 黑色核心物资专用的局部对比度和多边形顶点参数；
+- 框选典型物资后给出可直接写入的具体曝光值；180 FPS下根据帧周期自动限制在4～50（约0.4～5.0ms）；
+- 框住哑光灰卡后扫描2800～6500 K，选择B/G/R最均衡的具体色温并锁定；
+- 框住600～800 mm处带边缘的物资后，对0～1023焦距粗扫、精扫并锁定最清晰值；
+- 白黑掩膜只显示通过面积、形状和评分的最终有效目标，面积不合格的小色块保持黑色；
+- 使用320x256图像快速筛选候选，再回到1280x1024原图复核轮廓、面积、形状和坐标；多帧匹配与UART始终使用原生1280x1024坐标；
+- 网页预览直接读取摄像头最新BGR帧，与识别线程相互独立；显示前缩小为640x512、JPEG质量72、默认10 FPS；
+- 浏览器等待上一张JPEG加载完成后再请求下一张，不会让SSH下的图片请求相互覆盖；
+- 白黑掩膜使用最近邻缩放，边缘不会因为预览缩放产生灰色像素。
+
+框选自动取值只用于生成起点，必须用目标的不同距离、朝向、阴影和赛场光照复核。参数点击“应用”后只在内存生效，点击“保存全部配置”才写入JSON。
+
+多参考建议每类保留2～4组真正互补的参数。可以按“正视、侧视、斜视/顶视、远距离”采样；不要把每一帧都建成一个参考，因为每增加一组参考都会增加一次该类别的分割和轮廓计算。各参考的面积和形状范围应分别收紧，不要只用多个非常宽的颜色范围。
+
+普通物资参数保存后，先按`Ctrl-C`关闭Web编辑器释放摄像头，再运行无Web的本地显示与UART程序：
+
+```bash
+export DISPLAY=:0
+python3 run_normal_supply_uart.py --device /dev/video0 \
+  --decoder jpu --decode-fps 60 --window-mode fullscreen --uart /dev/ttyS1
+```
+
+该程序直接复用Web编辑器保存的完整识别配置和原有检测算法，只启用`green_supply`，不启动HTTP服务。全屏显示使用等比例完整缩小，不裁剪摄像头画面；当前1024×768桌面会把1280×1024图像缩成960×768并在左右补黑边。按`F`切换全屏/窗口，按`Q`或`Esc`退出。
+
+### 备用：RDK桌面OpenCV编辑器
+
+本地显示器：
+
+```bash
+export DISPLAY=:0
+python3 run_editor.py --device /dev/video0
+```
+
+SSH使用时必须启用X11转发，例如`ssh -X`，或在MobaXterm中启用X Server。
+
+快捷键：
+
+| 按键 | 功能 |
+|---|---|
+| `[` / `]` | 上一个/下一个类别 |
+| `1` / `2` / `3` | HSV、Lab、最终融合掩膜 |
+| `F` | 切换 AND、OR、仅HSV、仅Lab |
+| 空格 | 冻结/恢复画面 |
+| 鼠标左键 | 读取像素BGR、HSV、Lab |
+| `S` | 保存参数到JSON |
+| `L` | 从JSON重新加载 |
+| `C` | 保存当前现场原图 |
+| `Q` / `Esc` | 退出 |
+
+界面左上为识别结果，右上为白目标/黑背景掩膜，左下为掩膜后的目标图，右下为运行状态。
+
+推荐每类调试顺序：
+
+1. 冻结包含目标的画面；
+2. 点击目标中心与明暗边缘，记录HSV/Lab；
+3. 先调HSV，再调Lab；
+4. 根据误检情况选择AND或OR；
+5. 调开闭运算，确保目标连通但相邻目标不粘连；
+6. 调`Area min/max`排除噪声和大背景；
+7. 在不同距离、姿态和光照下重复验证；
+8. 按`S`保存。
+
+编辑器只识别当前选中的类别，因此能把算力用于实时调参，不代表正式运行只识别一种目标。
+
+## 4. 地面坐标标定
+
+配置中的地面坐标以机器人为原点：X向右为正，Y向前为正，单位毫米。默认点为3列×3行：
+
+```text
+X = -300, 0, 300 mm
+Y =  400, 800, 1200 mm
+```
+
+把九个标志点准确放到这些位置，然后：
+
+```bash
+python3 calibrate_ground.py --device /dev/video0
+```
+
+按空格冻结画面，按照终端给出的顺序点击九个点，按`S`保存。建议重投影RMSE小于15mm；过大时重置并重新点击。
+
+标定后不要改变相机高度、俯仰角、焦距或分辨率，否则单应矩阵失效。
+
+当前默认分辨率已改为1280x1024。旧分辨率的标定文件不会被加载；新标定会同时生成`homography.txt`和记录1280x1024的`homography.txt.meta.json`。必须在新分辨率下重新标定一次。
+
+## 5. 比赛运行
+
+```bash
+python3 run_detector.py --device /dev/video0
+```
+
+该入口默认使用320x320 X5 BPU YOLO模型、JPU NV12与VSE预处理，只接受置信度不低于0.30的
+检测。需要临时回退到原传统视觉时：
+
+```bash
+python3 run_detector.py --detector traditional --device /dev/video0
+```
+
+以下分级调度参数只适用于传统视觉备选：
+
+```bash
+python3 run_detector.py --detector traditional --device /dev/video0 \
+  --danger-fps 60 --material-fps 60 --zone-fps 20
+```
+
+传统视觉备选程序：
+
+- 危险青色物资默认按120Hz调度，可在60～120Hz配置；
+- 其余三类物资默认按90Hz调度，可在60～90Hz配置；
+- 红蓝安全区和紫色入口默认按30Hz调度，可在20～30Hz配置；
+- 只把多帧确认后的目标写入`runtime_result.json`；
+- 输出文件采用临时文件替换，不会被导航程序读到半写入JSON。
+
+结果示例：
+
+```json
+{
+  "frame_id": 12345,
+  "frame_age_ms": 4.2,
+  "calibrated": true,
+  "tracks": [
+    {
+      "id": "M7",
+      "class": "danger_cyan",
+      "confidence": 0.86,
+      "state": "CONFIRMED",
+      "position": [-125.0, 780.0],
+      "coordinate_system": "ground_mm"
+    }
+  ]
+}
+```
+
+导航程序必须执行安全策略：`danger_cyan`或无法可靠分类的目标不得进入收容动作。
+
+### X5 BPU YOLO模型
+
+训练模型需先在x86 Ubuntu电脑上使用D-Robotics官方Ultralytics转换流程，将`best.pt`导出并
+量化为RDK X5 Bayes-e NV12输入的`.bin`，再复制到：
+
+```text
+/home/sunrise/RDK_X5/shijue_fangan/vision/models/best_bayese_320x320_nv12.bin
+```
+
+电脑端完整转换步骤见[`X5_YOLO_DEPLOY.md`](X5_YOLO_DEPLOY.md)。
+
+板端实时识别：
+
+```bash
+export DISPLAY=:0
+python3 run_yolo_x5.py --device /dev/video0
+```
+
+程序复用1280x1024@180 FPS MJPEG、最新帧队列和JPU 60 FPS解码，在BPU上执行YOLOv8，
+检测框中心映射回原生1280x1024坐标，并原子写入`runtime_result.json`。训练包中的
+`model.rknn`只适用于RK3588，不能在RDK X5运行；训练包中的`model.onnx`在X5 CPU上实测
+单帧约1.6秒，只适合转换验证，不适合实时运行。
+
+窗口显示和推理使用独立线程，默认显示不会阻塞识别与JSON更新。仓库包含已转换的320x320
+YOLOv8s模型；原始1280x1024画面会等比例缩成320x256内容并填充为模型输入，检测坐标仍映射
+回1280x1024。
+
+仓库内默认模型是六类别YOLOv8s：`conmon`、`kernel`、`risk`、`wound`、`safe_blue`和
+`safe_red`，分别对应普通物资、核心物资、危险物资、伤员、蓝安全区和红安全区。
+独立识别程序仍会显示全部六类；连续任务状态机读取本方`safe_blue/safe_red`框，用于过滤已经
+位于安全区内的物资，避免把该物资坐标发送给F407抓取。安全区识别不用于替代地图/下位机的投送
+完成判断。
+
+320模型默认使用`--preprocess auto`：JPU直接发布NV12，VSE硬件缩放到320x256，再以灰色Y和
+中性UV填充成320x320送入BPU；BGR只在显示时按`--display-fps`生成。若现场发现弱目标置信度
+下降，可立即使用`--preprocess cpu`恢复原有BGR/OpenCV预处理。VSE原生库通过下列命令构建：
+
+```bash
+bash native/build_vse.sh
+```
+
+当前安全版本仍会在JPU、VSE和Python之间各复制一次NV12缓冲区，尚未跨硬件节点共享物理
+缓冲区。置信度阈值0.30时空场景实测约53～55 FPS，有多个目标时约43～48 FPS；同帧校准
+对比中高置信度目标类别保持一致。
+
+## 6. 性能判定
+
+YOLO入口会显示解码、VSE预处理、BPU和后处理帧率；传统视觉编辑器和备用入口仍显示原有
+分级检测帧率。传统视觉当前先在320x256图像上筛选候选，再回到1280x1024原图复核。
+
+1. 收紧`roi_polygon`，去除车身和远处无效画面；
+2. 降低安全区识别频率，不降低危险目标识别频率；
+3. 只在导航到目标附近时启用精细形状判断；
+4. 保持只处理最新帧，不允许排队补处理旧帧。
+
+## 7. 测试
+
+```bash
+python3 tests/smoke_test.py
+python3 -m py_compile run_editor.py run_detector.py calibrate_ground.py rescue_vision/*.py
+```
+
+合成测试通过只说明代码和基本颜色规则正常；现场阈值仍需使用真实材料校准。
+
+
+## YOLO26性能取证（2026-11-13，仅独立测速）
+
+原入口新增可选`--profile`，默认关闭。只在测速进程中包装原相机/SDK/队列调用，正式源文件不加计时。
+不改变原模型、阈值、输入尺寸、CPU/BPU调度、队列容量或选帧规则，不启动比赛/定位/UART/电机。
+隔离复核：正式入口不引用分析模块，原桌面快捷方式也未默认开启分析；模型和配置只读，输出仍在独立测速目录。
+三处临时类/函数绑定均在finally还原，成功/异常共6条无硬件检查通过；本次未启动相机、BPU推理或子进程。
+实验与正式进程共用相机/BPU，不能靠进程隔离消除硬件争用；本阶段只在正式程序未运行时单独实验，
+不为实验停止或重启正式程序。新优化仍先留在测速侧，未获后续明确要求不接入正式链。
+增加源offset/PTS、解码亮度抽样CRC、解码/提交/出队/SDK/结果接收时间、线程CPU时间及1Hz进程/CPU/BPU数据。
+逐线程统计仅在运行前后采样，不逐帧写盘；校验值、时间和统计结果均不参与帧准入。
+
+```bash
+# 可从原桌面程序对应launcher开启同一分析模式：
+bash vision/benchmark_yolo26_launcher.sh --profile --duration 30 --warmup 5
+python3 vision/benchmark_yolo26_x5.py --profile --no-display --duration 30 --warmup 5
+# 用上一轮生成的真实NV12缓存做三个连续推理测试；每个模式测10秒，重复图不算实时新帧：
+python3 vision/benchmark_yolo26_x5.py --cached-perf /home/sunrise/RDK_X5/shijue_fangan/vision/captures/yolo26_benchmark/20261113_185206_510929_competition/profile_cached_native.nv12 --duration 10 --warmup 2
+```
+
+官方工具基础吞吐复现（同一BPU上的1/2个任务，不包含本程序取帧/跟踪/ROI）：
+
+```bash
+hrt_model_exec perf --model_file /home/sunrise/RDK_X5/shijue_fangan/yolo26n/x5_output_640/yolo26n_6cls_640_bpu_bayese_640x640_nv12.bin --frame_count 1000 --thread_num 1 --core_id 1
+hrt_model_exec perf --model_file /home/sunrise/RDK_X5/shijue_fangan/yolo26n/x5_output_640/yolo26n_6cls_640_bpu_bayese_640x640_nv12.bin --frame_count 1000 --thread_num 2 --core_id 1
+```
+
+本节SDK指`hbm_runtime`模型推理接口，不涉及T265 SDK。
+在原每轮目录追加`profile_summary.json`、`profile_captures.csv`、`profile_decoded.csv`、
+`profile_submissions.csv`、`profile_receptions.csv`、`profile_worker.json`、`profile_latency_parts.csv`、
+`profile_resources.json`、`profile_threads.json`及可用的`profile_display.csv`；保留源码指纹和分析源码副本。
+帧号联结已检查到相机接收/解码、成功提交、工作线程完成、父进程接收，不拿重复刷屏凑识别FPS。
+
+同一正式辅助代码指纹的30秒对照：原路径42.50FPS、P95 71.77ms；分析版带预览42.00FPS、P95 72.55ms，
+无预览45.67FPS、P95 68.71ms。带预览CPU均值为父进程90.0%、推理48.3%、预览39.0%（100%=一个CPU核）；
+BPU占用中位41%，主线程允许CPU0～7，OpenCV内部线程数为1；没有固定30FPS锁，确有60FPS解码/50FPS提交上限。
+主要P50片段：JPEG接收→解码8.27ms、解码→提交8.48ms、复制/提交1.25ms、队列驻留约14.18～15.58ms，
+SDK调用13.38ms、CPU预处理4.40ms/后处理3.47ms、跟踪/ROI快照3.01ms。各段分位数不能直接相加得到整链分位数。
+92.54%的SDK开跑时已有更新解码图，采集时间差中位16.26ms；这是离线机会量，不是已实现的延迟收益。
+
+缓存SDK调用80.8次/s，加后处理64.1次/s，完整预处理/SDK/后处理50.9次/s。官方工具同一模型1000帧：
+单任务96.94FPS/均值10.30ms，双任务105.79FPS/18.88ms；吞吐+9.13%，每任务耗时+83.24%。
+不能把多任务吞吐当单帧延迟降低，也未实施双SDK工作进程。优先建议在独立测速评估空闲worker领取最新完整解码帧，
+保单SDK拥有者及帧/结果配对；改变共享帧所有权、前后处理流水化及正式迁移另行选择，本次未实施。
+
+补充输入身份轮：30秒5287个不同源offset、1763个不同解码亮度抽样CRC，未见重复画面凑帧。
+该轮正式辅助代码因工作区其他任务已有不同指纹，只作输入身份辅助证据，不混入上述性能对照；其他改动未纳入本次提交。
+初版逐秒遍历所有线程的观察器开销过大，其两轮记录保留且不用于最终速度结论；轻量采样CPU中位约4.7～6.6ms/秒。
+原路径有最低28FPS的一秒窗口，不能以均值承诺长期每秒≥30或每帧33.3ms硬截止；本轮未跑比赛联合负载。
+SDK/结果时延从主机收到JPEG算起，非曝光→屏幕物理时延。官方profiler一项TaskPendingTime大数异常已保留原值，未用于归因；
+somstatus部分cpuinfo_cur_freq无读权限，0不作降频证据，改记录可读的scaling_cur_freq/BPU cur_freq。
+汇总和图：`docs/reports/yolo26_performance_20261113/`，所有原始轮次仍保存在`vision/captures/yolo26_benchmark/`。
+
+## YOLO26n 640×640 新模型对比（2026-11-09）
+
+桌面“YOLO26-640实时测速”仍使用原入口 `benchmark_yolo26_x5.py`，默认模型改为：
+`/home/sunrise/RDK_X5/x5_output_640_yolo26n/yolo26n_6cls_640_1109_bpu_bayese_640x640_nv12.bin`。
+独立测速完成后，用户要求只替换正式模型。已将同一1109权重复制到正式原.bin路径，文件名保留，
+正式入口、代码逻辑、类别表/映射和阈值均不改；新旧六类顺序兼容。正式原路径加载和单次合成推理通过，未发车。
+默认读取模型旁 `classes.txt`，将 `blueteam/redteam` 显式映射为 `safe_blue/safe_red`；
+`common/kernel/risk/wound` 使用原正式别名映射。测速直接使用用户提供的外部模型目录；正式程序加载其原路径下已替换的同一权重。
+
+识别直接复用正式 `Yolo26Pipeline` 的 spawn 推理进程、三个图像槽、JPU/NV12/VSE、
+640×640等比例补边、LTRB/NMS、原生1280×1024坐标、多帧跟踪，以及正式
+`make_detection`、`safe_bbox_from_detections`、`capture_image_quality`、`make_vision_snapshot`。
+默认相机180FPS、解码60FPS、提交50FPS、置信度0.20、NMS0.45、BPU核0，均与正式默认相同。
+保留正式配置、当前用户ROI和可用标定；不创建比赛规划器、定位或串口进程。
+未连接下位机状态时相机角度/合爪条件保持未知，不伪造合爪审核通过；本工具不是完整比赛负载或动作验收。
+
+预览独立进程，使用单个共享内存槽传递最新的“图像＋同帧结果”，跳过预览不阻塞识别。
+它复用正式ROI/跟踪绘制，并标注原始类别框、置信度、唯一识别FPS、BPU耗时、结果/预览延迟。
+预览传输与正式原队列方式不同，优化仅在本测速文件内，不改变正式程序。
+默认预热5秒、测量60秒；Q或Esc退出。`--duration 0`持续显示，退出时保存统计。
+
+```bash
+python3 vision/benchmark_yolo26_x5.py
+# 从正式路径加载已更新模型，运行同一测速链：
+python3 vision/benchmark_yolo26_x5.py --model /home/sunrise/RDK_X5/shijue_fangan/yolo26n/x5_output_640/yolo26n_6cls_640_bpu_bayese_640x640_nv12.bin --labels /home/sunrise/RDK_X5/shijue_fangan/vision/config/yolo_labels.txt
+```
+
+日志仍在 `vision/captures/yolo26_benchmark/<时间>_competition/`：`metadata.json`记录模型、类别映射、
+配置/共享源码指纹和实际后端；`frames.csv`逐唯一结果记录推理、跟踪/ROI及交付延迟；
+`detections.jsonl`约每秒采样真实检测框和轨迹；`summary.json`记录完整1秒FPS、分位延迟、错误和预览指标；
+`last_preview.jpg`/`display.json`保留带框画面和显示统计。原始记录不清理。
+延迟起点为主机收到MJPEG的时刻，终点为完成正式视觉快照，预览另计到imshow调用前；
+不等于曝光到屏幕的物理延迟。至少30秒且每个完整1秒窗口均≥30新结果才标记 `stable_30fps=true`。
+不降低阈值、不缩小推理输入、不重复画面凑帧。实测回执见 `docs/reports/yolo26_new_model_benchmark_20261109.json`。
+
+当前真实摄像头＋现场物资最终实测：预热5秒后测60秒，2549个唯一结果，平均42.48FPS、
+最低完整1秒40，识别稳定30检查通过。MJPEG主机接收→跟踪/ROI快照P50/P95为61.20/71.22ms，
+BPU推理P95为15.01ms；预览19.62FPS，调用imshow前P95为101.20ms，显示帧率与识别帧率分别统计。
+最大结果间隔91.15ms，不等于每帧硬截止33.3ms；未运行比赛联合负载。三种现场物资有检出，
+纸箱背景仍产生约0.4～0.5的伤员类框；没有标注集，不宣称识别精度、召回率或比旧模型更好。
+最终目录：`vision/captures/yolo26_benchmark/20261109_211230_398072_competition/`。
+
+## 2026-10-26 历史测速（旧模型/旧测速进程，仅供追溯）
+
+以下参数、命令和结果属于当时版本，当前入口行为以上述2026-11-09说明为准。
+
+独立程序 `benchmark_yolo26_x5.py`，不修改比赛使用的YOLOv8模型/后处理，不启动比赛，不读写UART。
+默认模型为 `yolo26n/x5_output_640/yolo26n_6cls_640_bpu_bayese_640x640_nv12.bin`，文件由用户提供、不纳入本次代码提交。
+已读取实际模型：NV12输入1×3×640×640，三层80/40/20，各为6通道分类logits及4通道LTRB；不能套64通道DFL解码。
+用户已确认类别顺序仍为conmon、kernel、risk、wound、safe_blue、safe_red。默认置信度0.2，NMS IoU 0.45。
+
+启动（先关闭其他占用摄像头的程序）：
+
+```bash
+cd /home/sunrise/RDK_X5/shijue_fangan
+python3 vision/benchmark_yolo26_x5.py
+```
+
+本机桌面有“YOLO26-640实时测速”。默认预热5秒、正式测量60秒，Q退出。`--duration 0`持续显示，退出后仍保存统计。
+默认使用1280×1024 MJPEG 180fps摄像头、JPU解码上限60fps、VSE缩放到640×512再NV12补边到640×640；缩放/补边保持比例。
+VSE不可用时auto模式明确提示并记录CPU回退；`--preprocess vse`要求硬件缩放成功。
+
+默认优化配置：采集/JPU独立线程＋单个预处理/推理/后处理工作线程＋共享内存独立显示进程，窗口刷新上限40fps。
+这样避免BPU Python调用与GUI争用GIL；不直接假设增加更多Python线程会加速。
+`--pipeline threaded`可开启额外预处理线程，队列容量1、只保留最新图；多线程对照实测吞吐略高，但延迟和抖动也更大。
+预计算三层网格、先筛logits再解码少量框、OpenCV原生分类别NMS、禁用OpenCV多线程池争用。
+未提高置信度、删除类别、减少模型输入尺寸或截断候选数量来制造高FPS。
+
+可运行对照：
+
+```bash
+python3 vision/benchmark_yolo26_x5.py --pipeline threaded --decode-fps 90 --display-fps 60
+python3 vision/benchmark_yolo26_x5.py --no-display
+```
+
+日志按运行目录保存在 `vision/captures/yolo26_benchmark/`：
+- metadata.json：模型/脚本SHA256、输入输出形状、标签、实际预处理方式及全部参数。
+- frames.csv：每张唯一新图的帧号、采集/完成时刻、预处理/BPU/后处理/总时延、检测数量。
+- summary.json：平均识别FPS、每秒FPS及最低值、阶段P50/P95/P99、真实显示新帧数量、丢帧、错误。
+- display.json、last_preview.jpg：显示时序与最后一帧带框画面。
+
+判定标准：排除预热，至少测量30秒，无运行错误，所有完整1秒窗口完成识别的新帧数均≥30，才记stable_30fps=true。
+重复刷新同一画面不计识别/显示新帧。短测试和静态图片回放不会被标记为相机实时验证。
+`--replay-dir`仅用于图片回放，summary.source明确标为replay，不代表相机性能。
+“每秒≥30”不等于每一帧都在33.3ms以内；日志另记延迟和最大结果间隔。
+
+本机真实摄像头+BPU、现场物资画面实测（没有用重复静态图片代替摄像头）：
+
+| 配置 | 时长 | 识别均值 | 最低1秒识别FPS | 显示均值 | 判定 |
+|---|---:|---:|---:|---:|---|
+| 原三工作线程、同进程GUI（初稿） | 60s | 44.15 | 32 | 20.45 | 识别通过，显示较慢 |
+| 精简计算线程、同进程GUI（中间版） | 60s | 48.50 | 32 | 22.15 | 识别通过，显示较慢 |
+| 额外预处理线程、独立GUI，90/60fps上限 | 60s | 45.32 | 26 | 34.57 | 有1秒低于30，未通过 |
+| 最终默认计算配置、独立GUI，60/40fps上限 | 60s | 39.72 | 35 | 34.67 | 识别通过 |
+| 同配置、显示上限60fps | 35s | 39.43 | 30 | 34.86 | 未明显改善，默认保留40fps显示上限 |
+
+最终默认配置完整记录：`vision/captures/yolo26_benchmark/20261026_203227_623318_serial/`。
+该轮BPU推理P50/P95为14.31/15.62ms，采集到结果P50/P95为45.59/51.52ms，零运行错误。
+显示最低1秒为27，显示平均34.67不代表显示每秒都≥30；识别最低35与显示指标分别统计。
+上述结论限定本次场景与运行负载；拥挤场景、温度或其它进程负载变化应看本程序新测日志，不能承诺长期硬实时。
+本次没有把新模型替换进正式比赛流程。
+
+参考（实际输出形状已用hbm_runtime核对）：
+- 官方YOLO26解码/部署：https://github.com/D-Robotics/rdk_model_zoo/blob/rdk_x5/samples/vision/ultralytics_yolo26/runtime/python/yolo26_det.py
+- 官方导出头：https://github.com/D-Robotics/rdk_model_zoo/blob/rdk_x5/samples/vision/ultralytics_yolo26/conversion/onnx_export/export_yolo26_detect_bpu.py
+- 官方hbm_runtime API：https://developer.d-robotics.cc/rdk_doc/en/Basic_Application/multi_media_sp_dev_api/RDK_X5/pydev_multimedia_api_x5/ai-python-api/
+参考源码读取版本4f378d74fcf3507ba1336a14f5bf66bfecab2990；单核BPU不能因多Python线程变成并行多核。
+
+
+### 2026-10-26：正式比赛已迁移YOLO26
+
+在独立测速之后，用户要求将模型接入正式比赛，现已完成。公共实现位于rescue_vision/yolo26.py，独立测速与正式比赛共用同一LTRB/NMS实现；正式比赛通过rescue_vision/yolo26_pipeline.py异步推理，3个共享图像槽保持图像与结果对应，原始采集时间不改。
+正式入口的两个shell依赖检查和runner默认模型都指向新640模型，文件随本次正式部署提交。旧320文件保留，不改变传统识别及其它工具。
+本次实际正式runner视觉链路（含跟踪、ROI、规划、显示和日志）在隔离控制文件下复测75秒，69个完整测量窗口平均41.84FPS、最低35FPS；未向车辆发送命令。详见competition_rescue/README.md及vision/captures/competition_yolo26_validation/20261026_210715/performance_summary.json。
+上文“尚未替换正式比赛”的说明仅指独立测速阶段。

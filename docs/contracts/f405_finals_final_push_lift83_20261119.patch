@@ -1,0 +1,98 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e575244..605778d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -54,7 +54,8 @@ set_target_properties(${firmware_target} PROPERTIES
+     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+ if(F405_PROFILE STREQUAL "FinalRun")
+     target_compile_definitions(${firmware_target} PRIVATE
+-        APP_ENABLE_CARGO_LIFT_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1)
++        APP_ENABLE_CARGO_LIFT_FILTER=0 APP_FINALS_DELIVERY_CONFIRMATION=1
++        APP_ENABLE_FINAL_PUSH_LIFT=1)
+     add_custom_target(FinalRun DEPENDS ${firmware_target})
+ endif()
+
+diff --git a/Main/Inc/app_config.h b/Main/Inc/app_config.h
+index 9db92ea..3967e7e 100644
+--- a/Main/Inc/app_config.h
++++ b/Main/Inc/app_config.h
+@@ -671,6 +671,10 @@
+ #define APP_LIFT_TRAVEL_ANGLE             85U
+ #define APP_LIFT_MATERIAL_TRAVEL_ANGLE    86U
+ #define APP_LIFT_ORANGE_TRAVEL_ANGLE      86U
++#define APP_LIFT_FINAL_PUSH_ANGLE         83U
++#ifndef APP_ENABLE_FINAL_PUSH_LIFT
++#define APP_ENABLE_FINAL_PUSH_LIFT        0
++#endif
+ #ifndef APP_ENABLE_CARGO_LIFT_FILTER
+ #define APP_ENABLE_CARGO_LIFT_FILTER      1
+ #endif
+diff --git a/Main/Inc/mechanism.h b/Main/Inc/mechanism.h
+index a2edfbb..1b48b0b 100644
+--- a/Main/Inc/mechanism.h
++++ b/Main/Inc/mechanism.h
+@@ -10,6 +10,7 @@ uint8_t Camera_GetAngle(void);
+ uint32_t Camera_PositionWaitMs(uint8_t angle);
+ void Lift_SetStartPosition(void);
+ void Lift_SetReleaseRaisePosition(void);
++void Lift_SetFinalPushPosition(void);
+ /* Estimate the wait before commanding the given angle. */
+ uint32_t Lift_PositionWaitMs(uint8_t angle);
+ void Lift_SetTravelPosition(void);
+diff --git a/Main/Src/Task.c b/Main/Src/Task.c
+index 1ebb3fc..1aafd96 100644
+--- a/Main/Src/Task.c
++++ b/Main/Src/Task.c
+@@ -390,6 +390,8 @@ typedef enum {
+ static struct {
+   bool active;
+   bool front_budget_active;
++  bool final_push_lift_requested;
++  uint32_t final_push_lift_ready_ms;
+   uint32_t push_elapsed_ms;
+   uint32_t push_last_ms;
+   DeliveryFinishReason finish;
+@@ -4587,6 +4589,19 @@ static RemoteRouteStatus safe_enter_follow(
+   if (!nav_final_push_active &&
+       (enter_travelled_mm >= contact_start_mm)) {
+     delivery.front_budget_active = false;
++    if (APP_ENABLE_FINAL_PUSH_LIFT && enter_travelled_mm < APP_SAFE_ENTER_TOTAL_DISTANCE_MM) {
++      if (!delivery.final_push_lift_requested) {
++        delivery.final_push_lift_ready_ms = now_ms + Lift_PositionWaitMs(APP_LIFT_FINAL_PUSH_ANGLE);
++        Lift_SetFinalPushPosition();
++        delivery.final_push_lift_requested = true;
++      }
++      if ((int32_t)(now_ms - delivery.final_push_lift_ready_ms) < 0) {
++        Motor_Stop();
++        task_status.motors_active = false;
++        nav_stop_output();
++        return REMOTE_ROUTE_WAITING;
++      }
++    }
+     nav_final_push_active = true;
+     nav_final_push_paused = false;
+     nav_final_push_started_ms = now_ms - safe_enter_resume_push_ms;
+@@ -7653,6 +7668,7 @@ static void task_accept_mission_legacy(const VisionMissionCommand *command,
+     delivery.repush = task_delivery_has_three_materials() ? REPUSH_ARMED : REPUSH_NONE;
+     delivery.active = true;
+     delivery.front_budget_active = true;
++    delivery.final_push_lift_requested = false;
+     delivery.push_elapsed_ms = 0U;
+     delivery.push_last_ms = now_ms;
+     delivery.finish = DELIVERY_FINISH_NONE;
+diff --git a/Main/Src/mechanism.c b/Main/Src/mechanism.c
+index a422df6..4e6e79d 100644
+--- a/Main/Src/mechanism.c
++++ b/Main/Src/mechanism.c
+@@ -158,6 +158,11 @@ void Lift_SetReleaseRaisePosition(void)
+   Servo_SetAngle(1U, APP_LIFT_RELEASE_RAISE_ANGLE);
+ }
+
++void Lift_SetFinalPushPosition(void)
++{
++  Servo_SetAngle(1U, APP_LIFT_FINAL_PUSH_ANGLE);
++}
++
+ uint32_t Lift_PositionWaitMs(uint8_t angle)
+ {
+   return servo_pulse_wait_ms(Servo_OutputPulseUs(1U, Servo_GetAngle(1U)),

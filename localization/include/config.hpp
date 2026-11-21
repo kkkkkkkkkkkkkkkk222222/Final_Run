@@ -1,0 +1,72 @@
+#ifndef T265_OMNI_CONFIG_HPP
+#define T265_OMNI_CONFIG_HPP
+
+#include <string>
+
+namespace omni {
+
+struct LocalizationConfig {
+    int start_zone = 4;
+    double field_half_m = 1.5;
+    double start_center_m = 1.35;
+    // Field-reference heading offset; zero preserves competition start zones.
+    double start_heading_offset_deg = 0.0;
+
+    double wheel_diameter_m = 0.070;
+    double counts_per_wheel_revolution = 1061.268;
+    int encoder_sign[3] = {-1, -1, -1};
+    double encoder_to_robot_yaw_deg = 0.0;
+    double encoder_fusion_weight = 0.0;
+    double wheel_center_radius_m = 0.0;
+
+    // Metres. +forward is the robot nose and +left is the robot's left side.
+    // This is the T265 stereo-imager tracking origin relative to the
+    // three-wheel kinematic rotation centre.
+    double camera_offset_forward_m = -0.020;
+    double camera_offset_left_m = -0.070;
+    // Optional empirical scale for corrected robot-centre translation. Keep
+    // disabled during normal operation; the value is for A/B calibration.
+    bool t265_translation_scale_enabled = false;
+    double t265_translation_scale = 1.0;
+    // Columns of R_pose_body: forward, left=up x forward, up. Config accepts
+    // legacy signed axes or comma-separated direction vectors; units radians
+    // are not involved in this representation.
+    double camera_robot_forward_axis[3] = {1.0, 0.0, 0.0};
+    double camera_robot_up_axis[3] = {0.0, -1.0, 0.0};
+
+    double startup_wheel_disable_distance_m = 0.70;
+    double corner_exclusion_inner_m = 0.75;
+    double maximum_wheel_speed_mps = 1.50;
+    double maximum_velocity_residual_mps = 0.70;
+    double navigation_t265_position_sigma_multiplier = 8.0;
+    double navigation_t265_position_correction_rate_hz = 20.0;
+    double mapper_zero_position_sigma_multiplier = 12.0;
+    bool navigation_distance_compensation_enabled = false;
+    double navigation_near_target_m = 0.30;
+    double navigation_slip_wheel_speed_mps = 0.10;
+    double navigation_slip_t265_speed_mps = 0.05;
+    int uart_stale_ms = 150;
+
+    double wheel_position_sigma_floor_m = 0.002;
+    double wheel_position_sigma_per_meter = 0.04;
+    double wheel_yaw_sigma_floor_deg = 0.20;
+    double wheel_yaw_sigma_per_radian = 0.08;
+
+    double t265_position_sigma_conf3_m = 0.015;
+    double t265_position_sigma_conf2_m = 0.040;
+    double t265_position_sigma_conf1_m = 0.250;
+    double t265_yaw_sigma_conf3_deg = 1.0;
+    double t265_yaw_sigma_conf2_deg = 3.0;
+    double t265_yaw_sigma_conf1_deg = 15.0;
+    // Re-anchor the T265 gyro-integrated yaw to the pose quaternion at this
+    // T265-device-time interval. This is not tied to the F407 ODOM period.
+    double t265_gyro_pose_resync_period_s = 0.25;
+    double maximum_t265_innovation_m = 0.60;
+};
+
+LocalizationConfig load_config(const std::string &path);
+void validate_config(const LocalizationConfig &config);
+
+}  // namespace omni
+
+#endif
