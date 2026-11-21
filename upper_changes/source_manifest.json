@@ -1,0 +1,53 @@
+{
+  "repository": "https://github.com/danmo-teng/shijue_fangan-finals",
+  "base_commit": "28deaa6861c0208adf4b00c125d213c687bd2a95",
+  "source_commit": "2fd77f918278b2e3814c1873b7fedb199a791cbd",
+  "local_branch": "finals-material-push200",
+  "delivery_branch": "FinalRun2-material-push200",
+  "files": {
+    "competition_rescue/delivery_route.py": {
+      "sha256": "71b72fd1caf156eacdf944e33d548d98116e721bbb8cab2b5107c2d27780b89d",
+      "bytes": 734
+    },
+    "competition_rescue/obstacle_route.py": {
+      "sha256": "38cf5de43dc6fa92f59dd2d8cabf437b1741234b443663028bfea904740f076a",
+      "bytes": 7372
+    },
+    "competition_rescue/protocol.py": {
+      "sha256": "e8d9d1106ac6f7e69d4cfd05c5b259c8d7933675472bbbbaa625519575d091a0",
+      "bytes": 22506
+    },
+    "competition_rescue/run_competition_rescue.py": {
+      "sha256": "8eeffa69dc922d1810d7fd0f2511e970bdd812de5d48a7c16773ef3ace06f5c9",
+      "bytes": 229594
+    },
+    "competition_rescue/state_machine.py": {
+      "sha256": "9b54d5046912ca7fc91674bd95e296b9a6e8a4cfa841b6fe8ac28ab7548c9b46",
+      "bytes": 429893
+    },
+    "competition_rescue/tests/test_pose_delivery.py": {
+      "sha256": "09eade7848546a35d11b53bba5e2e19a9a397faaafbd0089bc1a6f580fed681d",
+      "bytes": 13773
+    },
+    "docs/CROSS_REPO_REQUESTS.md": {
+      "sha256": "4f5e5fd04277287e1c2af3f6e1e70b8789526995645961e4cf0da55c36b960fe",
+      "bytes": 177382
+    },
+    "docs/FINALS_PORT.md": {
+      "sha256": "ed7e773dc5bf4e908cbf29baf32b5cfecd58a5a8842147b51e5eb88514bd1167",
+      "bytes": 4248
+    },
+    "docs/POSE_DELIVERY_20261122.md": {
+      "sha256": "6fe320178f85d4a868b88e430e0f1e8de0bc3340c84f93d7460f3783d2554336",
+      "bytes": 4888
+    },
+    "rescue_map/field_model.py": {
+      "sha256": "7f08a5ebc943a49846f0f54b36928731d34bb8e4c1ee46b4610cc2403bcaafd8",
+      "bytes": 16932
+    },
+    "rescue_map/map_app.py": {
+      "sha256": "0844c82ff8de290ecba007fa98a8a98a9462010c88e0cf707fcf6578192e33f4",
+      "bytes": 49020
+    }
+  }
+}

@@ -1,5 +1,7 @@
 # 连续物资抓取与分区投送流程
 
+本次MATERIAL-ONLY-PUSH200：从名义770mm起点发ENTER A=200、B=270；蓝方镜像。普通单伤员仍上报真实类别和数量，但不再获得正式运输VALID，按原RELEASE_BOTH弃批；开局移堆与临时清障角色保持。[当前配套](docs/FINALRUN2_PAIR_VALIDATION.md)。
+
 FinalRun2的新定位投送接口以[2026-11-22配套锁](docs/contracts/finalrun2_pose_delivery.json)与[验证记录](docs/FINALRUN2_PAIR_VALIDATION.md)为准：距离ENTER锁存A/B；非视觉正对1°；0x14 step6支持保持围栏朝向到A，step3支持-160；STAGE每段独立动作号。以下为旧协议历史，不能代替新接口。
 
 2026-11-12 安全区ALIGN航向优先更新见[MATCH-SAFE-VISUAL回执](docs/CROSS_REPO_REQUESTS.md)及[机器合同](docs/F405_DELIVERY_OPENING_20261112.json)。原0x04视觉包只更新请求；先回主yaw法向3°内，横移中偏出6°先停平移并连续回正，最后yaw≤3°及像素滞回到位才mode11/COMPLETED。此ALIGN不用有限TURN10秒超时，其他转弯与原ENTER保持；同动作实时更新及0/11500相机选择不变。

@@ -1,6 +1,10 @@
 # FinalRun2 · F405 独立决赛开发工程
 
-从封存 Final_task@24c7dab 独立建立。原 FinalRun 不改，当前工程与新上位 finals-pose-delivery 配套。修改点、接口与检查见 [验证记录](docs/FINALRUN2_PAIR_VALIDATION.md)。**未烧录、未发车。**
+**本次公开分支：FinalRun2-material-push200。前段200mm＋末段270mm；单伤员不正式投送，仍识别、分离和扫障。**
+
+直接查看：[完整上位修改文件](upper_changes/README.md) · [上位决策代码](upper_changes/competition_rescue/state_machine.py) · [下位任务代码](Main/Src/Task.c) · [验证与配套](docs/FINALRUN2_PAIR_VALIDATION.md)。
+
+从封存 Final_task@24c7dab 独立建立。原 FinalRun 不改，当前工程与新上位 finals-material-push200 配套。修改点、接口与检查见 [验证记录](docs/FINALRUN2_PAIR_VALIDATION.md)。**未烧录、未发车。**
 
 | 入口 | CMake预设 | 下载配置 | ELF |
 | --- | --- | --- | --- |

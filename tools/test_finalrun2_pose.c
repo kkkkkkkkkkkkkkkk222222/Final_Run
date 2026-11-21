@@ -120,7 +120,7 @@ static void alignment(bool red)
   task_process_safe_align(200+APP_SAFE_ALIGN_CAMERA_SETTLE_MS+APP_NAV_TURN_SETTLE_MS);
   assert(safe_align_done && task_context_complete());
   test_pose.heading_mdeg=side_heading*10-1001;
-  assert(!submit(enter_request(170,270),2000));
+  assert(!submit(enter_request(200,270),2000));
   assert(!safe_align_done && state==TASK_ALIGN_SAFE_ZONE);
 }
 
@@ -175,8 +175,8 @@ static void nudge_and_sweep(bool red)
                                     0,0,side_heading);
   assert(submit(align,220) && state==TASK_ALIGN_SAFE_ZONE);
   safe_align_done=nav_ready=true;
-  VisionMissionCommand after_nudge=enter_request(90,270);after_nudge.action_id=13;
-  assert(submit(after_nudge,230)&&safe_enter_resume_mm==0&&delivery_total_mm()==360);
+  VisionMissionCommand after_nudge=enter_request(120,270);after_nudge.action_id=13;
+  assert(submit(after_nudge,230)&&safe_enter_resume_mm==0&&delivery_total_mm()==390);
   pose_gate(red);
   uint16_t sweep_heading=red?0:18000;
   VisionMissionCommand to_a=request(VISION_CMD_BULLDOZER_STEP,11,
@@ -207,8 +207,8 @@ static void legacy_and_reset(void)
   VisionMissionCommand legacy=request(VISION_CMD_ENTER_SAFE_ZONE,11,
       side_flags|VISION_CMD_DRIVE_STRAIGHT|VISION_CMD_USE_FINAL_HEADING,0,0,9000);
   assert(submit(legacy,100)&&delivery_front_mm()==400&&delivery_total_mm()==670);
-  pose_gate(true);assert(submit(enter_request(170,270),100));
-  assert(delivery_total_mm()==440);
+  pose_gate(true);assert(submit(enter_request(200,270),100));
+  assert(delivery_total_mm()==470);
   test_vision.session_generation=2;test_vision.mission=(VisionMissionCommand){0};
   task_accept_mission(&test_vision,120);
   assert(!delivery.distances_latched && !accepted_context.valid && safe_enter_resume_mm==0);
@@ -217,7 +217,7 @@ static void legacy_and_reset(void)
 int main(void)
 {
   for(int red=0;red<2;++red){
-    stroke(red,170,270);stroke(red,40,270);stroke(red,0,210);stroke(red,0,0);
+    stroke(red,200,270);stroke(red,70,270);stroke(red,0,240);stroke(red,0,0);
     alignment(red);nudge_and_sweep(red);
   }
   navigation_epochs();legacy_and_reset();

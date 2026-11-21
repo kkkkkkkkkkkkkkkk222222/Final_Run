@@ -1,5 +1,9 @@
 # 决赛两端当前要求与回执
 
+## MATERIAL-ONLY-PUSH200-20261122（当前）
+
+用户确认前段170→200mm、末段270mm保持；单伤员不运送，沿现有弃批动作处理。下位收到真实伤员类别/数量时，普通审核READY但INVALID；没有清掉伤员识别，也不将其冒充空爪。真实报文已验证保材料分离、单伤员弃批退出、伤员挡路W1和临时移堆。新公开分支 `FinalRun2-material-push200` 同时提供根目录完整下位源码及 `upper_changes/` 完整上位修改文件。未部署、未烧录，actual未知。
+
 ## 当前配套：FINALRUN2-POSE-DELIVERY-20261122
 
 本次下位实现为独立FinalRun2，基于封存24c7dab；不改原FinalRun。配套上位为finals-pose-delivery，精确SHA与接口样例见[新配套锁](contracts/finalrun2_pose_delivery.json)，实际检查见[验证记录](FINALRUN2_PAIR_VALIDATION.md)。已离线通过真实报文、完成归属与机械替身检查；未烧录或实跑。以下28deaa6条目是冻结版历史。

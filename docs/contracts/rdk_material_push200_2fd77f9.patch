@@ -1,7 +1,7 @@
 From 46d9b0323105178071b2afc3a9bb93d94b14d856 Mon Sep 17 00:00:00 2001
 From: WW <2945944173@qq.com>
 Date: Sun, 22 Nov 2026 00:39:55 +0800
-Subject: [PATCH 1/2] Pair pose-only delivery legs and W1 obstacle routes with
+Subject: [PATCH 1/3] Pair pose-only delivery legs and W1 obstacle routes with
  FinalRun2
 
 ---
@@ -1284,7 +1284,7 @@ index 7a48c9a..fb52dab 100755
 From 228cecf37e6ad348679c5fcb5fd47fe37f256019 Mon Sep 17 00:00:00 2001
 From: WW <2945944173@qq.com>
 Date: Sun, 22 Nov 2026 00:50:26 +0800
-Subject: [PATCH 2/2] Keep clipped-zone empty-claw selection within material
+Subject: [PATCH 2/3] Keep clipped-zone empty-claw selection within material
  targets
 
 ---
@@ -1335,3 +1335,236 @@ index b85e387..996b289 100644
  if __name__ == "__main__":
      for name, test in list(globals().items()):
          if name.startswith("test_"):
+
+From 2fd77f918278b2e3814c1873b7fedb199a791cbd Mon Sep 17 00:00:00 2001
+From: WW <2945944173@qq.com>
+Date: Sun, 22 Nov 2026 01:13:54 +0800
+Subject: [PATCH 3/3] Use 200 mm front push and retain casualties only for
+ separation and clearance
+
+---
+ competition_rescue/state_machine.py           | 32 +++++++------------
+ .../tests/test_pose_delivery.py               | 31 +++++++++++++++---
+ docs/CROSS_REPO_REQUESTS.md                   |  4 +++
+ docs/FINALS_PORT.md                           |  2 +-
+ docs/POSE_DELIVERY_20261122.md                |  8 ++---
+ 5 files changed, 46 insertions(+), 31 deletions(-)
+
+diff --git a/competition_rescue/state_machine.py b/competition_rescue/state_machine.py
+index cb62e14..184e517 100755
+--- a/competition_rescue/state_machine.py
++++ b/competition_rescue/state_machine.py
+@@ -75,7 +75,7 @@ CARGO_CLASSES = frozenset(
+     {"green_supply", "core_black", "injured_orange", "danger_cyan", "unknown"}
+ )
+ MATERIAL_CLASSES = frozenset({"green_supply", "core_black"})
+-POST_FIRST_CARGO_ORDER = ("core_black", "green_supply", "injured_orange")
++POST_FIRST_CARGO_ORDER = ("core_black", "green_supply")
+ 
+ STM_MODE_SEARCH = 3
+ STM_MODE_NAVIGATE = 10
+@@ -3828,11 +3828,6 @@ class CompetitionMission:
+                 audit.left_class in {"", "none", "green_supply"} and
+                 audit.right_class in {"", "none", "green_supply"}
+             )
+-        if (
+-            audit.total_count == 1 and
+-            counts == Counter({"injured_orange": 1})
+-        ):
+-            return True
+         if "injured_orange" in counts:
+             return False
+         # Class6 already encodes same-claw GREEN+CORE in the existing packet.
+@@ -3862,8 +3857,6 @@ class CompetitionMission:
+             return side_count == 1 and side_class == "green_supply"
+         if side_count == 1 and side_class == "green_supply":
+             return True
+-        if self.selected_batch is not None and self.selected_batch.destination == "injury":
+-            return side_count == 1 and side_class == "injured_orange"
+         return (
+             1 <= side_count <= self.settings.max_batch_count and
+             side_class in {"green_supply", "core_black", "mixed_material"}
+@@ -3896,7 +3889,7 @@ class CompetitionMission:
+         if not 1 <= count <= self.settings.max_batch_count or getattr(audit, side + "_invalid"):
+             return ()
+         if category == "injured_orange":
+-            manifest = (category,) if count == 1 else ()
++            return ()
+         elif category in MATERIAL_CLASSES:
+             manifest = (category,) * count
+         elif category == "mixed_material":
+@@ -3984,7 +3977,7 @@ class CompetitionMission:
+             # legal transport. Known histogram guides a mixed-side attempt.
+             counts = composition or {category: count}
+             eligible = ({'green_supply'} if not self.first_common_delivered else
+-                        {'green_supply','core_black','mixed_material','injured_orange'})
++                        {'green_supply','core_black','mixed_material'})
+             return count > 0 and any(counts.get(name,0)>0 for name in eligible)
+         known_mixture = (
+             category == "unknown" and count > 1 and
+@@ -4014,8 +4007,8 @@ class CompetitionMission:
+             return True
+         if not self.first_common_delivered:
+             return category == "green_supply" or (category == "mixed_material" and green > 0)
+-        if destination == "injury":
+-            return category == "injured_orange"
++        if category == "injured_orange":
++            return False
+         if any(self._side_green_count(audit, value) > 0 for value in ("left", "right")):
+             return green > 0
+         return category in MATERIAL_CLASSES | {"mixed_material"}
+@@ -4023,7 +4016,7 @@ class CompetitionMission:
+     def _preferred_keep_side(self, audit: CargoAudit) -> str | None:
+         if (audit.danger_present and self.selected_batch and not self.selected_batch.initial_stash and
+                 audit.left_count + audit.right_count == audit.total_count):
+-            eligible = MATERIAL_CLASSES | {"injured_orange"} if self.first_common_delivered else {"green_supply"}
++            eligible = MATERIAL_CLASSES if self.first_common_delivered else {"green_supply"}
+             left = dict(audit.left_class_counts)
+             right = dict(audit.right_class_counts)
+             if left or right:
+@@ -5580,8 +5573,8 @@ class CompetitionMission:
+     def _prepare_pose_enter(self, pose: PoseSnapshot) -> None:
+         assert pose.valid
+         depth_mm = round(pose.y_m * self.settings.side_sign * 1000)
+-        front = max(0, 940 - depth_mm)
+-        tail = max(0, min(270, 1210 - depth_mm))
++        front = max(0, 970 - depth_mm)
++        tail = max(0, min(270, 1240 - depth_mm))
+         self.delivery_departure_point = (self._target_point()[0], self.settings.safe_staging_y_m)
+         self.enter_pose_command = CommandRequest(
+             CMD_ENTER_SAFE_ZONE,
+@@ -5862,12 +5855,9 @@ class CompetitionMission:
+             self.grab_complete_confirmed = False
+ 
+     def _can_reuse_recovered_injury_audit(self) -> bool:
+-        return (
+-            self.recovered_injury_audit_reuse and self.recovering_original_load and
+-            self.selected_batch is not None and not self.selected_batch.initial_stash and
+-            self.selected_batch.destination == self.confirmed_delivery_destination == "injury" and
+-            self.carried_manifest == ("injured_orange",) and self.carried_total_count == 1
+-        )
++        # Casualty identity remains real evidence for separation/clearance,
++        # but it cannot bypass review into a formal transport permission.
++        return False
+ 
+     def _navigation_command(
+         self,
+diff --git a/competition_rescue/tests/test_pose_delivery.py b/competition_rescue/tests/test_pose_delivery.py
+index 996b289..223949e 100644
+--- a/competition_rescue/tests/test_pose_delivery.py
++++ b/competition_rescue/tests/test_pose_delivery.py
+@@ -126,7 +126,7 @@ def test_pose_box_corridor_enter_and_reobserve():
+         assert out.reason == "SAFE_CORRIDOR_UNAVAILABLE"
+         out = m.step(replace(v,frame_sequence=5), pose, st, 1.6)
+         assert out.command.opcode == p.CMD_ENTER_SAFE_ZONE, out
+-        assert (out.command.arg_a,out.command.arg_b) == (170,270)
++        assert (out.command.arg_a,out.command.arg_b) == (200,270)
+         out.command.to_frame(7)
+         captured = out.command
+         m.enter_command_published = True
+@@ -142,9 +142,9 @@ def test_pose_box_corridor_enter_and_reobserve():
+         assert out.command.arg_b == 11500 and not out.command.flags & p.CMD_VISUAL_CORRECTION_VALID
+         # Actual post-nudge position sets remaining distance once, without double credit.
+         m._prepare_pose_enter(replace(pose, y_m=.90*m.settings.side_sign))
+-        assert (m.enter_pose_command.arg_a,m.enter_pose_command.arg_b) == (40,270)
++        assert (m.enter_pose_command.arg_a,m.enter_pose_command.arg_b) == (70,270)
+         m._prepare_pose_enter(replace(pose, y_m=1.00*m.settings.side_sign))
+-        assert (m.enter_pose_command.arg_a,m.enter_pose_command.arg_b) == (0,210)
++        assert (m.enter_pose_command.arg_a,m.enter_pose_command.arg_b) == (0,240)
+ 
+ 
+ def test_sweep_mirrors_and_live_completion():
+@@ -219,12 +219,33 @@ def test_material_selection_includes_clipped_zone_entry():
+         assert m._choose_search_target(vision) is None
+         assert m._start_zone_observation(vision,sm.StmSnapshot(mode=3,flags=0,
+             age_ms=0,camera_pitch_cdeg=12000),1.) is None
+-        # An actual already-grabbed single casualty still passes its real audit.
++        # Identity remains a casualty, but it never grants formal transport.
+         m.confirmed_delivery_destination="injury"
+-        assert m._audit_valid(sm.CargoAudit(left_class="injured_orange",left_count=1,
++        assert not m._audit_valid(sm.CargoAudit(left_class="injured_orange",left_count=1,
+                                            total_count=1,class_counts=(("injured_orange",1),)))
+ 
+ 
++def test_casualty_audit_and_material_retention():
++    for side in ("red","blue"):
++        m=mission(side)
++        orange=sm.CargoAudit(left_class="injured_orange",left_count=1,total_count=1,
++                             class_counts=(("injured_orange",1),))
++        assert not m._audit_valid(orange)
++        assert m._preferred_keep_side(orange) is None
++        assert m._choose_release_side(orange)=="both"
++        assert m._audit_payload(orange).left_class=="injured_orange"
++        for keep in ("left","right"):
++            a=sm.CargoAudit(left_class="core_black" if keep=="left" else "injured_orange",
++                right_class="core_black" if keep=="right" else "injured_orange",
++                left_count=1,right_count=1,total_count=2,injury_mixed=True,
++                class_counts=(("core_black",1),("injured_orange",1)))
++            assert not m._audit_valid(a) and m._preferred_keep_side(a)==keep
++            assert m._retained_class(a,keep)=="core_black"
++            assert not m._audit_payload(a).destination_injury
++        m.selected_batch=replace(m.selected_batch,initial_stash=True,destination="stash")
++        assert m._audit_valid(orange)  # Opening relocation is not casualty delivery.
++
++
+ if __name__ == "__main__":
+     for name, test in list(globals().items()):
+         if name.startswith("test_"):
+diff --git a/docs/CROSS_REPO_REQUESTS.md b/docs/CROSS_REPO_REQUESTS.md
+index e5bbab3..4c88c1d 100644
+--- a/docs/CROSS_REPO_REQUESTS.md
++++ b/docs/CROSS_REPO_REQUESTS.md
+@@ -1,5 +1,9 @@
+ # 两端最新修改要求
+ 
++## MATERIAL-ONLY-PUSH200-20261122（当前）
++
++按用户确认：前段由170改200mm，实际位置目标改为970/1240mm，末段仍270mm。正式投送不接受单伤员；保持真实识别及混装分离、扫障，只剩伤员沿原张爪/退300mm/原转向或返搜。上下位通过真实报文核对INVALID、分离与弃批回包；新公开交付分支为下位仓库 `FinalRun2-material-push200`，其中 `upper_changes/` 直接保存上位完整修改文件。未经授权不部署、烧录。
++
+ ## FINALRUN2-POSE-DELIVERY-20261122
+ 
+ 已按用户确认方案完成上位实现，并对照独立FinalRun2生产解析与Task做真实报文离线联测。新距离ENTER、1°正对、分段action和持载到A扩展见[当前配套说明](POSE_DELIVERY_20261122.md)。新固件与新上位必须配套；冻结FinalRun不支持新ENTER。未部署、未烧录、actual未知。以下旧记录不是本次新接口的回执。
+diff --git a/docs/FINALS_PORT.md b/docs/FINALS_PORT.md
+index 64f2fd4..59140c3 100644
+--- a/docs/FINALS_PORT.md
++++ b/docs/FINALS_PORT.md
+@@ -1,6 +1,6 @@
+ # 决赛基线
+ 
+-2026-11-22 当前开发配套为 **finals-pose-delivery / FinalRun2**：已按确认方案实现分段运输、定位正对和无视觉横移投送，默认防守，主动搜索仅选材料。[修改、接口与验证](POSE_DELIVERY_20261122.md)。未部署RDK、未烧录。以下是冻结28deaa6的既有规则，动作接口以新说明为准。
++2026-11-22 当前开发配套为 **finals-material-push200 / FinalRun2-material-push200**：已按确认方案实现分段运输、定位正对和无视觉横移投送，默认防守，正式投送仅材料；前段200mm、末段270mm。伤员仍参与识别、混装分离和扫障，单伤员沿原弃批动作退出。[修改、接口与验证](POSE_DELIVERY_20261122.md)。未部署RDK、未烧录。以下是冻结28deaa6的既有规则，动作接口以新说明为准。
+ 
+ 已对照定稿初赛 `2e336f8` 和决赛下位 `Final_Run/Final_task@0236947`。决赛使用自己的模型、标定和比赛入口。
+ 
+diff --git a/docs/POSE_DELIVERY_20261122.md b/docs/POSE_DELIVERY_20261122.md
+index 0602421..de25359 100644
+--- a/docs/POSE_DELIVERY_20261122.md
++++ b/docs/POSE_DELIVERY_20261122.md
+@@ -1,15 +1,15 @@
+ # FinalRun2 定位投送配套：修改与验证
+ 
+-2026-11-22，上海时间。基于冻结上位 `28deaa6861c0208adf4b00c125d213c687bd2a95`，开发分支 `finals-pose-delivery`。配套下位为 `Final_Run/FinalRun2`，不是封存 FinalRun。未部署 RDK、未更新模型、未烧录或发车。
++2026-11-22，上海时间。基于冻结上位 `28deaa6861c0208adf4b00c125d213c687bd2a95`，开发分支 `finals-material-push200`。配套下位为 `Final_Run/FinalRun2-material-push200`，不是封存 FinalRun。未部署 RDK、未更新模型、未烧录或发车。
+ 
+ ## 已实现的修改
+ 
+ - 普通运输按已确认的 C→A→M/H 分段。红 C=(0,300)、A=(0,770)、M=(-160,770)、H=(160,770) mm；蓝旋转180°镜像。每段先发 D=0，再消费本动作 ACCEPT|DONE；切段、补位、重新正对均分配独立动作号。H/D 的正常更新不重启动作。
+ - M/H 起推前单独检查定位横差≤10 mm、纵向±50 mm和航向误差≤1°，等待真实正对动作完成。图像横差不再生成底盘横移；安全区识别、115°复看、入口判障和视觉送达继续保留。丢框、侧挤返回、拒绝恢复不会恢复视觉横移。
+-- ENTER 在发布前锁存实际出发位置对应的前段和末段距离：前段 `max(0,940-depth)`，末段 `max(0,min(270,1210-depth))`，单位mm。名义170+270；前段结束由下位等83°机构行程，再推末段。同动作重发不改距离，侧挤后的实际位置不重复扣轮程。
++- ENTER 在发布前锁存实际出发位置对应的前段和末段距离：前段 `max(0,970-depth)`，末段 `max(0,min(270,1240-depth))`，单位mm。名义200+270；前段结束由下位等83°机构行程，再推末段。同动作重发不改距离，侧挤后的实际位置不重复扣轮程。
+ - 退出后普通返程经对应 M/H→A→C，再接原搜索点。送走挡路同类、仍有原货暂存时只回M/H→A，再接原货观察位置，不走普通返搜。抓到挡路材料后的投送经A→M，不从A直接推入。
+ - 横扫固定只用W1：M/H保持围栏朝向先横移A；右转、放货，不先前进200；倒退160到M，左移100，倒退400，左移40到W1，再扫1000。蓝方镜像。保留原同类抓送的暂存动作；本次取消前进200仅指横扫分支。
+-- 默认防守。普通主动搜索只选材料；伤员识别、混装分离、合法单伤员运输及门口判障仍保留。
++- 默认防守。普通主动搜索只选材料；伤员识别、混装分离及门口判障仍保留。单伤员也不正式投送；误抓或分离后只剩伤员，沿原弃批动作张爪、后退300mm，再按既有规则转向或返搜，不计送达。混装分离保留材料侧，开局移堆及清障临时处理保持。
+ 
+ 不把模型示意当实车外廓或轨迹。已确认的A点窗口角接触风险仍存在；本次没有为它额外收位、改道或加停车条件。
+ 
+@@ -31,7 +31,7 @@
+ ## 实际验证与范围
+ 
+ - `competition_rescue/tests/test_pose_delivery.py`：红蓝分段动作号、旧/未完成回包、10mm与1°边界、锁框/新走廊、失框115°、发布后距离锁存、W1镜像及普通/原货返程。
+-- 下位 `tools/check_finalrun2_pose_pair.py`：实际上位发布→生产C解析/Task→真实CRC回包。14个距离边界报文；8条红蓝/材料伤员/名义与20mm补位投送（含mode48真实审核、确认与未确认退出、分段返程）；4条完整W1横扫至原货观察入口。
++- 下位 `tools/check_finalrun2_pose_pair.py`：实际上位发布→生产C解析/Task→真实CRC回包。14个距离边界报文；8条红蓝材料的名义/20mm补位及确认/未确认投送；4条危险物/伤员挡路的完整W1横扫；4条抓取点/门前单伤员弃批。所有场景使用真实CRC回包，轮程和图像为模拟输入。
+ - 下位 `tools/test_finalrun2_pose.c`：8组推进长度；1°边界；83°等待；重复、参数变更、旧action、暂停恢复、新NAV清旧DONE；侧挤三段及不重复抵扣；旧ENTER与会话重置。已复现并修复“同action在D=0完成后收到迟到正距离会重新运动”。
+ - 既有 `check_finals_rdk_pair.py` 的实际载荷、分离、抓后复审、旧命令拒绝、确认/未确认完成回包兼容检查通过。
+ 

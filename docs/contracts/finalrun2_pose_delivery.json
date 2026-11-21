@@ -2,36 +2,46 @@
   "scope": "offline pairing; not board actual or runtime interlock",
   "date": "2026-11-22 Asia/Shanghai",
   "upper_repository": "https://github.com/danmo-teng/shijue_fangan-finals",
-  "upper_branch": "finals-pose-delivery",
-  "upper_commit": "228cecf37e6ad348679c5fcb5fd47fe37f256019",
-  "upper_push_status": "403 denied to configured Git account; complete commit patch provided here",
-  "upper_patch": "rdk_pose_delivery_228cecf.patch",
-  "upper_patch_sha256": "3dbd710a1b6d728560e5fdac29a57f03a2fd6868d34bd77d16d40de488693d49",
+  "upper_branch": "finals-material-push200",
+  "upper_commit": "2fd77f918278b2e3814c1873b7fedb199a791cbd",
+  "upper_push_status": "User requested delivery to the public lower repository; complete changed files in upper_changes and full patch included",
+  "upper_patch": "rdk_material_push200_2fd77f9.patch",
+  "upper_patch_sha256": "9ea30760758f5396364f43e880d93eb17ab24c8c33241b46ac4e57ef4c519030",
   "lower_repository": "https://github.com/kkkkkkkkkkkkkkkk222222/Final_Run",
-  "lower_branch": "FinalRun2-pose-delivery",
+  "lower_branch": "FinalRun2-material-push200",
   "lower_base": "24c7dab93368bf9e46cf7366f0a9a9ca466b611b",
   "lower_commit": "use the containing commit; final firmware identity is recorded in WWW field-20261121/FINALRUN2.md",
   "actual_lower": null,
   "actual_upper": null,
   "examples": {
     "red": {
-      "context_and_enter_hex": "a3b31d070007000b000000001559c3a3b31807051f00aa010e232899bfc3",
-      "front_mm": 170,
+      "context_and_enter_hex": "a3b31d070007000b000000001559c3a3b31807051f00c8010e23286077c3",
+      "front_mm": 200,
       "tail_mm": 270,
       "heading_cdeg": 9000
     },
     "blue": {
-      "context_and_enter_hex": "a3b31d070007000b000000001559c3a3b31807051700aa010e69782723c3",
-      "front_mm": 170,
+      "context_and_enter_hex": "a3b31d070007000b000000001559c3a3b31807051700c8010e6978deebc3",
+      "front_mm": 200,
       "tail_mm": 270,
       "heading_cdeg": 27000
     }
   },
   "source_sha256": {
-    "competition_rescue\\protocol.py": "68c10b27a79363a12a753a2fd014b2940835c626cc4b6510b1169772cb4e5360",
-    "competition_rescue\\state_machine.py": "e935d89cddffcf882182afc1ac4916ab4400cadbb9d34fdb53500f1a8ffe8b11",
-    "competition_rescue\\delivery_route.py": "71b72fd1caf156eacdf944e33d548d98116e721bbb8cab2b5107c2d27780b89d",
-    "competition_rescue\\obstacle_route.py": "72867b4d9f758b6c078bc4d26219043dbc44c99e927bddfd7aa5b20d88731e6d",
-    "competition_rescue\\run_competition_rescue.py": "d434835c50ae973dd7c7f1561b02a1a8620f707972d99103edbb6bb2afb31593"
-  }
+    "competition_rescue/protocol.py": "e8d9d1106ac6f7e69d4cfd05c5b259c8d7933675472bbbbaa625519575d091a0",
+    "competition_rescue/state_machine.py": "9b54d5046912ca7fc91674bd95e296b9a6e8a4cfa841b6fe8ac28ab7548c9b46",
+    "competition_rescue/delivery_route.py": "71b72fd1caf156eacdf944e33d548d98116e721bbb8cab2b5107c2d27780b89d",
+    "competition_rescue/obstacle_route.py": "38cf5de43dc6fa92f59dd2d8cabf437b1741234b443663028bfea904740f076a",
+    "competition_rescue/run_competition_rescue.py": "8eeffa69dc922d1810d7fd0f2511e970bdd812de5d48a7c16773ef3ace06f5c9"
+  },
+  "upper_readable_source": "upper_changes/",
+  "policy": "Formal delivery accepts materials only; retain casualty recognition/separation/clearance; single casualty uses existing release and 300mm retreat",
+  "push_reference_mm": {
+    "departure_nominal": 770,
+    "lift83_switch": 970,
+    "end": 1240,
+    "front_nominal": 200,
+    "tail": 270
+  },
+  "hash_basis": "Git blob bytes; checkout newline conversion may differ"
 }

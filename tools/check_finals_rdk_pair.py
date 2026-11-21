@@ -65,7 +65,7 @@ def audit_frames(m,a):
 none=("none",0)
 for first,target,left,right,legal in [
     (False,GREEN,(GREEN,1),none,True), (False,GREEN,(CORE,1),none,False),
-    (False,GREEN,(GREEN,2),none,False), (True,CORE,(ORANGE,1),none,True),
+    (False,GREEN,(GREEN,2),none,False), (True,CORE,(ORANGE,1),none,False),
     (True,ORANGE,(CORE,1),none,True), (True,ORANGE,(GREEN,1),(CORE,2),True),
     (True,GREEN,(GREEN,1),(ORANGE,1),False), (True,GREEN,(GREEN,1),(BLUE,1),False),
     (True,GREEN,(CORE,2),(GREEN,2),False)]:
@@ -85,6 +85,21 @@ for side in ("left","right"):
     replies=run("split",False,audit_frames(m,a)+[action,action])
     assert all(x[:4]==(7,12,p.CMD_DISPERSE_PILE,1) and x[5]==25 for x in replies[-2:]),replies
 print("Ordinary left/right separation and identical action retransmission passed")
+
+for side in ("left","right"):
+    m=planner(True,CORE)
+    a=cargo((CORE,1),(ORANGE,1)) if side=="left" else cargo((ORANGE,1),(CORE,1))
+    assert not m._audit_valid(a) and m._preferred_keep_side(a)==side
+    m._arm_disperse(sm.StmSnapshot(),side,keep_count=1,audit=a)
+    assert not m.disperse_command.flags&p.CMD_KEEP_ORANGE
+    replies=run("split",True,audit_frames(m,a)+[(12,0,m.disperse_command.to_frame)]*2)
+    assert all(x[:4]==(7,12,p.CMD_DISPERSE_PILE,1) and x[5]==25 for x in replies[-2:]),replies
+stash=planner(True,CORE)
+stash.selected_batch=replace(stash.selected_batch,destination="stash",initial_stash=True)
+single=cargo((ORANGE,1),none)
+last=run("audit",True,audit_frames(stash,single))[-1]
+assert stash._audit_valid(single) and last[4]&0x10 and last[5]==22,last
+print("Casualty/material mixed audits retain the real material side; opening relocation remains available")
 
 def req(code,flags=RED,a=0,b=0,u=0):
     return lambda seq:p.mission_frame(seq,code,flags,a,b,u)
@@ -150,5 +165,6 @@ after=[(13,frame+10,fn) for _,frame,fn in after]
 grab=(12,0,lambda seq:p.grab_frame(seq,True))
 replies=run("grab",True,before+[grab]+after)
 assert replies[2][:3]==(7,12,p.CMD_GRAB_CONFIRMED) and replies[2][5]==23,replies
-assert replies[-1][:3]==(7,13,p.CMD_CARGO_AUDIT) and replies[-1][5]==22 and replies[-1][4]&0x10,replies
-print("Open audit core -> simulated close -> actual single casualty -> transport-ready passed")
+assert replies[-1][:3]==(7,13,p.CMD_CARGO_AUDIT) and replies[-1][5]==23 and not replies[-1][4]&0x10,replies
+assert replies[-1][4]&0x40,replies
+print("Open audit core -> simulated close -> actual single casualty stays invalid for transport")

@@ -1,5 +1,7 @@
 # 当前状态：F405 决赛配套
 
+2026-11-22 最新分支 **FinalRun2-material-push200**：名义前段200mm、末段270mm；正式投送仅材料。单伤员沿原弃批张爪/退300mm/原转向或返搜，伤员识别、混装分离和扫障保留。[直接阅读上位修改文件](../upper_changes/README.md) · [验证记录](FINALRUN2_PAIR_VALIDATION.md)。未烧录、未发车。
+
 2026-11-22 本仓库是独立 **FinalRun2**，基于24c7dab并适配新定位投送上位。新增距离ENTER、非视觉1°正对、分段NAV完成归属、持载到A及160mm扫障后退；独立构建与DAPLink配置已建立。[本轮验证与精确配套](FINALRUN2_PAIR_VALIDATION.md)。未烧录、未读actual；下方旧FinalRun记录仅供基线追溯。
 
 当前配套上位机为已发布的 28deaa6。分离仅接明确保留侧的普通动作；最终运输资格、身份和目的地按闭爪后实际审核。旧试转和轻撞在 FinalRun 解包入口被拒绝。[比赛流程图](FINALS_FLOW_ATLAS.html) · [分阶段联测](FINALS_PAIR_VALIDATION.md)

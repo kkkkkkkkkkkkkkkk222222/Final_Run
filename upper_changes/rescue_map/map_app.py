@@ -1,0 +1,981 @@
+#!/usr/bin/env python3
+"""Interactive start selector and live rescue-field trajectory display."""
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import signal
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+from field_model import (
+    DEFAULT_CORNER_OFFSET_M,
+    DEFAULT_ENCODER_FUSION_WEIGHT,
+    DEFAULT_T265_MAP_TIMEOUT_S,
+    DEFAULT_T265_TRANSLATION_SCALE,
+    FIELD_HALF_M,
+    Pose,
+    Trajectory,
+    initial_pose,
+    load_localization_pose,
+    write_localization_config,
+    write_session,
+)
+
+
+ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+RUNTIME = (Path("/dev/shm") / f"rdk-rescue-finals-match-{os.getuid()}"
+           if os.environ.get("RDK_MATCH_RECORDING") == "0" else ROOT / "runtime")
+DEFAULT_T265_MAP = PROJECT_ROOT / "localization/maps/competition_field_v1/t265_localization.raw"
+# OpenCV's Qt backend can create a window for a Unicode title but then fail to
+# retrieve the native handle in cvSetMouseCallback.  Keep the internal key ASCII;
+# all user-facing Chinese labels are drawn inside the canvas.
+WINDOW_NAME = "rescue_finals_field_map"
+FONT_REGULAR = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+FONT_MEDIUM = "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc"
+
+
+def discover_t265_map() -> Path | None:
+    """Find the promoted map first, then the newest non-empty scan export."""
+    if DEFAULT_T265_MAP.is_file() and DEFAULT_T265_MAP.stat().st_size > 0:
+        return DEFAULT_T265_MAP
+    history_root = RUNTIME / "history" / "t265_map_builder"
+    candidates = [
+        path for path in history_root.glob("*/t265_localization.raw")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="RDK X5 rescue-field selector and pose map")
+    parser.add_argument("--zone", type=int, choices=range(1, 5), help="skip zone selection")
+    parser.add_argument("--side", choices=("red", "blue"), help="skip side selection")
+    parser.add_argument("--actual-lower-firmware", default="unconfirmed",
+                        help="operator-confirmed flashed F407 commit, for session logging only")
+    parser.add_argument("--actual-lower-mode", default="unconfirmed",
+                        choices=("unconfirmed", "NormalRun", "Gamepad", "MotionDebug"))
+    parser.add_argument("--opening-strategy", choices=("attack", "defense"), default="defense")
+    parser.add_argument("--corner-offset-mm", type=float, default=DEFAULT_CORNER_OFFSET_M * 1000.0)
+    parser.add_argument(
+        "--encoder-weight",
+        type=float,
+        default=DEFAULT_ENCODER_FUSION_WEIGHT,
+        help="encoder translation weight entering the EKF, from 0 to 1",
+    )
+    parser.add_argument(
+        "--localization-mode",
+        choices=("fusion", "t265"),
+        default="t265",
+        help="fusion uses T265 plus encoders; t265 outputs T265 directly with wheel reference logs",
+    )
+    parser.add_argument("--localization-json", type=Path)
+    parser.add_argument("--disk-control-ipc", action="store_true",
+                        help="正式入口对照调试：实时交换文件使用原磁盘路径")
+    parser.add_argument(
+        "--localization-log",
+        type=Path,
+        help="persistent full-rate T265/odometry CSV log (default: runtime/localization_debug.csv)",
+    )
+    parser.add_argument("--launch-localization", action="store_true")
+    parser.add_argument("--launch-vision", action="store_true")
+    parser.add_argument("--gpio-buttons", action=argparse.BooleanOptionalAction, default=False,
+                        help="competition: use the existing four physical operator buttons")
+    parser.add_argument("--headless", action="store_true",
+                        help="run the same map/session supervisor without graphical windows")
+    parser.add_argument("--official-wheel-input", action=argparse.BooleanOptionalAction, default=False,
+                        help="competition adapter: reuse tested official SDK wheel input")
+    parser.add_argument("--dynamic-localization", action=argparse.BooleanOptionalAction, default=False,
+                        help="competition: reuse desktop lidar/T265/wheel fallback chain")
+    parser.add_argument("--full-diagnostics", action="store_true",
+                        help="正式比赛：额外保存雷达原包、全点和逐笔轮速 SDK 记录")
+    parser.add_argument("--dynamic-config", type=Path, default=PROJECT_ROOT / "localization/config/lidar_yaw_debug.json")
+    parser.add_argument("--lidar", default="/dev/ttyS6")
+    parser.add_argument("--lidar-baud", type=int, default=230400)
+    parser.add_argument("--t265-map", type=Path, help="T265 localization map to import")
+    parser.add_argument(
+        "--use-t265-map",
+        action="store_true",
+        help="import the selected T265 map and require relocalization before the task",
+    )
+    parser.add_argument(
+        "--relocalization-timeout",
+        type=float,
+        default=DEFAULT_T265_MAP_TIMEOUT_S,
+        help="map startup relocalization timeout in seconds",
+    )
+    translation_scale = parser.add_mutually_exclusive_group()
+    translation_scale.add_argument(
+        "--enable-t265-translation-scale",
+        dest="enable_t265_translation_scale",
+        action="store_true",
+        help="enable the T265 translation scale calibration",
+    )
+    translation_scale.add_argument(
+        "--disable-t265-translation-scale",
+        dest="enable_t265_translation_scale",
+        action="store_false",
+        help="disable the T265 translation scale calibration",
+    )
+    # The side-facing T265 calibration starts from native scale. Enable the
+    # empirical scale only after a controlled side-mount distance check.
+    parser.set_defaults(enable_t265_translation_scale=False)
+    parser.add_argument(
+        "--t265-translation-scale",
+        type=float,
+        default=1.0,
+        help="T265 translation scale value; side-mount baseline is 1.000",
+    )
+    parser.add_argument("--uart", default="/dev/ttyS1")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--tx-rate",
+        type=float,
+        default=20.0,
+        help="TYPE=0x16 T265 pose rate; default 20 Hz supplies recovery reference samples",
+    )
+    parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument("--demo", action="store_true", help="animate a hardware-free pose")
+    parser.add_argument("--screenshot", type=Path, help="render one frame and exit")
+    options = parser.parse_args()
+    if options.t265_map is not None:
+        options.use_t265_map = True
+    return options
+
+
+class TextPainter:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, tuple[int, int], int, tuple[int, int, int], bool, str]] = []
+        self.fonts: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
+
+    def add(self, text, xy, size=22, color=(230, 230, 230), bold=False, anchor="la") -> None:
+        self.items.append((str(text), tuple(map(int, xy)), size, color, bold, anchor))
+
+    def paint(self, bgr: np.ndarray) -> np.ndarray:
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(image)
+        for text, xy, size, bgr_color, bold, anchor in self.items:
+            key = (size, bold)
+            if key not in self.fonts:
+                font_path = FONT_MEDIUM if bold else FONT_REGULAR
+                try:
+                    self.fonts[key] = ImageFont.truetype(font_path, size=size)
+                except OSError:
+                    self.fonts[key] = ImageFont.load_default()
+            color = (bgr_color[2], bgr_color[1], bgr_color[0])
+            draw.text(xy, text, font=self.fonts[key], fill=color, anchor=anchor)
+        self.items.clear()
+        return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+
+
+class RescueMapApp:
+    def __init__(self, options: argparse.Namespace) -> None:
+        self.runtime = RUNTIME
+        self.options = options
+        # Match the RDK X5 desktop panel exactly; the square field remains
+        # undistorted and the status panel occupies the remaining width.
+        self.width, self.height = 1280, 1024
+        self.map_left, self.map_top, self.map_size = 30, 60, 850
+        self.zone = options.zone or 1
+        self.side = options.side or "red"
+        self.opening_strategy = getattr(options, "opening_strategy", "defense")
+        self.selecting = not (options.zone and options.side)
+        self.corner_offset_m = options.corner_offset_mm / 1000.0
+        requested_encoder_weight = float(options.encoder_weight)
+        self.localization_mode = options.localization_mode
+        # T265-only is the formal side-mount mode. Keep the generated config
+        # explicit even though --t265-only-output is the runtime authority.
+        self.encoder_weight = 0.0 if self.localization_mode == "t265" else requested_encoder_weight
+        if not 0.0 <= self.encoder_weight <= 1.0:
+            raise ValueError("encoder weight must be in 0..1")
+        requested_map = getattr(options, "t265_map", None)
+        self.t265_map_path: Path | None = (
+            Path(requested_map) if requested_map is not None else discover_t265_map()
+        )
+        self.t265_map_enabled = bool(
+            getattr(options, "use_t265_map", False) or requested_map is not None
+        )
+        self.relocalization_timeout_s = float(
+            getattr(options, "relocalization_timeout", DEFAULT_T265_MAP_TIMEOUT_S)
+        )
+        if not math.isfinite(self.relocalization_timeout_s) or self.relocalization_timeout_s <= 0.0:
+            raise ValueError("relocalization timeout must be positive")
+        self.t265_translation_scale_enabled = bool(
+            getattr(options, "enable_t265_translation_scale", False)
+        )
+        self.t265_translation_scale = float(
+            getattr(options, "t265_translation_scale", DEFAULT_T265_TRANSLATION_SCALE)
+        )
+        if not math.isfinite(self.t265_translation_scale) or not 0.0 < self.t265_translation_scale <= 2.0:
+            raise ValueError("T265 translation scale must be in (0,2]")
+        initial_pose(self.zone, self.corner_offset_m)  # validates parameters
+        self.localization_json = options.localization_json or (self.runtime / "localization_result.json")
+        self.uart_command_path = self.runtime / "uart_command.bin"
+        self.stm_status_path = self.runtime / "stm32_status.json"
+        self.localization_log = Path(
+            getattr(options, "localization_log", None) or (self.runtime / "localization_debug.csv")
+        )
+        self.trajectory = Trajectory()
+        self.odometry_trajectory = Trajectory()
+        self.pose = initial_pose(self.zone, self.corner_offset_m)
+        self.localization_process: subprocess.Popen | None = None
+        self.vision_process: subprocess.Popen | None = None
+        self.session_started = False
+        self.vision_start_pending = False
+        self.runtime_archived_on_reset = False
+        self.fullscreen = options.fullscreen
+        self.hitboxes: dict[str, tuple[int, int, int, int]] = {}
+        self.message = "请选择1～4号出发区和红蓝方，点击按钮或按Enter启动"
+        self.started_monotonic = time.monotonic()
+        self.last_live_read_monotonic: float | None = None
+
+    def world_to_pixel(self, x_m: float, y_m: float) -> tuple[int, int]:
+        x = self.map_left + (x_m + FIELD_HALF_M) / (2 * FIELD_HALF_M) * self.map_size
+        y = self.map_top + (FIELD_HALF_M - y_m) / (2 * FIELD_HALF_M) * self.map_size
+        return int(round(x)), int(round(y))
+
+    def world_rect(self, canvas, x0, y0, x1, y1, color, thickness=-1) -> None:
+        left, bottom = self.world_to_pixel(min(x0, x1), min(y0, y1))
+        right, top = self.world_to_pixel(max(x0, x1), max(y0, y1))
+        cv2.rectangle(canvas, (left, top), (right, bottom), color, thickness, cv2.LINE_AA)
+
+    def draw_field(self, canvas: np.ndarray, text: TextPainter) -> None:
+        ml, mt, size = self.map_left, self.map_top, self.map_size
+        cv2.rectangle(canvas, (ml, mt), (ml + size, mt + size), (218, 218, 218), -1)
+
+        for coordinate in np.arange(-1.0, 1.01, 0.5):
+            x0, y0 = self.world_to_pixel(coordinate, -1.5)
+            x1, y1 = self.world_to_pixel(coordinate, 1.5)
+            cv2.line(canvas, (x0, y0), (x1, y1), (190, 190, 190), 1, cv2.LINE_AA)
+            x0, y0 = self.world_to_pixel(-1.5, coordinate)
+            x1, y1 = self.world_to_pixel(1.5, coordinate)
+            cv2.line(canvas, (x0, y0), (x1, y1), (190, 190, 190), 1, cv2.LINE_AA)
+
+        # Safety zones: outer 660x360 mm, inner usable area 600x300 mm.
+        for side, y0, y1, color in (
+            ("red", 1.14, 1.50, (70, 70, 185)),
+            ("blue", -1.50, -1.14, (190, 125, 25)),
+        ):
+            self.world_rect(canvas, -0.33, y0, 0.33, y1, (120, 45, 145), -1)
+            inner_y0, inner_y1 = (1.20, 1.50) if side == "red" else (-1.50, -1.20)
+            self.world_rect(canvas, -0.30, inner_y0, 0.30, inner_y1, color, -1)
+            self.world_rect(canvas, -0.01, inner_y0, 0.01, inner_y1, (25, 25, 25), -1)
+            if self.side == side:
+                self.world_rect(canvas, -0.34, y0 - 0.01, 0.34, y1 + 0.01, (0, 245, 255), 4)
+            label_y = 1.34 if side == "red" else -1.34
+            px, py = self.world_to_pixel(0.0, label_y)
+            text.add(("红方" if side == "red" else "蓝方") + ("·本方" if self.side == side else ""),
+                     (px, py), 19, (245, 245, 245), True, "mm")
+            section_y = 1.23 if side == "red" else -1.23
+            left_label, right_label = (("物资", "伤员") if side == "red" else ("伤员", "物资"))
+            left_x, left_y = self.world_to_pixel(-0.16, section_y)
+            right_x, right_y = self.world_to_pixel(0.16, section_y)
+            text.add(left_label, (left_x, left_y), 12, (245, 245, 245), False, "mm")
+            text.add(right_label, (right_x, right_y), 12, (245, 245, 245), False, "mm")
+
+        # Four 300x300 mm magenta start zones.
+        zones = {
+            1: (-1.50, 1.20, -1.20, 1.50),
+            2: (1.20, 1.20, 1.50, 1.50),
+            3: (-1.50, -1.50, -1.20, -1.20),
+            4: (1.20, -1.50, 1.50, -1.20),
+        }
+        for zone, rect in zones.items():
+            self.world_rect(canvas, *rect, (215, 35, 220), -1)
+            self.world_rect(canvas, *rect, (0, 245, 255) if zone == self.zone else (80, 30, 80), 4 if zone == self.zone else 2)
+            center_x = (rect[0] + rect[2]) / 2
+            center_y = (rect[1] + rect[3]) / 2
+            px, py = self.world_to_pixel(center_x, center_y)
+            text.add(str(zone), (px, py), 34, (20, 20, 20), True, "mm")
+
+        self.draw_speed_bumps(canvas)
+        cv2.rectangle(canvas, (ml, mt), (ml + size, mt + size), (35, 35, 35), 4, cv2.LINE_AA)
+        ox, oy = self.world_to_pixel(0.0, 0.0)
+        cv2.line(canvas, (ox - 10, oy), (ox + 10, oy), (70, 70, 70), 2)
+        cv2.line(canvas, (ox, oy - 10), (ox, oy + 10), (70, 70, 70), 2)
+        text.add("场地中心 (0,0)", (ox + 12, oy - 10), 16, (70, 70, 70))
+        text.add("3.00 m", (ml + size // 2, mt + size + 25), 18, (220, 220, 220), False, "mm")
+        text.add("+Y", (ml + 8, mt + 8), 16, (70, 70, 70))
+        text.add("+X", (ml + size - 8, mt + size - 8), 16, (70, 70, 70), False, "ra")
+
+        legend_x = ml + 20
+        legend_y = mt + 28
+        cv2.line(canvas, (legend_x, legend_y), (legend_x + 30, legend_y), (20, 150, 245), 3)
+        text.add("融合", (legend_x + 38, legend_y), 14, (20, 150, 245), True, "lm")
+        cv2.line(canvas, (legend_x + 105, legend_y), (legend_x + 135, legend_y), (220, 80, 220), 3)
+        text.add("轮式里程计", (legend_x + 143, legend_y), 14, (220, 80, 220), True, "lm")
+
+    def draw_speed_bumps(self, canvas: np.ndarray) -> None:
+        color = (235, 235, 235)
+        outline = (105, 105, 105)
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                # Three vertical strips along the top/bottom boundary beside the zone.
+                for index in range(3):
+                    near_x = sx * (1.14 - index * 0.11)
+                    x0, x1 = sorted((near_x, near_x + sx * 0.06))
+                    y0, y1 = (1.20, 1.50) if sy > 0 else (-1.50, -1.20)
+                    self.world_rect(canvas, x0, y0, x1, y1, color, -1)
+                    self.world_rect(canvas, x0, y0, x1, y1, outline, 1)
+                # Three horizontal strips along the left/right boundary.
+                for index in range(3):
+                    near_y = sy * (1.14 - index * 0.11)
+                    y0, y1 = sorted((near_y, near_y + sy * 0.06))
+                    x0, x1 = (-1.50, -1.20) if sx < 0 else (1.20, 1.50)
+                    self.world_rect(canvas, x0, y0, x1, y1, color, -1)
+                    self.world_rect(canvas, x0, y0, x1, y1, outline, 1)
+
+    def draw_trajectory(self, canvas: np.ndarray) -> None:
+        points = [self.world_to_pixel(x, y) for x, y in self.trajectory.points]
+        if len(points) >= 2:
+            cv2.polylines(canvas, [np.asarray(points, dtype=np.int32)], False, (20, 150, 245), 3, cv2.LINE_AA)
+
+    def draw_odometry_trajectory(self, canvas: np.ndarray) -> None:
+        points = [self.world_to_pixel(x, y) for x, y in self.odometry_trajectory.points]
+        if len(points) >= 2:
+            cv2.polylines(canvas, [np.asarray(points, dtype=np.int32)], False, (220, 80, 220), 2, cv2.LINE_AA)
+
+    def draw_odometry(self, canvas: np.ndarray) -> None:
+        if not self.pose.odom_available:
+            return
+        odom_center = self.world_to_pixel(self.pose.odom_x_m, self.pose.odom_y_m)
+        angle = math.radians(self.pose.odom_yaw_deg)
+        odom_tip = self.world_to_pixel(
+            self.pose.odom_x_m + 0.20 * math.cos(angle),
+            self.pose.odom_y_m + 0.20 * math.sin(angle),
+        )
+        fused_center = self.world_to_pixel(self.pose.x_m, self.pose.y_m)
+        cv2.line(canvas, fused_center, odom_center, (115, 115, 115), 1, cv2.LINE_AA)
+        cv2.circle(canvas, odom_center, 9, (25, 25, 25), -1, cv2.LINE_AA)
+        cv2.circle(canvas, odom_center, 7, (220, 80, 220), 2, cv2.LINE_AA)
+        cv2.arrowedLine(canvas, odom_center, odom_tip, (220, 80, 220), 3, cv2.LINE_AA, tipLength=0.30)
+
+    def draw_robot(self, canvas: np.ndarray) -> None:
+        pose = self.pose
+        center = self.world_to_pixel(pose.x_m, pose.y_m)
+        angle = math.radians(pose.yaw_deg)
+        tip = self.world_to_pixel(pose.x_m + 0.24 * math.cos(angle), pose.y_m + 0.24 * math.sin(angle))
+        color = {
+            "GOOD": (50, 220, 65),
+            "DEGRADED": (0, 185, 255),
+            "LOST": (40, 40, 230),
+            "STALE": (80, 80, 180),
+            "NO_DATA": (80, 80, 180),
+        }.get(pose.quality, (150, 150, 150))
+        if abs(pose.x_m) > FIELD_HALF_M or abs(pose.y_m) > FIELD_HALF_M:
+            color = (40, 40, 230)
+        radius = max(10, int(round(0.130 / 3.0 * self.map_size)))
+        cv2.circle(canvas, center, radius, (25, 25, 25), -1, cv2.LINE_AA)
+        cv2.circle(canvas, center, radius, color, 3, cv2.LINE_AA)
+        cv2.arrowedLine(canvas, center, tip, color, 5, cv2.LINE_AA, tipLength=0.30)
+
+    def button(self, canvas, text: TextPainter, name, label, rect, selected=False, color=(80, 80, 80)) -> None:
+        x0, y0, x1, y1 = rect
+        fill = color if selected else (45, 45, 48)
+        cv2.rectangle(canvas, (x0, y0), (x1, y1), fill, -1, cv2.LINE_AA)
+        cv2.rectangle(canvas, (x0, y0), (x1, y1), (0, 225, 255) if selected else (105, 105, 110), 2, cv2.LINE_AA)
+        text.add(label, ((x0 + x1) // 2, (y0 + y1) // 2), 21, (245, 245, 245), selected, "mm")
+        self.hitboxes[name] = rect
+
+    def draw_panel_heading(self, text: TextPainter) -> None:
+        text.add("救援场地定位", (920, 45), 30, (245, 245, 245), True)
+        text.add("赛题图6 · 3000×3000 mm", (920, 80), 17, (165, 165, 170))
+
+    def draw_panel(self, canvas: np.ndarray, text: TextPainter) -> None:
+        x0 = 920
+        cv2.rectangle(canvas, (900, 0), (self.width, self.height), (26, 27, 30), -1)
+        self.draw_panel_heading(text)
+        if self.selecting:
+            text.add("选择出发区", (x0, 130), 22, (230, 230, 230), True)
+            for idx in range(4):
+                bx = x0 + (idx % 2) * 175
+                by = 155 + (idx // 2) * 64
+                zone = idx + 1
+                self.button(canvas, text, f"zone{zone}", f"{zone}号", (bx, by, bx + 150, by + 48), zone == self.zone)
+            text.add("选择本方颜色", (x0, 300), 22, (230, 230, 230), True)
+            self.button(canvas, text, "red", "红方", (x0, 330, x0 + 150, 382), self.side == "red", (55, 55, 185))
+            self.button(canvas, text, "blue", "蓝方", (x0 + 175, 330, x0 + 325, 382), self.side == "blue", (185, 110, 20))
+            text.add("开局策略", (x0, 400), 22, (230, 230, 230), True)
+            self.button(canvas, text, "attack", "进攻", (x0, 435, x0 + 150, 483), self.opening_strategy == "attack")
+            self.button(canvas, text, "defense", "防守", (x0 + 175, 435, x0 + 325, 483), self.opening_strategy == "defense")
+            localization_label = (
+                "仅T265（UART任务通信保留）"
+                if self.localization_mode == "t265" else
+                "T265+编码器（命令行覆盖）"
+            )
+            if getattr(self, "official_wheel_input", False):
+                localization_label = "T265＋官方SDK轮速输入"
+            scale_label = (
+                f"开启 {self.t265_translation_scale:.3f}×"
+                if self.t265_translation_scale_enabled else "关闭（命令行覆盖）"
+            )
+            text.add(f"定位：{localization_label}", (x0, 520), 17, (200, 210, 225))
+            text.add(f"T265直线比例：{scale_label}", (x0, 555), 18, (220, 200, 80), True)
+            text.add("进攻：对方区前45cm；防守：内移15cm", (x0, 590), 14, (200, 210, 225))
+            self.button(canvas, text, "start", "确认并开始", (x0, 610, x0 + 325, 675), True, (35, 135, 70))
+            pose = initial_pose(self.zone, self.corner_offset_m)
+            text.add("1～4选区域；R复位；Enter启动", (x0, 725), 15, (220, 220, 220))
+            text.add(f"X={pose.x_m:+.2f}  Y={pose.y_m:+.2f}  车头={pose.yaw_deg:.0f}°", (x0, 755), 15, (190, 190, 195))
+            text.add(self.message, (x0, 800), 14, (0, 215, 255))
+            text.add("复位后：摆回出发位，下位机重新上电", (x0, 835), 14, (190, 190, 195))
+        else:
+            pose = self.pose
+            quality_color = {
+                "GOOD": (50, 220, 65),
+                "DEGRADED": (0, 185, 255),
+                "WAITING": (160, 160, 165),
+            }.get(pose.quality, (50, 80, 235))
+            text.add(f"{self.zone}号出发区 / {'红方' if self.side == 'red' else '蓝方'}", (x0, 135), 23, (235, 235, 235), True)
+            text.add(f"开局：{'进攻' if self.opening_strategy == 'attack' else '防守'}藏物资", (x0, 161), 15, (200, 210, 225))
+            text.add(f"定位状态：{pose.quality}", (x0, 185), 21, quality_color, True)
+            text.add(f"X：{pose.x_m:+.3f} m", (x0, 235), 25, (245, 245, 245), True)
+            text.add(f"Y：{pose.y_m:+.3f} m", (x0, 275), 25, (245, 245, 245), True)
+            text.add(f"方向：{pose.yaw_deg:06.2f}°", (x0, 315), 25, (245, 245, 245), True)
+            text.add(f"融合轨迹：{self.trajectory.distance_m:.3f} m", (x0, 365), 21, (20, 170, 245), True)
+            if pose.odom_available:
+                text.add(f"里程计 X/Y：{pose.odom_x_m:+.3f} / {pose.odom_y_m:+.3f} m", (x0, 405), 18, (220, 80, 220), True)
+                text.add(f"里程计方向：{pose.odom_yaw_deg:06.2f}°  轨迹：{pose.odom_travel_m:.3f} m", (x0, 440), 17, (220, 80, 220), True)
+                yaw_source = {"t265_gyro": "T265陀螺仪", "wheel_kinematics": "轮式运动学"}.get(
+                    pose.odom_yaw_source, pose.odom_yaw_source
+                )
+                text.add(f"轮速 F/L：{pose.odom_forward_velocity_mps:+.2f} / {pose.odom_left_velocity_mps:+.2f} m/s  航向源：{yaw_source}", (x0, 475), 15, (200, 150, 200))
+                text.add(f"融合-里程计差异：{pose.fused_odom_delta_m:.3f} m / {pose.fused_odom_yaw_delta_deg:+.2f}°", (x0, 510), 16, (0, 195, 220))
+                text.add(f"里程计更新：{pose.odom_updates}  帧龄：{pose.odom_update_age_ms:.0f} ms", (x0, 540), 16, (200, 150, 200))
+            else:
+                label = ("轮反馈作为SDK输入，非独立位置" if getattr(self, "official_wheel_input", False)
+                         else "轮式里程计：等待有效编码器解算")
+                text.add(label, (x0, 420), 17, (180, 150, 180))
+            text.add(f"T265起点位移：{pose.t265_travel_m:.3f} m", (x0, 580), 18, (200, 200, 205))
+            scale_state = "启用" if pose.t265_translation_scale_enabled else "关闭"
+            text.add(f"T265平移比例：{pose.t265_translation_scale:.3f}×（{scale_state}）", (x0, 615), 18, (200, 200, 205))
+            text.add(f"T265置信度：{pose.tracker_confidence}/{pose.mapper_confidence}", (x0, 650), 18, (200, 200, 205))
+            if pose.t265_map_enabled:
+                if pose.t265_map_frame_timeout:
+                    map_state = "无Pose帧超时"
+                elif pose.t265_map_timeout:
+                    map_state = "重定位超时"
+                elif pose.t265_map_startup_ready and pose.t265_map_relocalized:
+                    map_state = f"已重定位（事件{pose.t265_map_event_count}）"
+                else:
+                    map_state = "等待重定位"
+                map_color = (0, 205, 255) if map_state == "等待重定位" else (
+                    (50, 220, 80) if map_state.startswith("已重定位") else (40, 70, 235)
+                )
+                text.add(f"T265预建地图：{map_state}", (x0, 685), 17, map_color, True)
+            else:
+                text.add("T265预建地图：未使用", (x0, 685), 17, (180, 180, 185))
+            mode_text = (
+                f"T265+编码器（权重{pose.encoder_fusion_weight * 100:.0f}%）"
+                if self.localization_mode == "fusion" else "仅T265（位置权重100%）"
+            )
+            if getattr(self, "official_wheel_input", False):
+                mode_text = "T265＋官方SDK轮速输入"
+            if getattr(self, "dynamic_localization", False):
+                mode_text = "雷达＋T265＋轮速降级"
+            text.add(f"定位方式：{mode_text}", (x0, 720), 18, (200, 200, 205))
+            if self.localization_mode == "fusion":
+                text.add(f"编码器UART：{'正常' if pose.uart_fresh else '超时'}", (x0, 755), 18, (200, 200, 205))
+                primary = "轮式" if pose.navigation_wheel_primary else "T265"
+                text.add(f"轮速门控：{pose.wheel_gate}  当前主导：{primary}", (x0, 790), 16, (175, 175, 180))
+            elif getattr(self, "official_wheel_input", False):
+                status = self.wheel_input_status()
+                text.add(f"轮速：{status.get('state', 'REQUESTED_BLOCKED')}", (x0, 755), 16, (200, 200, 205))
+                text.add(f"API接受 {status.get('sdk_api_success_samples', 0)} 次 / {status.get('sdk_api_rate_hz', 0):.1f} Hz",
+                         (x0, 790), 16, (200, 200, 205))
+            else:
+                text.add("轮式仅作参考，定位仅T265", (x0, 755), 18, (200, 200, 205))
+            age_text = "--" if math.isinf(pose.age_ms) else f"{pose.age_ms:.0f} ms"
+            text.add(f"数据年龄：{age_text}", (x0, 825), 17, (175, 175, 180))
+            if abs(pose.x_m) > FIELD_HALF_M or abs(pose.y_m) > FIELD_HALF_M:
+                text.add("警告：融合坐标已越出场地边界", (x0, 860), 17, (40, 70, 235), True)
+            text.add("S 重选  R 复位  F 全屏  Q 退出", (x0, 900), 17, (180, 180, 185))
+            if self.localization_process and self.localization_process.poll() is not None:
+                text.add(f"定位进程已退出：{self.localization_process.returncode}", (x0, 935), 17, (50, 80, 235), True)
+            elif self.message:
+                text.add(self.message, (x0, 935), 16, (0, 190, 255))
+            if self.vision_process and self.vision_process.poll() is not None:
+                text.add(f"识别进程已退出：{self.vision_process.returncode}", (x0, 970), 17, (50, 80, 235), True)
+            elif self.vision_process:
+                text.add("YOLO识别：运行中", (x0, 970), 17, (50, 210, 80), True)
+
+    def render(self) -> np.ndarray:
+        canvas = np.full((self.height, self.width, 3), (18, 19, 21), dtype=np.uint8)
+        text = TextPainter()
+        self.hitboxes.clear()
+        self.draw_field(canvas, text)
+        self.draw_trajectory(canvas)
+        self.draw_odometry_trajectory(canvas)
+        self.draw_odometry(canvas)
+        self.draw_robot(canvas)
+        self.draw_panel(canvas, text)
+        return text.paint(canvas)
+
+    def select_at(self, x: int, y: int) -> None:
+        if not self.selecting:
+            return
+        for name, (x0, y0, x1, y1) in self.hitboxes.items():
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                if name.startswith("zone"):
+                    self.zone = int(name[-1])
+                    self.pose = initial_pose(self.zone, self.corner_offset_m)
+                elif name in {"red", "blue"}:
+                    self.side = name
+                elif name in {"attack", "defense"}:
+                    self.opening_strategy = name
+                elif name == "start":
+                    self.start_session()
+                break
+
+    def adjust_corner_offset(self, delta_mm: float) -> None:
+        candidate = self.corner_offset_m + delta_mm / 1000.0
+        try:
+            initial_pose(self.zone, candidate)
+        except ValueError:
+            self.message = "距角落顶点必须大于0且小于1500 mm"
+            return
+        self.corner_offset_m = candidate
+        self.pose = initial_pose(self.zone, self.corner_offset_m)
+
+    def adjust_encoder_weight(self, delta: float) -> None:
+        self.encoder_weight = min(1.0, max(0.0, round(self.encoder_weight + delta, 2)))
+
+    def adjust_t265_translation_scale(self, delta: float) -> None:
+        self.t265_translation_scale = min(
+            1.20, max(0.80, round(self.t265_translation_scale + delta, 2))
+        )
+
+    def mouse_callback(self, event, x, y, _flags, _parameter) -> None:
+        if event == cv2.EVENT_LBUTTONUP:
+            self.select_at(x, y)
+
+    def start_session(self) -> None:
+        if self.session_started:
+            return
+        if self.t265_map_enabled:
+            if self.t265_map_path is None or not self.t265_map_path.is_file() or self.t265_map_path.stat().st_size <= 0:
+                self.message = "T265地图文件不存在，无法开启地图模式"
+                self.selecting = True
+                return
+        self.stop_session_processes()
+        self.trajectory.reset()
+        self.odometry_trajectory.reset()
+        self.pose = initial_pose(self.zone, self.corner_offset_m)
+        self.trajectory.seed(self.pose.x_m, self.pose.y_m)
+        self.odometry_trajectory.seed(self.pose.x_m, self.pose.y_m)
+        self.last_live_read_monotonic = None
+        self.runtime.mkdir(parents=True, exist_ok=True)
+        self.localization_log.parent.mkdir(parents=True, exist_ok=True)
+        if not self.runtime_archived_on_reset:
+            self.archive_previous_runtime()
+        self.runtime_archived_on_reset = False
+        write_session(
+            self.runtime / "session.json",
+            self.zone,
+            self.side,
+            self.corner_offset_m,
+            self.localization_mode,
+            self.encoder_weight,
+            self.t265_map_enabled,
+            self.t265_map_path,
+            self.t265_translation_scale_enabled,
+            self.t265_translation_scale,
+            opening_strategy=self.opening_strategy,
+            actual_lower_firmware=getattr(self.options, "actual_lower_firmware", "unconfirmed"),
+            actual_lower_mode=getattr(self.options, "actual_lower_mode", "unconfirmed"),
+        )
+        write_localization_config(
+            getattr(self, "localization_config_template", PROJECT_ROOT / "localization/config/localization.example.conf"),
+            self.runtime / "localization.conf",
+            self.zone,
+            self.corner_offset_m,
+            self.encoder_weight,
+            self.t265_translation_scale_enabled,
+            self.t265_translation_scale,
+        )
+        (self.runtime / "delivery_contact_pose.json").unlink(missing_ok=True)
+        (self.runtime / "delivery_observation.jsonl").unlink(missing_ok=True)
+        (self.runtime / "mission_diagnostics.json").unlink(missing_ok=True)
+        (self.runtime / "localization_events.jsonl").unlink(missing_ok=True)
+        self.selecting = False
+        self.session_started = True
+        self.started_monotonic = time.monotonic()
+        if self.t265_map_enabled:
+            self.message = "等待T265导入地图并完成重定位"
+        else:
+            self.message = "等待T265和编码器融合数据" if self.localization_mode == "fusion" else "等待T265定位数据"
+        if self.options.launch_localization and not self.options.screenshot:
+            try:
+                command = self.localization_command()
+                self.localization_json.unlink(missing_ok=True)
+                self.localization_log.unlink(missing_ok=True)
+                (self.uart_command_path).unlink(missing_ok=True)
+                (self.stm_status_path).unlink(missing_ok=True)
+                (self.runtime / "localization_events.jsonl").unlink(missing_ok=True)
+                self.localization_process = self.start_owned_process(command, PROJECT_ROOT / "localization")
+                self.message = "融合定位进程已启动" if self.localization_mode == "fusion" else "T265定位进程已启动"
+            except OSError as exc:
+                self.stop_localization()
+                self.message = f"定位启动失败：{exc}"
+                self.session_started = False
+                self.selecting = True
+                return
+        self.vision_start_pending = bool(
+            self.options.launch_vision and not self.options.screenshot and not self.options.demo
+        )
+
+    def maybe_start_vision(self) -> None:
+        if not self.vision_start_pending:
+            return
+        if self.localization_process is not None and self.localization_process.poll() is not None:
+            self.vision_start_pending = False
+            self.session_started = False
+            self.selecting = True
+            self.message = "定位已退出；修复后按Enter重试"
+            return
+        if (self.pose.quality not in {"GOOD", "DEGRADED"}
+                or (getattr(self, "pose_age_gate", True) and self.pose.age_ms > 250.0)
+                or not self.pose.t265_map_startup_ready):
+            self.message = "等待定位就绪，再启动识别"
+            return
+        try:
+            self.vision_process = self.start_owned_process(self.vision_command(), PROJECT_ROOT / "mission_test")
+            self.vision_start_pending = False
+            self.message = "定位就绪，识别流程已启动"
+        except OSError as exc:
+            self.stop_session_processes()
+            self.session_started = False
+            self.selecting = True
+            self.message = f"识别启动失败：{exc}"
+
+    def reset_session(self) -> None:
+        # Keep the UART relay alive until vision has sent its shutdown command.
+        self.stop_session_processes()
+        if not self.runtime_archived_on_reset:
+            self.archive_previous_runtime()
+            self.runtime_archived_on_reset = True
+        for path in (
+            self.localization_json, self.stm_status_path,
+            self.uart_command_path, self.runtime / "mission_diagnostics.json",
+            self.runtime / "competition_diagnostics.json", self.runtime / "delivery_contact_pose.json",
+        ):
+            path.unlink(missing_ok=True)
+        self.session_started = False
+        self.selecting = True
+        self.trajectory.reset()
+        self.odometry_trajectory.reset()
+        self.pose = initial_pose(self.zone, self.corner_offset_m)
+        self.last_live_read_monotonic = None
+        self.started_monotonic = time.monotonic()
+        self.message = "已复位，保留选择；按Enter重新启动"
+
+    def archive_previous_runtime(self) -> None:
+        """Copy the previous session files before starting a new run."""
+        candidates = (
+            self.localization_json,
+            self.localization_log,
+            self.runtime / "session.json",
+            self.runtime / "localization.conf",
+            self.stm_status_path,
+            self.runtime / "localization_events.jsonl",
+            self.runtime / "mission_diagnostics.json",
+            self.runtime / "delivery_contact_pose.json",
+            self.runtime / "delivery_observation.jsonl",
+            self.uart_command_path,
+        )
+        existing = [path for path in candidates if path.is_file()]
+        if not existing:
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        archive_dir = self.runtime / "history" / stamp
+        suffix = 1
+        while archive_dir.exists():
+            suffix += 1
+            archive_dir = self.runtime / "history" / f"{stamp}_{suffix:02d}"
+        archive_dir.mkdir(parents=True, exist_ok=False)
+        for path in existing:
+            try:
+                shutil.copy2(path, archive_dir / path.name)
+            except OSError:
+                # A diagnostic archive must never prevent a new safety session.
+                continue
+
+    def localization_command(self) -> list[str]:
+        """Build the localizer invocation for the selected hardware mode."""
+        command = [
+            str(PROJECT_ROOT / "localization/run_localization.sh"),
+            "--config", str(self.runtime / "localization.conf"),
+            "--output", str(self.localization_json),
+            "--csv", str(self.localization_log),
+            "--rate", "20",
+            "--tx-rate", str(self.options.tx_rate),
+        ]
+        command += [
+            "--command-file", str(self.uart_command_path),
+            "--stm-status", str(self.stm_status_path),
+            "--events", str(self.runtime / "localization_events.jsonl"),
+        ]
+        if self.t265_map_enabled:
+            command += [
+                "--t265-map", str(self.t265_map_path),
+                "--relocalization-timeout", f"{self.relocalization_timeout_s:.3f}",
+            ]
+        if self.localization_mode == "t265":
+            command += ["--t265-only-output", "--enable-pose-jumping"]
+        if self.options.uart.lower() not in {"", "none", "off"}:
+            command += ["--uart", self.options.uart, "--baud", str(self.options.baud)]
+        return command
+
+    def vision_command(self) -> list[str]:
+        """Launch the complete task in both localization modes."""
+        command = [
+            str(PROJECT_ROOT / "mission_test/run_mission_test.sh"),
+            "--window-mode", "normal",
+            "--display-fps", "15",
+        ]
+        if self.t265_map_enabled:
+            # Keep the existing map-mode startup allowance for the runner's
+            # own pose/configuration handshake after localization is ready.
+            command += [
+                "--startup-timeout",
+                f"{max(45.0, self.relocalization_timeout_s + 15.0):.3f}",
+            ]
+        return command
+
+    @staticmethod
+    def start_owned_process(command, cwd):
+        # The localization shell may still be uploading firmware in a child.
+        # Own that whole session so exiting cannot leave it holding T265 USB.
+        process = subprocess.Popen(command, cwd=cwd, start_new_session=True)
+        process._rescue_process_group = True
+        return process
+
+    @staticmethod
+    def stop_process(process: subprocess.Popen | None) -> None:
+        if process is None:
+            return
+        owns_group = getattr(process, '_rescue_process_group', False) is True
+
+        def send(sig):
+            try:
+                if owns_group:
+                    os.killpg(process.pid, sig)
+                else:
+                    process.send_signal(sig)
+            except ProcessLookupError:
+                pass
+
+        try:
+            if process.poll() is not None:
+                return
+            send(signal.SIGINT)
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                send(signal.SIGTERM)
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    send(signal.SIGKILL)
+                    process.wait(timeout=2.0)
+        finally:
+            # A shell can exit before its upload/model child. Only this owned
+            # session is cleaned up; never kill by executable name or USB bus.
+            if owns_group:
+                send(signal.SIGKILL)
+
+    def stop_vision(self) -> None:
+        self.stop_process(self.vision_process)
+        self.vision_process = None
+
+    def stop_localization(self) -> None:
+        self.stop_process(self.localization_process)
+        self.localization_process = None
+
+    def stop_session_processes(self) -> None:
+        self.vision_start_pending = False
+        # Stop vision first so it releases the camera and stops producing UART
+        # command files before the localization relay closes the serial port.
+        self.stop_vision()
+        self.stop_localization()
+
+    def update_pose(self) -> None:
+        if self.selecting:
+            return
+        if self.options.demo:
+            elapsed = time.monotonic() - self.started_monotonic
+            start = initial_pose(self.zone, self.corner_offset_m)
+            distance = min(1.1, elapsed * 0.18)
+            reverse_heading = math.radians(start.yaw_deg + 180.0)
+            self.pose = Pose(
+                start.x_m + distance * math.cos(reverse_heading),
+                start.y_m + distance * math.sin(reverse_heading),
+                start.yaw_deg,
+                quality="GOOD",
+                age_ms=5.0,
+                tracker_confidence=3,
+                mapper_confidence=3,
+                t265_travel_m=distance,
+                uart_fresh=True,
+                wheel_gate="accepted" if distance > 0.7 else "startup_obstacle",
+                encoder_fusion_weight=self.encoder_weight,
+                navigation_wheel_primary=False,
+                odom_available=True,
+                odom_x_m=start.x_m + distance * math.cos(reverse_heading),
+                odom_y_m=start.y_m + distance * math.sin(reverse_heading),
+                odom_yaw_deg=start.yaw_deg,
+                odom_travel_m=distance,
+                odom_forward_velocity_mps=0.18,
+                odom_left_velocity_mps=0.0,
+                odom_yaw_source="t265_gyro",
+                odom_updates=max(1, int(distance / 0.003)),
+                odom_update_age_ms=5.0,
+                fused_odom_delta_m=0.0,
+                fused_odom_yaw_delta_deg=0.0,
+            )
+            self.message = "演示模式（未读取真实硬件）"
+        else:
+            live = load_localization_pose(self.localization_json,
+                                          stale_ms=250 if getattr(self, "pose_age_gate", True) else None)
+            if live is not None:
+                self.pose = live
+                self.last_live_read_monotonic = time.monotonic()
+                self.message = ""
+            else:
+                now = time.monotonic()
+                reference = self.last_live_read_monotonic or self.started_monotonic
+                missing_ms = (now - reference) * 1000.0
+                quality = "WAITING" if missing_ms <= 250.0 else "NO_DATA"
+                self.pose = replace(
+                    self.pose,
+                    quality=quality,
+                    age_ms=missing_ms,
+                    uart_fresh=False,
+                    odom_available=False,
+                )
+        self.trajectory.update(self.pose)
+        self.update_odometry_trajectory()
+        self.maybe_start_vision()
+
+    def update_odometry_trajectory(self) -> None:
+        if not self.pose.odom_available or self.pose.quality not in {"GOOD", "DEGRADED", "LOST"}:
+            return
+        # A fresh wheel solution remains useful while T265 is LOST; display it
+        # as degraded, but never add a stale/absent snapshot to the trail.
+        odom_quality = "DEGRADED" if self.pose.quality == "LOST" else self.pose.quality
+        self.odometry_trajectory.update(
+            Pose(
+                self.pose.odom_x_m,
+                self.pose.odom_y_m,
+                self.pose.odom_yaw_deg,
+                quality=odom_quality,
+            )
+        )
+
+    def handle_key(self, key: int) -> bool:
+        key &= 0xFF
+        if key in (ord("q"), ord("Q"), 27):
+            return False
+        if key in (ord("r"), ord("R")):
+            self.reset_session()
+            return True
+        if self.selecting:
+            if ord("1") <= key <= ord("4"):
+                self.zone = key - ord("0")
+                self.pose = initial_pose(self.zone, self.corner_offset_m)
+            elif key in (ord("b"), ord("B")):
+                self.side = "blue"
+            elif key in (10, 13):
+                self.start_session()
+        else:
+            if key in (ord("s"), ord("S")):
+                self.reset_session()
+                self.message = "重新选择后需再次确认开始"
+            elif key in (ord("f"), ord("F")):
+                self.fullscreen = not self.fullscreen
+                cv2.setWindowProperty(
+                    WINDOW_NAME,
+                    cv2.WND_PROP_FULLSCREEN,
+                    cv2.WINDOW_FULLSCREEN if self.fullscreen else cv2.WINDOW_NORMAL,
+                )
+                if not self.fullscreen:
+                    cv2.resizeWindow(WINDOW_NAME, self.width, self.height)
+        return True
+
+    def run(self) -> int:
+        if not self.selecting:
+            self.start_session()
+        if self.options.screenshot:
+            if self.options.demo:
+                now = time.monotonic()
+                for step in range(31):
+                    self.started_monotonic = now - 3.0 * step / 30.0
+                    self.update_pose()
+            self.options.screenshot.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(self.options.screenshot), self.render()):
+                raise RuntimeError(f"cannot write screenshot: {self.options.screenshot}")
+            self.stop_session_processes()
+            return 0
+
+        if getattr(self.options, "headless", False):
+            active = True
+            def request_exit(_signum, _frame):
+                nonlocal active
+                active = False
+            previous = {sig: signal.signal(sig, request_exit) for sig in (signal.SIGINT, signal.SIGTERM)}
+            try:
+                while active:
+                    self.update_pose()
+                    time.sleep(.02)
+            finally:
+                self.stop_session_processes()
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
+            return 0
+
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.resizeWindow(WINDOW_NAME, self.width, self.height)
+        # Qt creates the native window lazily.  Present one frame and process an
+        # event before registering callbacks, otherwise the handler may be NULL.
+        cv2.imshow(WINDOW_NAME, self.render())
+        cv2.waitKey(1)
+        cv2.setMouseCallback(WINDOW_NAME, self.mouse_callback)
+        if self.fullscreen:
+            cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        try:
+            while True:
+                self.update_pose()
+                cv2.imshow(WINDOW_NAME, self.render())
+                if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+                if not self.handle_key(cv2.waitKey(20)):
+                    break
+        finally:
+            self.stop_session_processes()
+            cv2.destroyWindow(WINDOW_NAME)
+        return 0
+
+
+def main() -> int:
+    try:
+        return RescueMapApp(parse_args()).run()
+    except (ValueError, RuntimeError) as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

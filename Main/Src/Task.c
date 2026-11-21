@@ -897,8 +897,10 @@ static AuditSemantic task_audit_semantic(
         AUDIT_SEMANTIC_FIRST_GREEN : AUDIT_SEMANTIC_INVALID;
   }
   if (injury) {
-    return (destination_injury && (total == 1U)) ?
-        AUDIT_SEMANTIC_INJURY_SINGLE : AUDIT_SEMANTIC_INVALID;
+    /* FinalRun2 transports materials only. Keep the true casualty class/count
+     * and use the existing invalid-load separation/release handoff. Opening
+     * relocation and temporary sweep audits keep their separate semantics. */
+    return AUDIT_SEMANTIC_INVALID;
   }
   /* After the first single GREEN, transport at most three GREEN/CORE objects.
    * The two mixed codes retain the actual green/core composition. */

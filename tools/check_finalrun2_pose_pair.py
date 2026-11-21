@@ -154,11 +154,11 @@ def run_delivery(side,destination,confirmed,precise=False):
             st=send(out);out=cycle()
             assert not out.command.flags&p.CMD_VISUAL_CORRECTION_VALID,out
         assert out.command.opcode==p.CMD_ENTER_SAFE_ZONE,out
-        assert (out.command.arg_a,out.command.arg_b)==(170,270)
+        assert (out.command.arg_a,out.command.arg_b)==(200,270)
         enter=out
         st=send(out)
         assert st.mode==10 and st.action_status==1,st
-        st=wire.tick(pose,distance=169)
+        st=wire.tick(pose,distance=199)
         assert st.mode==10 and not st.action_status&2
         st=wire.tick(pose,distance=1)
         assert st.mode==10 and not st.motors_active
@@ -205,7 +205,7 @@ def run_delivery(side,destination,confirmed,precise=False):
           "20mm correction" if precise else "nominal")
 
 
-def run_sweep(side,destination):
+def run_sweep(side,destination,blocker="danger_cyan"):
     m=check.mission(side,destination)
     m.settings=replace(m.settings,bulldozer_enabled=True)
     m.pose_align_confirmed=m.safe_zone_box_ready=True
@@ -215,7 +215,7 @@ def run_sweep(side,destination):
     pose=sm.PoseSnapshot(True,x,y,m.settings.safe_heading_deg,0)
     vision=sm.VisionSnapshot(frame_sequence=1,observed_monotonic_s=.1,
         safe_bbox=(10,20,500,200),safe_corridor_polygon=((1,1),(2,1),(2,2)),
-        safe_corridor_obstacle_class="danger_cyan",safe_corridor_obstacle_count=2)
+        safe_corridor_obstacle_class=blocker,safe_corridor_obstacle_count=1)
     wire=Wire(side,"pose_flow")
     Planner,Log=check.load_planner()
     with tempfile.TemporaryDirectory() as d:
@@ -273,7 +273,7 @@ def run_sweep(side,destination):
         assert route.deposit_vehicle_point is not None
         assert abs(route.deposit_vehicle_point[0])<1e-8 and abs(route.deposit_vehicle_point[1]-.77*sign)<1e-8
     wire.close()
-    print("PASS actual sweep",side,destination,"A release; retreat160; W1 only; 1000 sweep; original pickup")
+    print("PASS actual sweep",side,blocker,"A release; retreat160; W1 only; 1000 sweep; original pickup")
 
 
 def run_payload_boundaries():
@@ -282,9 +282,9 @@ def run_payload_boundaries():
         flags|=p.CMD_RED_SIDE if side=="red" else 0
         heading=9000 if side=="red" else 27000
         for front,tail,expected in ((0,0,True),(0,270,True),(5000,270,True),
-                                    (-1,270,False),(5001,270,False),(170,-1,False),(170,271,False)):
+                                    (-1,270,False),(5001,270,False),(200,-1,False),(200,271,False)):
             wire=Wire(side,"pose_gate")
-            frame=bytearray(p.mission_frame(2,p.CMD_ENTER_SAFE_ZONE,flags,170,270,heading))
+            frame=bytearray(p.mission_frame(2,p.CMD_ENTER_SAFE_ZONE,flags,200,270,heading))
             frame[6:8]=front.to_bytes(2,"big",signed=True)
             frame[8:10]=tail.to_bytes(2,"big",signed=True)
             frame[12:14]=p.crc16_modbus(frame[2:12]).to_bytes(2,"little")
@@ -295,10 +295,57 @@ def run_payload_boundaries():
     print("PASS 14 actual-wire distance-boundary cases")
 
 
+def run_casualty_abandon(side,at_gate):
+    m=check.mission(side)
+    m.transport_load_reuse_active=False
+    m.state=sm.CompetitionState.TRANSPORT_AUDIT if at_gate else sm.CompetitionState.POST_GRAB_AUDIT
+    wire=Wire(side,"transport_flow" if at_gate else "flow")
+    audit=sm.CargoAudit(left_class="injured_orange",left_count=1,total_count=1,
+                        class_counts=(("injured_orange",1),))
+    for n in range(1,7):
+        payload=replace(m._audit_payload(audit),stable=True,audit_id=n)
+        assert payload.left_class=="injured_orange" and payload.total_count==1
+        st=wire.packet(p.command_context_frame(n+1,7,11,n+10)+payload.frame(n+1))
+        if st.audit_ready:break
+    assert st.audit_ready and not st.audit_valid and st.mode==(48 if at_gate else 23),st
+    assert not m._audit_valid(audit) and m._preferred_keep_side(audit) is None
+    Planner,Log=check.load_planner()
+    pose=sm.PoseSnapshot(True,-.16*m.settings.side_sign if at_gate else -.4,
+                         .77*m.settings.side_sign if at_gate else 0,m.settings.safe_heading_deg,0)
+    with tempfile.TemporaryDirectory() as d:
+        root=Path(d)
+        planner=Planner(m,root/'pose',root/'stm',root/'cmd',root/'diag',Log(root/'events'),20)
+        planner.protocol_task=planner.protocol_task_cursor=7
+        planner.protocol_action=planner.protocol_action_cursor=11
+        out=m._start_capture_abandon(audit,replace(st,context_matches=True),wire.now/1000)
+        assert out.command.opcode==p.CMD_RELEASE_BOTH
+        planner._publish(out);st=wire.packet((root/'cmd').read_bytes())
+        assert st.mode==24 and not st.action_status&4,st
+        start_count=m.delivery_count
+        for n in range(100):
+            if st.mode==3:break
+            distance=10 if not st.gripper_closed else 0
+            pose=replace(pose,y_m=pose.y_m-distance*.001*m.settings.side_sign)
+            st=wire.tick(pose,distance=distance)
+            out=planner._output_for_cycle(sm.VisionSnapshot(frame_sequence=100+n),pose,st,False,wire.now/1000)
+            assert out.command is None or out.command.opcode not in {p.CMD_ENTER_SAFE_ZONE,p.CMD_NAVIGATE_WAYPOINT}
+            if out.command is not None:
+                planner._publish(out);st=wire.packet((root/'cmd').read_bytes())
+                assert not st.fault and not st.action_status&4,(out,st)
+        assert st.mode==3 and not st.gripper_closed and wire.path>=300,st
+        assert m.delivery_count==start_count and not m.transport_load_reuse_active
+    wire.close()
+    print("PASS actual casualty discard",side,"gate" if at_gate else "pickup",
+          "true class, invalid transport, release/300mm/original exit; no delivery count")
+
+
 if __name__=="__main__":
     run_payload_boundaries()
     for side in ("red","blue"):
-        for destination in ("material","injury"):
-            run_delivery(side,destination,confirmed=destination=="material")
-            run_delivery(side,destination,confirmed=destination=="material",precise=True)
-            run_sweep(side,destination)
+        for confirmed in (False,True):
+            run_delivery(side,"material",confirmed=confirmed)
+            run_delivery(side,"material",confirmed=confirmed,precise=True)
+        for blocker in ("danger_cyan","injured_orange"):
+            run_sweep(side,"material",blocker)
+        for at_gate in (False,True):
+            run_casualty_abandon(side,at_gate)

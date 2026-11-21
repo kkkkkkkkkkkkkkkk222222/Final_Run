@@ -45,7 +45,8 @@ int main(int argc,char **argv)
   first_delivery_done=atoi(argv[2])!=0;
   context_session_generation=v.session_generation;
   accepted_context=(TaskContext){.valid=true,.task_id=7,.action_id=10,.opcode=VISION_CMD_APPROACH_TARGET};
-  const bool flow=!strcmp(argv[1],"flow") || !strcmp(argv[1],"pose_flow");
+  const bool flow=!strcmp(argv[1],"flow") || !strcmp(argv[1],"pose_flow") ||
+      !strcmp(argv[1],"transport_flow");
   if(flow) initialized=initial_claw_ready=true;
   if (!strcmp(argv[1],"pose_gate") || !strcmp(argv[1],"pose_flow")) {
     task_enter(TASK_ALIGN_SAFE_ZONE,50);
@@ -57,6 +58,7 @@ int main(int argc,char **argv)
     audit_initial_stash=audit_destination_injury=transport_stage_injury=false;
   } else if(flow) {
     /* Start at the audited-load fixture's normal POST_GRAB_AUDIT state. */
+    if(!strcmp(argv[1],"transport_flow")) task_enter(TASK_TRANSPORT_AUDIT,50);
   } else if (!strcmp(argv[1],"boot")) {
     task_start_configured_round(&v,100);
     assert(state==TASK_START && start_motion_phase==START_REVERSE);
